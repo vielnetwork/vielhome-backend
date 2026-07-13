@@ -1,0 +1,2874 @@
+// VielHome — Prisma Schema
+// Source of truth: 04_Product_Architecture, 05_Business_Rules, 11_Backend_Architecture,
+//                   12_Finance_Architecture (future), 14_Zero_Data_Loss (AIHandoff V2)
+//
+// Non-negotiable rules encoded here:
+//  - Property First: Unit is the permanent anchor; people/roles attach to it.
+//  - History Never Changes: nothing here is hard-deleted. Corrections create new rows.
+//  - Identity is global, Membership is local (per building).
+//  - Every important action is audited (see AuditLog).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Foundation domain — Identity, Auth, Device
+// ---------------------------------------------------------------------------
+
+model Person {
+  id          String   @id @default(cuid())
+  phone       String   @unique
+  email       String?  @unique
+  fullName    String?
+  locale      String   @default("fa")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships       Membership[]        @relation("PersonMemberships")
+  managerAssignmentsMade Membership[]   @relation("ManagerAssignedBy")
+  membershipRequests MembershipRequest[]
+  ownerships        Ownership[]
+  tenancies         Tenancy[]
+  devices           Device[]
+  refreshTokens     RefreshToken[]
+  buildingSetupDrafts BuildingSetupDraft[]
+  auditLogs         AuditLog[]
+
+  // Fraud & Abuse Center (07.03 Rule 014 "Account Suspension" — see
+  // 21_ADRs > ADR-031). A flag only for this MVP — see that ADR's Decision
+  // for why enforcing it at login/route level is explicitly deferred, not
+  // silently assumed.
+  isSuspended Boolean @default(false)
+
+  createdChargeBatches ChargeBatch[]    @relation("ChargeBatchCreatedBy")
+  payments          Payment[]           @relation("PaymentPayer")
+  approvedPayments  Payment[]           @relation("PaymentApprovedBy")
+  ledgerEntries     LedgerEntry[]       @relation("LedgerActor")
+  // Adjustment/Refund API (08.05/08.06 — see 21_ADRs > ADR-037)
+  adjustmentsCreated Adjustment[]       @relation("AdjustmentCreatedBy")
+  refundsCreated     Refund[]           @relation("RefundCreatedBy")
+
+  createdVotes      Vote[]                     @relation("VoteCreatedBy")
+  voteEligibilities VoteEligibilitySnapshot[]  @relation("VoteEligiblePerson")
+  ballotsCast       Ballot[]                   @relation("BallotVoter")
+
+  // Governance Meetings (04.06 Rule 11 — see 21_ADRs > ADR-049)
+  createdMeetings    Meeting[]           @relation("MeetingCreatedBy")
+  meetingAttendances MeetingAttendance[] @relation("MeetingAttendancePerson")
+
+  createdCases            Case[]           @relation("CaseCreatedBy")
+  assignedCases           Case[]           @relation("CaseAssignee")
+  caseMessagesSent        CaseMessage[]    @relation("CaseMessageSender")
+  caseAssignmentsMade     CaseAssignment[] @relation("CaseAssignedBy")
+  caseAssignmentsReceived CaseAssignment[] @relation("CaseAssignedTo")
+
+  uploadedDocuments       Document[]        @relation("DocumentCreatedBy")
+  documentVersionsUploaded DocumentVersion[] @relation("DocumentVersionUploadedBy")
+  documentDownloads       DocumentDownload[] @relation("DocumentDownloadedBy")
+
+  notifications           Notification[]           @relation("NotificationRecipient")
+  notificationPreference  NotificationPreference?   @relation("NotificationPreferenceOwner")
+
+  // Gamification (ADR-028) — `xpBalance` is the denormalized running total
+  // described in the Gamification schema section above (Fund.balance-style
+  // cache), kept in sync by `GamificationRepository.awardXp`.
+  xpBalance     Int                 @default(0)
+  xpTransactions XpTransaction[]    @relation("XpTransactionPerson")
+  achievements  PersonAchievement[] @relation("PersonAchievementOwner")
+
+  // BackOffice (ADR-029) — a Person can simultaneously be a building
+  // Member AND platform staff (`PlatformStaff`); the two are independent,
+  // same "reuse Person, don't fork identity" choice as everything else in
+  // this schema.
+  platformStaff                 PlatformStaff?
+  assignedBuildingVerifications BuildingVerificationCase[] @relation("BVCAssignee")
+  reviewedBuildingVerifications BuildingVerificationCase[] @relation("BVCReviewer")
+  managerVerificationCandidacies ManagerVerificationCase[] @relation("MVCCandidate")
+  reviewedManagerVerifications  ManagerVerificationCase[]  @relation("MVCReviewer")
+  managerVerificationApprovals  ManagerVerificationApproval[]
+
+  // Marketplace Foundation (ADR-030) — a directory listing a Person
+  // submits and, optionally, a platform staff member (via the same
+  // `PlatformStaff` identity BackOffice already added) reviews.
+  submittedServiceProviders ServiceProvider[] @relation("ServiceProviderSubmittedBy")
+  reviewedServiceProviders  ServiceProvider[] @relation("ServiceProviderReviewedBy")
+
+  // Fraud & Abuse Center (07.03 — see 21_ADRs > ADR-031)
+  fraudReportsFiled       FraudCase[]         @relation("FraudCaseReportedBy")
+  fraudCasesAgainst       FraudCase[]         @relation("FraudCaseTargetPerson")
+  assignedFraudCases      FraudCase[]         @relation("FraudCaseAssignee")
+  reviewedFraudCases      FraudCase[]         @relation("FraudCaseReviewer")
+  enforcementActionsIssued  EnforcementAction[] @relation("EnforcementActionIssuedBy")
+  enforcementActionsAgainst EnforcementAction[] @relation("EnforcementActionTargetPerson")
+  enforcementAppealsDecided EnforcementAction[] @relation("EnforcementActionAppealDecidedBy")
+
+  // Support & Operations Center (07.05 — see 21_ADRs > ADR-032)
+  supportCasesCreated     SupportCase[]        @relation("SupportCaseCreatedBy")
+  supportCasesAssigned    SupportCase[]        @relation("SupportCaseAssignee")
+  supportCaseMessagesSent SupportCaseMessage[] @relation("SupportCaseMessageSender")
+
+  // Subscription Management (07.04/04.04 — see 21_ADRs > ADR-033)
+  featureGrantsIssued       FeatureGrant[]           @relation("FeatureGrantGrantedBy")
+  featureGrantsRevoked      FeatureGrant[]           @relation("FeatureGrantRevokedBy")
+  subscriptionChangesLogged SubscriptionChangeLog[]  @relation("SubscriptionChangeLogChangedBy")
+
+  // Audit & Compliance Center — fuller version (07.06 — see 21_ADRs > ADR-034)
+  complianceCasesOpened   ComplianceCase[] @relation("ComplianceCaseOpenedBy")
+  complianceCasesAssigned ComplianceCase[] @relation("ComplianceCaseAssignedTo")
+  complianceCasesDecided  ComplianceCase[] @relation("ComplianceCaseDecidedBy")
+  complianceCaseSubjectOf ComplianceCase[] @relation("ComplianceCaseSubject")
+  legalHoldsPlaced        AuditLegalHold[] @relation("LegalHoldPlacedBy")
+  legalHoldsReleased      AuditLegalHold[] @relation("LegalHoldReleasedBy")
+
+  @@map("persons")
+}
+
+model Device {
+  id           String   @id @default(cuid())
+  personId     String
+  person       Person   @relation(fields: [personId], references: [id])
+  deviceToken  String   @unique
+  platform     String // ios | android | web
+  label        String?
+  lastSeenAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  revokedAt    DateTime?
+
+  refreshTokens RefreshToken[]
+
+  @@index([personId])
+  @@map("devices")
+}
+
+enum OtpPurpose {
+  LOGIN
+  REGISTER
+  VERIFY_PHONE
+}
+
+model OtpRequest {
+  id          String     @id @default(cuid())
+  phone       String
+  purpose     OtpPurpose
+  codeHash    String
+  attempts    Int        @default(0)
+  maxAttempts Int        @default(5)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime   @default(now())
+
+  @@index([phone, purpose])
+  @@map("otp_requests")
+}
+
+model RefreshToken {
+  id         String    @id @default(cuid())
+  personId   String
+  person     Person    @relation(fields: [personId], references: [id])
+  deviceId   String
+  device     Device    @relation(fields: [deviceId], references: [id])
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  replacedBy String?
+  createdAt  DateTime  @default(now())
+
+  @@index([personId])
+  @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Building domain
+// ---------------------------------------------------------------------------
+
+enum BuildingStatus {
+  PENDING
+  UNDER_REVIEW
+  VERIFIED
+  REJECTED
+  MERGED
+  // Added in ADR-029 (BackOffice: Building Verification Queue) — 07.01
+  // Rule 006/010's "REQUEST_INFORMATION" action / "PENDING_INFORMATION"
+  // final status, reusing this existing enum instead of a parallel one —
+  // see ADR-029 Decision point 1.
+  PENDING_INFORMATION
+}
+
+enum BuildingType {
+  RESIDENTIAL
+  COMMERCIAL
+  MIXED
+}
+
+model Building {
+  id          String         @id @default(cuid())
+  name        String
+  buildingType BuildingType  @default(RESIDENTIAL)
+  description String?
+  country     String
+  province    String?
+  city        String
+  // Structured address (superseded the free-text `addressLine`-only model —
+  // see ADR "Building Setup Wizard v2"). `addressLine` is kept as a
+  // denormalized, human-readable composition of the fields below so
+  // existing readers don't need to know the parts.
+  district    String
+  mainStreet  String
+  subStreet   String?
+  alley       String?
+  plateNumber String
+  addressLine String
+  // Primary duplicate-detection key (05_Business_Rules > Building Rules:
+  // "Buildings cannot be duplicated intentionally"). Required + unique on
+  // purpose — see BuildingSetupPolicy.assertPostalCodeAvailable.
+  postalCode  String         @unique
+  latitude    Float?
+  longitude   Float?
+  totalBlocks Int            @default(1)
+  totalUnits  Int            @default(1)
+  totalFloors Int?
+  status      BuildingStatus @default(PENDING)
+  createdById String
+  // Recovery Mode (06.03_Manager_Verification_Flow Rule 010/011 — ADR-029):
+  // set when the building has no active, verified manager (a Manager
+  // Verification Case was REJECTED/SUSPENDED with no successor); cleared
+  // automatically the moment a new manager is VERIFIED (see
+  // `BuildingRepository.changeManager`). No scheduler auto-expires it.
+  recoveryModeEnteredAt DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  blocks             Block[]
+  units              Unit[]
+  memberships        Membership[]
+  membershipRequests MembershipRequest[]
+  auditLogs          AuditLog[]
+
+  funds              Fund[]
+  chargeBatches      ChargeBatch[]
+  payments           Payment[]
+  creditBalances     CreditBalance[]
+  ledgerEntries      LedgerEntry[]
+  adjustments        Adjustment[]
+  refunds            Refund[]
+
+  votes              Vote[]
+  meetings           Meeting[]
+
+  cases              Case[]
+
+  documents          Document[]
+
+  notifications      Notification[]
+
+  xpTransactions     XpTransaction[]
+  achievements       PersonAchievement[]
+  score              BuildingScore?
+
+  buildingVerificationCases BuildingVerificationCase[]
+  managerVerificationCases  ManagerVerificationCase[]
+
+  // Fraud & Abuse Center (07.03 — see 21_ADRs > ADR-031)
+  fraudCases         FraudCase[]
+  enforcementActions EnforcementAction[]
+
+  // Subscription Management (07.04/04.04 — see 21_ADRs > ADR-033)
+  subscription Subscription?
+
+  @@map("buildings")
+}
+
+model Block {
+  id         String   @id @default(cuid())
+  buildingId String
+  building   Building @relation(fields: [buildingId], references: [id])
+  name       String
+  totalFloors Int     @default(1)
+  createdAt  DateTime @default(now())
+
+  floors Floor[]
+  units  Unit[]
+  // 21_ADRs > ADR-058 — votes scoped to this specific Block (06.06 Rule 003).
+  scopedVotes Vote[]
+
+  @@index([buildingId])
+  @@map("blocks")
+}
+
+model Floor {
+  id       String @id @default(cuid())
+  blockId  String
+  block    Block  @relation(fields: [blockId], references: [id])
+  number   Int
+  label    String?
+
+  units Unit[]
+
+  @@index([blockId])
+  @@map("floors")
+}
+
+enum UnitType {
+  RESIDENTIAL
+  COMMERCIAL
+  PARKING
+  STORAGE
+}
+
+enum UnitOccupancyStatus {
+  VACANT
+  OWNER_OCCUPIED
+  TENANT_OCCUPIED
+}
+
+model Unit {
+  id         String   @id @default(cuid())
+  buildingId String
+  building   Building @relation(fields: [buildingId], references: [id])
+  blockId    String?
+  block      Block?   @relation(fields: [blockId], references: [id])
+  floorId    String?
+  floor      Floor?   @relation(fields: [floorId], references: [id])
+  // Simple scalar floor number for the auto-generated skeleton unit flow —
+  // deliberately separate from the `floorId` relation above (which needs a
+  // real Floor row under a Block; the simplified wizard never creates
+  // those). Kept nullable since it's filled in later, per-unit.
+  floorNumber Int?
+  unitNumber String
+  type       UnitType @default(RESIDENTIAL)
+  areaSqm    Float?
+  parkingCount Int?
+  storageCount Int?
+  occupancyStatus UnitOccupancyStatus @default(VACANT)
+  // "Complete later" owner fields (06_User_Flows > Building Setup
+  // Assistant: Create Skeleton Units -> Configure Units). Free-text +
+  // phone captured before the owner has an account; `ownerInviteSentAt`
+  // marks that an invite was sent. The invite itself is console-logged
+  // (no SMS gateway yet, same as OTP) and does NOT yet auto-link to a
+  // Person/Membership on signup — that linking is a follow-up, not built
+  // here (see BuildingService.inviteOwner).
+  ownerFullName   String?
+  ownerPhone      String?
+  ownerInviteSentAt DateTime?
+  createdAt  DateTime @default(now())
+
+  ownerships  Ownership[]
+  memberships Membership[]
+  tenancies   Tenancy[]
+
+  chargeItems   ChargeItem[]
+  payments      Payment[]
+  creditBalance CreditBalance?
+  adjustments   Adjustment[]
+  refunds       Refund[]
+
+  voteEligibilities VoteEligibilitySnapshot[]
+  ballots           Ballot[]
+
+  cases             Case[]
+
+  @@unique([buildingId, unitNumber])
+  @@index([buildingId])
+  @@map("units")
+}
+
+// Ownership history is never deleted. A transfer sets endDate on the
+// previous row and creates a new row for the new owner (05_Business_Rules).
+// Ownership Transfer (10.07.02 — see 21_ADRs > ADR-035) implements this
+// literally: `BuildingRepository.transferOwnership` ends every current
+// `Ownership`/OWNER `Membership` row for the unit and repoints
+// `Unit.ownerPhone` at the incoming owner — the SAME
+// `findUnlinkedOwnerUnitsByPhone`/`linkOwnerToUnit` auto-link machinery
+// already shipped for initial building setup (ADR-022's own "fast-follow")
+// then completes the transfer automatically the next time that phone
+// number verifies OTP. No new "pending transfer" state was added — the
+// gap between initiation and the new owner's OTP verify (no current
+// Ownership row, `ownerPhone` set) already structurally IS a pending-
+// transfer state, without a dedicated status value.
+model Ownership {
+  id          String    @id @default(cuid())
+  unitId      String
+  unit        Unit      @relation(fields: [unitId], references: [id])
+  personId    String
+  person      Person    @relation(fields: [personId], references: [id])
+  startDate   DateTime  @default(now())
+  endDate     DateTime?
+  isCurrent   Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  @@index([unitId])
+  @@index([personId])
+  @@map("ownerships")
+}
+
+// Tenancy (10.07.03_Tenancy_v1.0 — see 21_ADRs > ADR-035). Single-table,
+// `isCurrent`-flagged pattern — the SAME convention `Ownership`/
+// `Membership` already use, no parallel `tenancy_history` table. This
+// mirrors an explicit, already-recorded reconciliation decision (see
+// 23_v1_Handoff_Package_Reconciliation, Ownership history row): "Apply the
+// same pattern to the new Tenancy domain." `TenancyStatus`'s three values
+// (ACTIVE/NOTICE_GIVEN/ENDED) come from the concrete `10.07.03` doc, not
+// the vaguer ACTIVE/ENDED/PENDING in the separate `10.04.03_Ownership_
+// Schema_v1.0` schema draft — the same "concrete rule over draft/example"
+// precedent this series has applied repeatedly (ADR-024/025/026/033).
+//
+// Deliberately NOT modeled here: `occupancy_type` (TENANT/OWNER_OCCUPIED/
+// COMPANY_OCCUPIED, from `10.07.03`'s own table) — only the TENANT case has
+// any real code path today (`MembershipRole.TENANT`, `UnitOccupancyStatus
+// .TENANT_OCCUPIED`), so `Tenancy` stays scoped to actual tenant
+// relationships; general unit-occupancy tracking beyond that is deferred.
+// `04.02_Building_Rules` Rules 17/18's "Lease is distinct from Occupancy"
+// split (a lease can end before/after physical occupancy actually changes)
+// is also deliberately collapsed into one row — the same kind of MVP
+// lifecycle simplification already applied to Charges/Payments (ADR-023)
+// and Votes (ADR-024).
+model Tenancy {
+  id       String        @id @default(cuid())
+  unitId   String
+  unit     Unit          @relation(fields: [unitId], references: [id])
+  personId String
+  person   Person        @relation(fields: [personId], references: [id])
+  status   TenancyStatus @default(ACTIVE)
+
+  startDate DateTime  @default(now())
+  endDate   DateTime?
+
+  // Rule 006 — optional intermediate step before `end()`; a tenancy may
+  // also go straight from ACTIVE to ENDED with no notice period recorded.
+  noticeGivenAt     DateTime?
+  terminationReason String?
+
+  isCurrent Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([unitId])
+  @@index([personId])
+  @@map("tenancies")
+}
+
+enum TenancyStatus {
+  ACTIVE
+  NOTICE_GIVEN
+  ENDED
+}
+
+enum MembershipRole {
+  OWNER
+  TENANT
+  MANAGER
+  BOARD_MEMBER
+  ACCOUNTANT
+}
+
+enum ManagerLifecycleState {
+  CANDIDATE
+  PROVISIONAL
+  VERIFIED
+  FORMER
+  // Added in ADR-029 (BackOffice: Manager Verification Queue) — 07.02
+  // Rule 008/009: a manager can be suspended (fraud/legal dispute/serious
+  // governance conflict) and must "remain traceable," distinct from the
+  // ordinary end-of-tenure FORMER state.
+  SUSPENDED
+}
+
+// How a MANAGER-role Membership row came to exist (21_ADRs > ADR-022,
+// reconciled from the uploaded v1.0 package's `building_managements`
+// concept — see 23_v1_Handoff_Package_Reconciliation). Only meaningful on
+// rows where role = MANAGER; null on every other role.
+//  - PROVISIONAL: the building's creator, auto-assigned at building
+//    creation (BuildingRepository.createBuildingWithFoundingMember).
+//  - ELECTED / APPOINTED / BACKOFFICE_ASSIGNED: reachable via
+//    BuildingService.changeManager once an existing manager hands off, or
+//    (future) via the Voting/BackOffice domains once they exist. Not
+//    reachable via any API yet beyond the manual handoff endpoint — kept
+//    forward-compatible rather than built out now, since Elections and
+//    BackOffice are separate, not-yet-built domains.
+enum ManagerAssignmentType {
+  PROVISIONAL
+  ELECTED
+  APPOINTED
+  BACKOFFICE_ASSIGNED
+}
+
+// Membership represents a person's relationship with a building.
+// Changing a role never destroys history: role changes end the current
+// row (endedAt) and create a new one, rather than mutating role in place.
+// Manager succession follows the same pattern (BuildingService.changeManager):
+// the outgoing MANAGER row is ended (managerState -> FORMER) and a new one
+// created, so `memberships` rows where role = MANAGER, ordered by
+// startedAt, ARE the manager assignment history — no separate table needed.
+model Membership {
+  id                String                  @id @default(cuid())
+  personId          String
+  person            Person                  @relation("PersonMemberships", fields: [personId], references: [id])
+  buildingId        String
+  building          Building                @relation(fields: [buildingId], references: [id])
+  unitId            String?
+  unit              Unit?                   @relation(fields: [unitId], references: [id])
+  role              MembershipRole
+  managerState      ManagerLifecycleState?
+  managerAssignmentType ManagerAssignmentType?
+  assignedById      String?
+  assignedBy        Person?                 @relation("ManagerAssignedBy", fields: [assignedById], references: [id])
+  startedAt         DateTime                @default(now())
+  endedAt           DateTime?
+  isCurrent         Boolean                 @default(true)
+  createdAt         DateTime                @default(now())
+
+  verificationCases ManagerVerificationCase[]
+
+  // Fraud & Abuse Center (07.03 Rule 017 — "Manager Claim" as an
+  // enforceable target — see 21_ADRs > ADR-031)
+  enforcementActions EnforcementAction[]
+
+  @@index([buildingId])
+  @@index([personId])
+  @@index([buildingId, role, isCurrent])
+  @@map("memberships")
+}
+
+enum MembershipRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Escape hatch for the postal-code duplicate check
+// (BuildingSetupPolicy.assertPostalCodeAvailable): when someone tries to
+// register a building whose postal code already exists, they can request
+// to join the existing building instead of being stuck. No approval UI
+// exists yet on the mobile client — an existing manager/owner reviews
+// pending requests via this table/endpoints directly for now (fast-follow:
+// an in-app review screen, same pattern as OTP's console-logged SMS stub).
+model MembershipRequest {
+  id         String                  @id @default(cuid())
+  buildingId String
+  building   Building                @relation(fields: [buildingId], references: [id])
+  personId   String
+  person     Person                  @relation(fields: [personId], references: [id])
+  role       MembershipRole
+  message    String?
+  status     MembershipRequestStatus @default(PENDING)
+  createdAt  DateTime                @default(now())
+  updatedAt  DateTime                @updatedAt
+
+  @@index([buildingId])
+  @@index([personId])
+  @@map("membership_requests")
+}
+
+// ---------------------------------------------------------------------------
+// Finance domain (12_Finance_Architecture — Frozen)
+//
+// Reconciliation note (23_v1_Handoff_Package_Reconciliation, row 12): the
+// concrete table shapes below (Fund/ChargeBatch/ChargeItem/Payment/
+// CreditBalance/LedgerEntry) are borrowed from the uploaded v1.0 package's
+// `10.08.01_Finance_Architecture` as a starting schema, but are mapped onto
+// the current, richer, FROZEN lifecycle in `12_Finance_Architecture_v2.0`,
+// not the v1.0 package's own (never-approved, "Draft for Review") lifecycle.
+//
+// Deliberate MVP simplification of the Frozen lifecycles — documented here
+// once rather than repeated at every call site:
+//   Charge lifecycle (Frozen):  Draft -> Pending Approval -> Approved ->
+//     Published -> Resident Notification -> Payment Collection -> Closed
+//   Charge lifecycle (MVP):     DRAFT -> ISSUED -> CLOSED (or CANCELLED)
+//   The four Frozen middle stages (Pending Approval/Approved/Published/
+//   Resident Notification) collapse into the single `issue` action/ISSUED
+//   state for MVP — there is no separate approval workflow or notification
+//   fan-out step yet (Notifications domain isn't built either). A charge
+//   becomes payable the moment it's issued. This can be un-collapsed later
+//   into real intermediate states without a breaking schema change, since
+//   `ChargeBatchStatus` is just an enum on the same row.
+//
+//   Payment lifecycle (Frozen): Created -> Pending -> Confirmed ->
+//     Allocated -> Receipted -> Archived
+//   Payment lifecycle (MVP):    PENDING_APPROVAL -> APPROVED -> (allocated
+//     as part of the same approval transaction) -> REJECTED (terminal, if
+//     not approved)
+//   Allocation happens synchronously inside `approve`, and there is no
+//   separate receipt document / archival step yet — both are fast-follow,
+//   not built here. No online payment gateway exists (05/12: Cash + Bank
+//   Transfer only for MVP, matching the v1.0 package's own payment method
+//   list).
+//
+// All monetary amounts are `Int` (whole Toman/Rial — no fractional
+// subunits), never `Float`/`Decimal`, specifically to avoid floating-point
+// rounding bugs in running balances and allocation math.
+//
+// The Ledger is the financial source of truth (12_Finance_Architecture:
+// "Ledger is the financial source of truth... Ledger entries never
+// change.") — `LedgerEntry` rows are append-only and are never updated or
+// deleted by application code. `Fund.balance` and `CreditBalance.balance`
+// are denormalized caches maintained transactionally alongside each
+// LedgerEntry write, kept only for fast reads; they are always
+// reconstructable by replaying `LedgerEntry` if they ever drift.
+// ---------------------------------------------------------------------------
+
+// See 21_ADRs > ADR-023 (Finance MVP) for the full accounting-model
+// rationale behind this section.
+enum FundType {
+  CURRENT
+  RESERVE
+  EMERGENCY
+  RENOVATION
+  INSURANCE
+  CUSTOM
+}
+
+// A building may define multiple independent funds (12_Finance_Architecture
+// > "Multiple Funds"). Every ChargeBatch/Payment/LedgerEntry belongs to
+// exactly one fund. `isDefault` marks the fund new charges default into when
+// the caller doesn't pick one explicitly (every building gets one CURRENT
+// fund auto-created — see FinanceService — so charging never has to wait on
+// manual fund setup).
+model Fund {
+  id          String   @id @default(cuid())
+  buildingId  String
+  building    Building @relation(fields: [buildingId], references: [id])
+  name        String
+  type        FundType @default(CURRENT)
+  description String?
+  isDefault   Boolean  @default(false)
+  // Denormalized cache of the sum of this fund's LedgerEntry rows — see
+  // section note above. Updated transactionally, never authoritative.
+  balance     Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  chargeBatches ChargeBatch[]
+  payments      Payment[]
+  ledgerEntries LedgerEntry[]
+  adjustments   Adjustment[]
+
+  @@unique([buildingId, name])
+  @@index([buildingId])
+  @@map("funds")
+}
+
+enum ChargeCalculationMethod {
+  FIXED
+  AREA_BASED
+  MIXED
+}
+
+enum ChargeBatchStatus {
+  DRAFT
+  ISSUED
+  CLOSED
+  CANCELLED
+}
+
+// A ChargeBatch is one billing run (e.g. "Monthly Charge — Mehr 1405"),
+// fanned out into one ChargeItem per Unit. See the MVP lifecycle note above
+// for why this collapses several Frozen intermediate stages into ISSUED.
+model ChargeBatch {
+  id                 String                  @id @default(cuid())
+  buildingId         String
+  building           Building                @relation(fields: [buildingId], references: [id])
+  fundId             String
+  fund               Fund                    @relation(fields: [fundId], references: [id])
+  title              String
+  description        String?
+  calculationMethod  ChargeCalculationMethod @default(FIXED)
+  // Sum of this batch's ChargeItem.amount — denormalized for fast reads,
+  // always recomputable from chargeItems.
+  totalAmount        Int                     @default(0)
+  status             ChargeBatchStatus       @default(DRAFT)
+  periodStart        DateTime?
+  periodEnd          DateTime?
+  dueDate            DateTime?
+  createdById        String
+  createdBy          Person                  @relation("ChargeBatchCreatedBy", fields: [createdById], references: [id])
+  issuedAt           DateTime?
+  cancelledAt        DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  chargeItems ChargeItem[]
+
+  @@index([buildingId])
+  @@index([buildingId, status])
+  @@map("charge_batches")
+}
+
+enum ChargeItemStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+}
+
+// One row per Unit per ChargeBatch — the actual payable amount owed by
+// that unit. `paidAmount` + `status` are updated as PaymentAllocations land
+// against this item (oldest-debt-first allocation lives in
+// FinanceRepository.approvePayment, not here).
+model ChargeItem {
+  id            String           @id @default(cuid())
+  chargeBatchId String
+  chargeBatch   ChargeBatch      @relation(fields: [chargeBatchId], references: [id])
+  unitId        String
+  unit          Unit             @relation(fields: [unitId], references: [id])
+  amount        Int
+  paidAmount    Int              @default(0)
+  status        ChargeItemStatus @default(UNPAID)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  allocations PaymentAllocation[]
+
+  @@index([chargeBatchId])
+  @@index([unitId])
+  @@index([unitId, status])
+  @@map("charge_items")
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+}
+
+enum PaymentStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  // Added in ADR-037 (Adjustment/Refund API — 08.06 Rule 011's literal
+  // 5-state lifecycle: PENDING/APPROVED/REJECTED/REVERSED/REFUNDED).
+  // REVERSED = the approval itself is undone (erroneous/bounced/fraudulent
+  // — as if it never happened, allocations rolled back). REFUNDED = the
+  // payment was genuinely valid but cash was later returned to the payer
+  // (allocations stay exactly as they were — 08.06 Rule 015).
+  REVERSED
+  REFUNDED
+}
+
+// A resident-reported payment (no online gateway at MVP — 05_Business_Rules
+// / 12_Finance_Architecture / v1.0 package all agree: Cash + Bank Transfer
+// only). Starts PENDING_APPROVAL; an ACCOUNTANT or MANAGER approves or
+// rejects it (see FinanceModule authorization mapping). Approval is what
+// triggers allocation against ChargeItems and the LedgerEntry write —
+// nothing is posted to the ledger before approval, so a rejected/never-
+// resolved payment never pollutes financial history.
+model Payment {
+  id             String        @id @default(cuid())
+  buildingId     String
+  building       Building      @relation(fields: [buildingId], references: [id])
+  unitId         String
+  unit           Unit          @relation(fields: [unitId], references: [id])
+  fundId         String
+  fund           Fund          @relation(fields: [fundId], references: [id])
+  payerId        String
+  payer          Person        @relation("PaymentPayer", fields: [payerId], references: [id])
+  amount         Int
+  method         PaymentMethod
+  status         PaymentStatus @default(PENDING_APPROVAL)
+  reference      String?
+  note           String?
+  approvedById   String?
+  approvedBy     Person?       @relation("PaymentApprovedBy", fields: [approvedById], references: [id])
+  approvedAt     DateTime?
+  rejectedReason String?
+  // Added in ADR-037 — set on reversal (REVERSED) alongside `status`.
+  // `reversedReason`/`reversedById` are deliberately NOT separate columns:
+  // the reversal's own audit log entry + LedgerEntry already carry actor
+  // and reason, the same "don't duplicate what audit already captures"
+  // choice made for every other terminal transition in this schema.
+  reversedAt     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  allocations PaymentAllocation[]
+  refunds     Refund[]
+
+  @@index([buildingId])
+  @@index([unitId])
+  @@index([buildingId, status])
+  @@map("payments")
+}
+
+// Join row recording how much of an approved Payment was applied to a given
+// ChargeItem — a single payment may cover several charge items
+// (oldest-debt-first), and overpayment beyond all outstanding items becomes
+// a CreditBalance instead of an allocation row. `chargeItemId`/`adjustmentId`
+// are both optional and mutually exclusive (21_ADRs > ADR-053) — a row
+// allocates to exactly one of a ChargeItem or a positive Adjustment, never
+// both, never neither. Adjustment allocation was added in ADR-053, once
+// `Adjustment.paidAmount` existed to allocate against.
+model PaymentAllocation {
+  id           String      @id @default(cuid())
+  paymentId    String
+  payment      Payment     @relation(fields: [paymentId], references: [id])
+  chargeItemId String?
+  chargeItem   ChargeItem? @relation(fields: [chargeItemId], references: [id])
+  adjustmentId String?
+  adjustment   Adjustment? @relation(fields: [adjustmentId], references: [id])
+  amount       Int
+  createdAt    DateTime    @default(now())
+
+  @@unique([paymentId, chargeItemId])
+  @@unique([paymentId, adjustmentId])
+  @@index([paymentId])
+  @@index([chargeItemId])
+  @@index([adjustmentId])
+  @@map("payment_allocations")
+}
+
+// Running overpayment balance per unit (one row per unit, created lazily on
+// first overpayment). Applied automatically against a unit's next issued
+// ChargeItem — see FinanceService.
+model CreditBalance {
+  id         String   @id @default(cuid())
+  unitId     String   @unique
+  unit       Unit     @relation(fields: [unitId], references: [id])
+  buildingId String
+  building   Building @relation(fields: [buildingId], references: [id])
+  balance    Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  @@index([buildingId])
+  @@map("credit_balances")
+}
+
+enum LedgerEntryType {
+  CHARGE
+  PAYMENT
+  ADJUSTMENT
+  REFUND
+  CREDIT_APPLIED
+  // Added in ADR-037 — 08.06 Rule 014's "Reversal Creates Counter Entry."
+  // Distinct from REFUND (cash genuinely returned to the payer after a
+  // valid payment) and ADJUSTMENT (a manual debt correction/waiver):
+  // REVERSAL undoes an erroneous/bounced/fraudulent approval, as if it
+  // never happened.
+  REVERSAL
+}
+
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+}
+
+// The financial source of truth (12_Finance_Architecture > "Ledger").
+// Append-only: application code must never UPDATE or DELETE a LedgerEntry
+// row — corrections are new ADJUSTMENT/REFUND entries, never edits
+// (05_Business_Rules > Finance Rules: "Corrections generate adjustment
+// records"). `referenceType`/`referenceId` point at the ChargeItem, Payment
+// or manual adjustment that produced this entry.
+model LedgerEntry {
+  id            String          @id @default(cuid())
+  buildingId    String
+  building      Building        @relation(fields: [buildingId], references: [id])
+  fundId        String
+  fund          Fund            @relation(fields: [fundId], references: [id])
+  entryType     LedgerEntryType
+  direction     LedgerDirection
+  amount        Int
+  referenceType String
+  referenceId   String
+  description   String?
+  actorId       String?
+  actor         Person?         @relation("LedgerActor", fields: [actorId], references: [id])
+  requestId     String?
+  createdAt     DateTime        @default(now())
+
+  @@index([buildingId])
+  @@index([fundId])
+  @@index([referenceType, referenceId])
+  @@map("ledger_entries")
+}
+
+// Adjustment/Refund API (08.05_Charge_API_v1.0 Rule 014, 08.06_Payment_API_v1.0
+// Rules 010/014/015 — see 21_ADRs > ADR-037). A manual, signed correction to
+// a unit's debt — NOT tied to any specific ChargeItem or Payment, unlike a
+// Refund below. `amount` is signed: negative WAIVES existing outstanding
+// debt (applied oldest-debt-first across the unit's outstanding ChargeItems,
+// exactly like `FinanceRepository.approvePayment`'s own allocation loop,
+// just tagged with an ADJUSTMENT ledger entry instead of PAYMENT); positive
+// ADDS new debt not backed by any ChargeBatch/ChargeItem (e.g. a one-off
+// late fee or damage charge) — reflected in `FinanceService.getUnitDebt`'s
+// total via unresolved positive-adjustment ledger entries, not a new
+// ChargeItem row (08.05's own "Adjustment" model is a correction record,
+// not a full charge-issuance flow — fabricating a ChargeBatch/ChargeItem
+// for a single ad hoc fee would be more machinery than the source spec
+// asks for). No allocation-breakdown join table exists for Adjustment the
+// way `PaymentAllocation` exists for Payment — 08.05's own Adjustment model
+// has no such concept, and Adjustments are lower-volume than Payments.
+model Adjustment {
+  id          String   @id @default(cuid())
+  unitId      String
+  unit        Unit     @relation(fields: [unitId], references: [id])
+  buildingId  String
+  building    Building @relation(fields: [buildingId], references: [id])
+  fundId      String
+  fund        Fund     @relation(fields: [fundId], references: [id])
+  amount      Int
+  // 21_ADRs > ADR-053 — how much of a POSITIVE (debt-adding) Adjustment
+  // has since been paid off via `approvePayment`'s allocation loop, the
+  // exact same running-total field `ChargeItem.paidAmount` already uses.
+  // Meaningless for a negative (waiver) Adjustment, which resolves its
+  // debt effect immediately at creation (see `createAdjustment`) and
+  // never accrues an allocation.
+  paidAmount  Int      @default(0)
+  reason      String
+  createdById String
+  createdBy   Person   @relation("AdjustmentCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  allocations PaymentAllocation[]
+
+  @@index([unitId])
+  @@index([buildingId])
+  @@map("adjustments")
+}
+
+// Refund (08.06_Payment_API_v1.0 Rules 010/013/015 — see 21_ADRs > ADR-037).
+// Cash genuinely returned to the payer after a VALID, already-APPROVED
+// payment — distinct from Reversal (`Payment.reversedAt`, undoes an
+// erroneous approval as if it never happened). Rule 015 ("Refund Does Not
+// Delete Original Payment") is read literally: a Refund does NOT roll back
+// the original Payment's `PaymentAllocation` rows or `ChargeItem.paidAmount`
+// — the charge(s) it originally settled stay marked paid even after the
+// cash is returned. This is a disclosed, source-literal limitation, not an
+// oversight — see ADR-037 Decision/Consequences for the reconciliation gap
+// this can create and the recommended manual follow-up (a positive
+// `Adjustment` to re-open debt, if that's actually wanted). `buildingId`/
+// `unitId` are denormalized from the Payment at creation time, the same
+// query-convenience pattern `Payment` itself already uses for its own FKs.
+// One refund per Payment this MVP (a second refund attempt on an
+// already-REFUNDED payment is refused) — 08.06's own model has no
+// "remaining refundable amount" concept, so partial-refund stacking isn't
+// modeled.
+model Refund {
+  id          String   @id @default(cuid())
+  paymentId   String
+  payment     Payment  @relation(fields: [paymentId], references: [id])
+  unitId      String
+  unit        Unit     @relation(fields: [unitId], references: [id])
+  buildingId  String
+  building    Building @relation(fields: [buildingId], references: [id])
+  amount      Int
+  reason      String
+  createdById String
+  createdBy   Person   @relation("RefundCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@index([paymentId])
+  @@index([buildingId])
+  @@map("refunds")
+}
+
+// ---------------------------------------------------------------------------
+// Governance domain (04_Product_Architecture > Governance; reconciled from
+// the uploaded v1.0 package's 04.06_Governance_Rules, 06.06_Voting_Flow,
+// 08.07_Voting_API, 10.04.05_Governance_Schema — see 21_ADRs > ADR-024 for
+// the full rationale and every MVP simplification made here.
+//
+// Table names/shapes are adopted close to the v1.0 package's own schema
+// (votes/vote_options/vote_eligibility_snapshots/ballots/vote_results),
+// since — unlike Finance — no current v2.0 doc had already gone deeper
+// than the domain-list level for Governance; there was nothing to
+// reconcile against beyond nesting these routes under the existing
+// `/buildings/:id/...` API convention (08_API_Architecture, Frozen).
+//
+// Deliberate MVP simplifications (documented once, not per call site):
+//  - Status lifecycle DRAFT -> ACTIVE -> CLOSED/CANCELLED, collapsing the
+//    v1.0 package's own DRAFT/PUBLISHED/ACTIVE/CLOSED/CANCELLED — a "Publish"
+//    action and going "Active" happen as one atomic step here (no separate
+//    scheduling/review gap between them).
+//  - Voting rights are OWNER-only for MVP (`VoteEligibilityType` has just
+//    `OWNER`) — Tenant voting (04.06 Rule 4: "optional, per building
+//    policy") is deferred because no Building Settings/Policy domain
+//    exists yet to hold that per-building toggle. Proxy voting
+//    (08.07 Rule 011/012) is deferred — no proxy-appointment mechanism
+//    exists yet.
+//  - Co-owner conflict (04.06 Rule 7 / 06.06 Rule 009: unresolved conflict
+//    -> forced ABSTAIN) is simplified to: a Unit is only eligible at all
+//    if it has EXACTLY ONE current Owner at the moment the vote is
+//    published. A unit with zero or multiple current owners is excluded
+//    from the eligibility snapshot entirely (not silently counted as a
+//    phantom ABSTAIN ballot) — honest under-counting rather than
+//    simulating a ballot nobody actually cast.
+//  - No scheduler auto-activates a vote at `startAt` or auto-closes it at
+//    `endAt` (would need a BullMQ job wired to this domain, not built) —
+//    Publish/Close are manual actions by an authorized role. `endAt` still
+//    has real teeth: `VotingService.castBallot` refuses ballots once
+//    `now > endAt`, even if nobody has manually closed the vote yet.
+// ---------------------------------------------------------------------------
+
+enum VoteCategory {
+  MANAGEMENT
+  FINANCIAL
+  LEGAL
+  MAINTENANCE
+  COMMUNITY
+}
+
+enum VoteStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+  CANCELLED
+}
+
+enum VoteEligibilityType {
+  OWNER
+}
+
+enum VoteResultStatus {
+  PASSED
+  NOT_PASSED
+  QUORUM_NOT_MET
+}
+
+// 21_ADRs > ADR-058 — 06.06 Rule 003 "Votes Support Target Scope" نمونه:
+// Entire Building, Specific Block, Property Type, Selected Properties.
+// `ENTIRE_BUILDING` is the pre-existing default behavior (every prior vote
+// in this codebase is implicitly this scope); the other three narrow
+// `VotingRepository.publishVote`'s eligibility-snapshot unit query to a
+// subset of the building's units, using fields (`Unit.blockId`,
+// `Unit.type`) that already existed for Building Setup, unrelated to
+// Governance.
+enum VoteScopeType {
+  ENTIRE_BUILDING
+  BLOCK
+  PROPERTY_TYPE
+  SELECTED_UNITS
+}
+
+// A voting process (04.06 Rule 1: "Vote Belongs To Property, not Person" —
+// enforced via VoteEligibilitySnapshot/Ballot being Unit-scoped, not
+// Person-scoped, below). `isManagerElection` marks a MANAGEMENT-category
+// vote whose options' `value` are candidate Person IDs — see
+// `VotingService.closeVote`, which feeds a PASSED election's winner
+// straight into `BuildingService.changeManager(..., 'ELECTED')` (06.06
+// Rule 015: "Manager Elections Use Voting Engine").
+model Vote {
+  id                String       @id @default(cuid())
+  buildingId        String
+  building          Building     @relation(fields: [buildingId], references: [id])
+  title             String
+  description       String?
+  category          VoteCategory
+  status            VoteStatus   @default(DRAFT)
+  isManagerElection Boolean      @default(false)
+  // Percentage (0-100) of eligible units that must cast a ballot for
+  // quorum to be met. Null means no quorum requirement.
+  quorumPercent     Int?
+  startAt           DateTime
+  endAt             DateTime
+  createdById       String
+  createdBy         Person       @relation("VoteCreatedBy", fields: [createdById], references: [id])
+  publishedAt       DateTime?
+  closedAt          DateTime?
+  cancelledAt       DateTime?
+  cancelReason      String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  // 04.06 Rule 11 "Meetings Are Separate From Voting" — a Meeting MAY have
+  // votes (zero or more), so this is an optional, additive link on the
+  // existing Vote side rather than any change to how a vote is created or
+  // run (see 21_ADRs > ADR-049). Nullable: most votes still have no
+  // meeting at all.
+  meetingId String?
+  meeting   Meeting? @relation(fields: [meetingId], references: [id])
+
+  // 21_ADRs > ADR-058 — 06.06 Rule 003 "Votes Support Target Scope".
+  // `scopeType` defaults to `ENTIRE_BUILDING`, preserving every existing
+  // vote's actual behavior with no backfill needed. Exactly one of
+  // `scopeBlockId`/`scopeUnitType`/`scopeUnitIds` is meaningful, matching
+  // `scopeType` — validated in `VotePolicy.assertValidScope`, not enforced
+  // at the schema level (Prisma has no cross-column CHECK constraint here).
+  // `scopeUnitIds` is a plain `String[]`, the same "no join table needed"
+  // pattern `BuildingVerificationCase.riskFlags` already established for a
+  // small, non-relational list of IDs.
+  scopeType     VoteScopeType @default(ENTIRE_BUILDING)
+  scopeBlockId  String?
+  scopeBlock    Block?        @relation(fields: [scopeBlockId], references: [id])
+  scopeUnitType UnitType?
+  scopeUnitIds  String[]      @default([])
+
+  options              VoteOption[]
+  eligibilitySnapshots VoteEligibilitySnapshot[]
+  ballots              Ballot[]
+  result               VoteResult?
+
+  @@index([buildingId])
+  @@index([buildingId, status])
+  @@index([meetingId])
+  @@index([scopeBlockId])
+  @@map("votes")
+}
+
+// Configurable before publish, immutable after (06.06 Rule 021). For a
+// referendum-style vote, `value` is typically 'YES'/'NO'/'ABSTAIN'; for an
+// election, `value` is the candidate's Person ID. `value === 'ABSTAIN'` is
+// excluded from winner determination but still counts toward quorum
+// (06.06 Rule 014) — see `VotingService.closeVote`.
+model VoteOption {
+  id        String   @id @default(cuid())
+  voteId    String
+  vote      Vote     @relation(fields: [voteId], references: [id])
+  label     String
+  value     String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  ballots         Ballot[]
+  wonVoteResults  VoteResult[] @relation("WinningOption")
+
+  @@index([voteId])
+  @@map("vote_options")
+}
+
+// Captured once, at publish time, and never changes afterward (08.07 Rule
+// 021: "Eligibility Snapshot Must Be Preserved... captured at publish time
+// and remains stable until vote closure") — this is what makes a
+// published result reproducible (08.07 Rule 022) even if a unit's
+// ownership changes mid-vote.
+model VoteEligibilitySnapshot {
+  id               String              @id @default(cuid())
+  voteId           String
+  vote             Vote                @relation(fields: [voteId], references: [id])
+  unitId           String
+  unit             Unit                @relation(fields: [unitId], references: [id])
+  eligiblePersonId String
+  eligiblePerson   Person              @relation("VoteEligiblePerson", fields: [eligiblePersonId], references: [id])
+  eligibilityType  VoteEligibilityType @default(OWNER)
+  capturedAt       DateTime            @default(now())
+
+  @@unique([voteId, unitId])
+  @@index([voteId])
+  @@map("vote_eligibility_snapshots")
+}
+
+// One ballot per (vote, unit) — "One Property One Vote" (04.06 Rule 2,
+// enforced by the unique constraint below, not just application logic).
+// Immutable after submission (08.07 Rule 016: "No Edit, No Delete") —
+// there is deliberately no update/delete method on this model anywhere in
+// the codebase.
+model Ballot {
+  id               String     @id @default(cuid())
+  voteId           String
+  vote             Vote       @relation(fields: [voteId], references: [id])
+  unitId           String
+  unit             Unit       @relation(fields: [unitId], references: [id])
+  voterPersonId    String
+  voterPerson      Person     @relation("BallotVoter", fields: [voterPersonId], references: [id])
+  selectedOptionId String
+  selectedOption   VoteOption @relation(fields: [selectedOptionId], references: [id])
+  submittedAt      DateTime   @default(now())
+
+  @@unique([voteId, unitId])
+  @@index([voteId])
+  @@map("ballots")
+}
+
+// The published outcome of a closed vote (one per Vote — closing and
+// publishing the result happen as a single atomic step in this MVP, see
+// the section note above). Immutable once created (06.06 Rule 018) —
+// reproducible from `Ballot` + `VoteEligibilitySnapshot` + `Vote.quorumPercent`
+// (08.07 Rule 022), so this row is a cached computation, not a second
+// source of truth.
+model VoteResult {
+  id                 String            @id @default(cuid())
+  voteId             String            @unique
+  vote               Vote              @relation(fields: [voteId], references: [id])
+  totalEligibleCount Int
+  totalBallotCount   Int
+  quorumMet          Boolean
+  winningOptionId    String?
+  winningOption      VoteOption?       @relation("WinningOption", fields: [winningOptionId], references: [id])
+  resultStatus       VoteResultStatus
+  calculatedAt       DateTime          @default(now())
+  publishedAt        DateTime?
+
+  @@map("vote_results")
+}
+
+// Governance Meetings (04.06 Rule 11 "Meetings Are Separate From Voting" /
+// Rule 12 "Meeting Attendance Must Be Recorded" / Rule 13 "Meeting Minutes
+// Must Be Preserved" / Rule 20's audited "Meeting Creation"/"Meeting
+// Update" — see 21_ADRs > ADR-049, deferred since ADR-024's Governance
+// MVP). A Meeting is its own entity, independent of Vote — a Meeting can
+// have zero, one, or many linked Votes (see `Vote.meetingId` above), and a
+// Vote never requires a Meeting. Deliberately no meeting-type or
+// meeting-status enum: neither is named anywhere in the source rules, only
+// "archived" (Rule 13) is — modeled as a nullable timestamp, the same
+// closedAt/cancelledAt convention Vote itself uses above, rather than an
+// invented status machine.
+model Meeting {
+  id          String    @id @default(cuid())
+  buildingId  String
+  building    Building  @relation(fields: [buildingId], references: [id])
+  title       String
+  scheduledAt DateTime
+  location    String?
+  // Rule 13 "Meeting Minutes Must Be Preserved" — free text; never deleted,
+  // only archived (see `archivedAt` below).
+  minutes     String?
+  createdById String
+  createdBy   Person    @relation("MeetingCreatedBy", fields: [createdById], references: [id])
+  // Rule 13 — minutes/meetings are archived, never deleted. Null means
+  // still active.
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  attendances MeetingAttendance[]
+  votes       Vote[]
+
+  @@index([buildingId])
+  @@map("meetings")
+}
+
+// Rule 12 "Meeting Attendance Must Be Recorded" — one row per Person whose
+// attendance at a Meeting was recorded. Unique per (meeting, person): a
+// Person's attendance at a given Meeting is recorded once.
+model MeetingAttendance {
+  id         String   @id @default(cuid())
+  meetingId  String
+  meeting    Meeting  @relation(fields: [meetingId], references: [id])
+  personId   String
+  person     Person   @relation("MeetingAttendancePerson", fields: [personId], references: [id])
+  recordedAt DateTime @default(now())
+
+  @@unique([meetingId, personId])
+  @@index([meetingId])
+  @@map("meeting_attendances")
+}
+
+// ---------------------------------------------------------------------------
+// Cases domain (04_Product_Architecture > Community: "Requests"; reconciled
+// from the uploaded v1.0 package's 06.07_Request_And_Complaint_Flow and
+// 08.08_Request_And_Complaint_API — see 21_ADRs > ADR-025 for the full
+// rationale and every MVP simplification made here. Complaints and
+// Suggestions are NOT separate tables — both source docs are explicit
+// ("Complaints Are Requests," "Suggestions Are Requests," 06.07 Rules
+// 007/008) that they're just a `CaseType` value on the same `Case` row.
+//
+// Deliberate MVP simplifications (documented once, not per call site):
+//  - `CaseType` reconciles a genuine inconsistency INSIDE the v1.0 package
+//    itself: 06.07 (flow doc) lists five types (SERVICE/MAINTENANCE/
+//    COMPLAINT/SUGGESTION/GOVERNANCE) while 10.04.06/08.08 (schema/API
+//    docs) list four (MAINTENANCE/COMPLAINT/SUGGESTION/GENERAL). The
+//    schema/API docs are treated as authoritative for implementation (they
+//    are the concrete contract, not descriptive prose) — SERVICE and
+//    GOVERNANCE-flavored requests fold into GENERAL for MVP.
+//  - Attachments (06.07 Rule 015) are deferred until the Documents domain
+//    (planned next) exists — case attachments will be `Document`s
+//    referencing a Case via `DocumentReference(entityType: 'CASE')`, not a
+//    separate CaseAttachment table, matching 10.04.06's own reference
+//    design. There is deliberately no attachment field/table here yet.
+//  - SLA (06.07 Rule 012: "for MVP only used for notification purposes")
+//    and Escalation (06.07 Rule 013, needs a not-yet-built Admin Review /
+//    BackOffice path) and Merge Cases (08.08 Rule 016) are all deferred —
+//    none of them gate real MVP behavior, so no dead schema field for them
+//    either; they're additive later.
+//  - Tenant Governance Requests requiring Owner Approval (06.07 Rule 009)
+//    is deferred along with folding GOVERNANCE into GENERAL above — there
+//    is no owner-approval gate on case creation in this MVP.
+// ---------------------------------------------------------------------------
+
+enum CaseType {
+  MAINTENANCE
+  COMPLAINT
+  SUGGESTION
+  GENERAL
+}
+
+enum CaseStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_USER
+  RESOLVED
+  CLOSED
+}
+
+enum CasePriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum CaseVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+// A request, complaint, suggestion or maintenance case (04.06/06.07:
+// Complaints and Suggestions are just `type` values, not separate models).
+// `isAgainstManager` implements 06.07 Rule 017 ("Complaints Against
+// Manager Cannot Be Routed To Manager") — `CasePolicy.assertAssignable`
+// refuses to assign such a case to anyone currently holding the MANAGER
+// role.
+// 08.08 Rule 014 "Resolution Codes Supported" — نمونه ("Examples"):
+// COMPLETED, REJECTED, DUPLICATE, INVALID, EXTERNAL_RESOLUTION. Same
+// "Examples," not exhaustive-set, framing `SupportCaseResolutionCode`
+// (07.05 Rule 015, ADR-032) already had — resolved the same way here as
+// there: a fixed enum of the named values plus an `OTHER` catch-all, so no
+// real resolution is ever hard-rejected (see 21_ADRs > ADR-052).
+enum CaseResolutionCode {
+  COMPLETED
+  REJECTED
+  DUPLICATE
+  INVALID
+  EXTERNAL_RESOLUTION
+  OTHER
+}
+
+model Case {
+  id             String         @id @default(cuid())
+  buildingId     String
+  building       Building       @relation(fields: [buildingId], references: [id])
+  unitId         String?
+  unit           Unit?          @relation(fields: [unitId], references: [id])
+  type           CaseType
+  title          String
+  description    String
+  status         CaseStatus     @default(OPEN)
+  priority       CasePriority   @default(NORMAL)
+  visibility     CaseVisibility @default(PRIVATE)
+  isAgainstManager Boolean      @default(false)
+  resolutionCode CaseResolutionCode?
+  createdById    String
+  createdBy      Person         @relation("CaseCreatedBy", fields: [createdById], references: [id])
+  assigneeId     String?
+  assignee       Person?        @relation("CaseAssignee", fields: [assigneeId], references: [id])
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  closedAt       DateTime?
+  // 08.08 Rule 016 — "Duplicate Cases May Be Merged." The exact same
+  // lightweight self-relation shape as `SupportCase.mergedIntoId`
+  // (21_ADRs > ADR-032), not a full parent/child tree — the source gives
+  // no more depth than "these are the same issue" here either (see
+  // 21_ADRs > ADR-045). Merging closes this case; the target case is
+  // untouched.
+  mergedIntoId String?
+  mergedInto   Case?  @relation("CaseMerge", fields: [mergedIntoId], references: [id])
+  mergedCases  Case[] @relation("CaseMerge")
+
+  messages    CaseMessage[]
+  assignments CaseAssignment[]
+
+  @@index([buildingId])
+  @@index([buildingId, status])
+  @@index([buildingId, type])
+  @@map("cases")
+}
+
+// Conversation history inside a case — never deleted (06.07 Rule 003/010).
+// `isInternal` notes (Rule 016) are only ever visible to/postable by
+// privileged roles (MANAGER/BOARD_MEMBER/ACCOUNTANT) — see
+// `CasePolicy.assertCanPostInternalMessage` and `CasesService.listMessages`'s
+// filtering for non-privileged callers.
+model CaseMessage {
+  id         String   @id @default(cuid())
+  caseId     String
+  case       Case     @relation(fields: [caseId], references: [id])
+  senderId   String
+  sender     Person   @relation("CaseMessageSender", fields: [senderId], references: [id])
+  message    String
+  isInternal Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([caseId])
+  @@map("case_messages")
+}
+
+// Assignment history — every reassignment creates a new row rather than
+// overwriting `Case.assigneeId` in place (06.07 Rule 005/011: "Assignment
+// History Preserved... Every reassignment creates a new record"). The
+// current assignee is still denormalized onto `Case.assigneeId` for fast
+// reads; this table is the append-only history of how it got there.
+model CaseAssignment {
+  id           String   @id @default(cuid())
+  caseId       String
+  case         Case     @relation(fields: [caseId], references: [id])
+  assignedToId String
+  assignedTo   Person   @relation("CaseAssignedTo", fields: [assignedToId], references: [id])
+  assignedById String
+  assignedBy   Person   @relation("CaseAssignedBy", fields: [assignedById], references: [id])
+  note         String?
+  assignedAt   DateTime @default(now())
+
+  @@index([caseId])
+  @@map("case_assignments")
+}
+
+// ---------------------------------------------------------------------------
+// Documents (10.04.06_Cases_Documents, 06.08_Document_Flow, 08.09_Document_API
+// — see 21_ADRs > ADR-026). No prior v2.0 spec existed beyond the domain
+// mention; built directly from the v1.0 package docs.
+//
+// Source-doc reconciliation (same "schema/API doc over flow doc" precedent
+// used in ADR-024/ADR-025 for their own internal conflicts): the flow doc
+// (06.08) lists a DocumentCategory set of OWNERSHIP/LEASE/FINANCIAL/
+// GOVERNANCE/BUILDING/INSURANCE/OTHER and a DocumentVisibility set of
+// PRIVATE/PROPERTY/BUILDING/BOARD/MANAGEMENT — both disagree with the
+// schema doc (10.04.06) and API doc (08.09), which independently agree
+// with each other on GOVERNANCE/FINANCIAL/LEGAL/MAINTENANCE/GENERAL and
+// PUBLIC/MEMBERS_ONLY/MANAGEMENT_ONLY respectively. The schema/API pairing
+// is treated as authoritative, exactly as before.
+//
+// "PROPERTY" in the v1.0 docs' entity-reference lists maps to this
+// codebase's `Unit` (there is no separate `Property` model — Building/Unit
+// are the concrete entities throughout, per Property First / ADR-001).
+//
+// Deliberate MVP scope decisions (documented in ADR-026, not silent):
+//  - No real object storage (S3/MinIO) integration is wired up yet. A
+//    DocumentVersion's `fileUrl`/`fileName`/`fileType`/`fileSize` are
+//    accepted as already-known metadata for a file the client uploaded
+//    out of band — the same "stub the missing infrastructure, model the
+//    real shape" approach used for OTP delivery (console-logged) and
+//    Governance's missing scheduler. Real direct-to-storage upload slots
+//    into `fileUrl` later without a schema change.
+//  - `DocumentReference.entityId` is NOT a foreign key — it is
+//    intentionally polymorphic (per the v1.0 schema's own design) so a
+//    reference can point at a Building, Unit, Vote, ChargeBatch, Payment,
+//    or Case row without this module importing every other feature
+//    module. Referential integrity for a reference's target is therefore
+//    an application-level, not database-level, guarantee — the same
+//    trade-off the source docs' own polymorphic design implies. This is
+//    exactly how Case attachments (ADR-025's deferred item) get wired up:
+//    a document's `DocumentReference` with `entityType: 'CASE'` requires
+//    no change at all to the Cases module.
+//  - Access is two-tier for MVP: `visibility` (PUBLIC/MEMBERS_ONLY open to
+//    any current building member, MANAGEMENT_ONLY restricted to
+//    MANAGER/BOARD_MEMBER/ACCOUNTANT) plus a category-based upload/manage
+//    gate (GOVERNANCE/FINANCIAL/LEGAL categories require a privileged
+//    role to create/version/archive; MAINTENANCE/GENERAL are open to any
+//    member). The flow doc's Rule 004 ("permission based, not only role
+//    based") describes a finer per-document ACL system that isn't built —
+//    this two-tier model is the honest MVP collapse of it.
+// ---------------------------------------------------------------------------
+
+enum DocumentCategory {
+  GOVERNANCE
+  FINANCIAL
+  LEGAL
+  MAINTENANCE
+  GENERAL
+}
+
+enum DocumentVisibility {
+  PUBLIC
+  MEMBERS_ONLY
+  MANAGEMENT_ONLY
+}
+
+enum DocumentStatus {
+  ACTIVE
+  ARCHIVED
+  SUPERSEDED
+}
+
+// 21_ADRs > ADR-056 — SERVICE_PROVIDER/SUPPORT_CASE added to close a real
+// gap: prior ADRs (ADR-030 Marketplace, ADR-032 Support & Operations
+// Center) both described attachments as "wireable via DocumentReference,
+// no module change needed," but neither value actually existed here until
+// now — both Marketplace listing photos and Support ticket attachments
+// were blocked by this omission, not just undocumented.
+enum DocumentReferenceEntityType {
+  BUILDING
+  UNIT
+  VOTE
+  CHARGE_BATCH
+  PAYMENT
+  CASE
+  SERVICE_PROVIDER
+  SUPPORT_CASE
+}
+
+model Document {
+  id          String             @id @default(cuid())
+  buildingId  String
+  building    Building           @relation(fields: [buildingId], references: [id])
+  category    DocumentCategory
+  title       String
+  description String?
+  tags        String[]           @default([])
+  visibility  DocumentVisibility @default(MEMBERS_ONLY)
+  status      DocumentStatus     @default(ACTIVE)
+  createdById String
+  createdBy   Person             @relation("DocumentCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  versions DocumentVersion[]
+
+  @@index([buildingId])
+  @@index([buildingId, category])
+  @@index([buildingId, status])
+  @@map("documents")
+}
+
+// 06.08 Rule 007 / 08.09 Rule 013: a new upload is always a new version — never an overwrite. `isCurrent` marks the single latest version.
+model DocumentVersion {
+  id           String   @id @default(cuid())
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id])
+  versionNumber Int
+  fileUrl      String
+  fileName     String
+  fileType     String
+  fileSize     Int
+  uploadedById String
+  uploadedBy   Person   @relation("DocumentVersionUploadedBy", fields: [uploadedById], references: [id])
+  isCurrent    Boolean  @default(true)
+  uploadedAt   DateTime @default(now())
+  // 08.09 Rule 016: "Documents Support Expiration Metadata" — a real,
+  // Frozen rule ADR-026 itself already deferred by number, but with no
+  // elaboration beyond the title. Metadata only (21_ADRs > ADR-046) — a
+  // per-version date is stored and returned; nothing auto-archives or
+  // enforces it, since no source rule specifies what expiry should DO
+  // (the same reason Recovery Mode auto-expiry stays unwired). Lives on
+  // `DocumentVersion`, not `Document`, since a re-upload (e.g. a renewed
+  // insurance policy) naturally carries its own new expiry.
+  expiresAt DateTime?
+
+  references DocumentReference[]
+  downloads  DocumentDownload[]
+
+  @@unique([documentId, versionNumber])
+  @@index([documentId])
+  @@map("document_versions")
+}
+
+// 08.09 Rule 021/022: a reference pins to an exact DocumentVersion (not just a Document), so a historical reference stays reproducible even after later versions are uploaded.
+model DocumentReference {
+  id                String                      @id @default(cuid())
+  documentVersionId String
+  documentVersion   DocumentVersion             @relation(fields: [documentVersionId], references: [id])
+  entityType        DocumentReferenceEntityType
+  entityId          String
+  createdAt         DateTime                    @default(now())
+
+  @@index([entityType, entityId])
+  @@index([documentVersionId])
+  @@map("document_references")
+}
+
+// 08.09 Rule 017: download history is preserved, never overwritten.
+model DocumentDownload {
+  id                String          @id @default(cuid())
+  documentVersionId String
+  documentVersion   DocumentVersion @relation(fields: [documentVersionId], references: [id])
+  downloadedById    String
+  downloadedBy      Person          @relation("DocumentDownloadedBy", fields: [downloadedById], references: [id])
+  downloadedAt      DateTime        @default(now())
+
+  @@index([documentVersionId])
+  @@map("document_downloads")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (13_Notification_Architecture v2.0, Frozen — the primary
+// spec here, unlike Governance/Cases/Documents which had no prior v2.0
+// doc; reconciled against the v1.0 package's 10.09.01_Notification_And_
+// Communication, 08.10_Notification_API, 10.04.07_Audit_Notifications —
+// see 21_ADRs > ADR-027).
+//
+// Source-doc reconciliation notes:
+//  - NotificationCategory: 08.10's 5-value FINANCIAL/GOVERNANCE/CASE/
+//    DOCUMENT/SYSTEM list is narrower than 13_Notification's own 11-value
+//    Categories list (Building/Finance/Membership/Ownership/Governance/
+//    Community/Security/System/Gamification/AI/Marketing). Rather than
+//    picking one source wholesale, this keeps the subset of 13_
+//    Notification's list that a real domain event already exists for
+//    today (Finance, Governance, Case, Document, plus Membership for
+//    Building/Membership events, plus System) and defers the rest
+//    (Ownership, Security, Gamification, AI, Marketing) until their own
+//    domains/events exist — same "don't build for events that can't fire
+//    yet" discipline as every prior MVP domain.
+//  - NotificationChannel: 13_Notification's own "Supported Channels" list
+//    (Push, In-App, SMS, Email — 4) is the Frozen decision and is
+//    authoritative per the project's standing rule that pre-existing
+//    Frozen v2.0 decisions win over the v1.0 package — used here even
+//    though 08.10's own Rule 004 lists only 3 (omits SMS).
+//  - NotificationDeliveryStatus: 08.10 Rule 006 (PENDING/SENT/DELIVERED/
+//    FAILED, 4 values) is a superset of 10.04.07's list (PENDING/SENT/
+//    FAILED, 3 values, no DELIVERED) — not a real conflict, just adopts
+//    the more complete list.
+//  - NotificationPreference fields: 08.10's Notification Preference model
+//    has in_app_enabled/push_enabled/email_enabled (no sms) while 10.04.07
+//    has push_enabled/email_enabled/sms_enabled (no in_app) — genuinely
+//    disagree with each other. Resolved by taking the union of both
+//    (inAppEnabled + pushEnabled + emailEnabled + smsEnabled), plus
+//    marketingEnabled per 13_Notification's "Marketing (Opt-in only)"
+//    category. Per-category preference toggles and Quiet Hours (also
+//    named in 13_Notification) are deferred — channel-level toggles only
+//    for this MVP.
+//
+// Deliberate MVP scope decisions (documented in ADR-027, not silent):
+//  - No real Push/Email/SMS provider is wired up (Firebase Cloud
+//    Messaging is a planned tech addition, not yet installed) — non-in-app
+//    channels are dispatched via a `Logger` stub and immediately marked
+//    SENT, the same "model the real shape, stub the missing
+//    infrastructure" pattern used for OTP delivery and Documents' file
+//    storage. DELIVERED is never reached without a real provider
+//    confirming receipt — that's an honest reflection of reality, not a
+//    bug.
+//  - No real async queue (BullMQ/Redis) processes notifications — `@nestjs/
+//    bullmq` and `bullmq` are already project dependencies (added early,
+//    never wired to anything) but this sandbox cannot install/verify them
+//    and no other domain has built real queue infrastructure yet either.
+//    `notify()` runs synchronously inside the same event-listener call
+//    that reacts to the originating domain event; the schema (PENDING/
+//    SENT/DELIVERED/FAILED) already models what an async queue would
+//    produce, so wiring a real worker later needs no schema change.
+//  - NotificationTemplate (21_ADRs > ADR-060, added Sprint 23): 08.10 Rules
+//    011/012's template+variable engine (id/code/title_template/
+//    body_template/is_active, "Template Variables Supported" —
+//    {{building_name}}/{{amount}}/{{due_date}}) is now a real, staff-
+//    managed model + `{{key}}` rendering utility, closing the gap this
+//    original comment flagged. `NotificationEventListener`'s 24 existing
+//    hardcoded-string handlers are deliberately NOT rewired to consume it
+//    this sprint — see ADR-060 Decision/Future Review for why that's a
+//    separate, later step, not an oversight.
+//  - "System-critical notifications cannot be disabled" (13_Notification
+//    > User Preferences) is implemented as: CRITICAL-priority
+//    notifications bypass every per-channel preference check. No event
+//    wired this sprint actually uses CRITICAL yet (it's schema-ready for
+//    a future Emergency Announcement feature).
+// ---------------------------------------------------------------------------
+
+enum NotificationCategory {
+  FINANCIAL
+  GOVERNANCE
+  CASE
+  DOCUMENT
+  MEMBERSHIP
+  SYSTEM
+  // Added in ADR-028 (Gamification MVP) — the "only categories with a real
+  // event source today were added" rule from ADR-027 now applies in
+  // Gamification's favor: XpAwarded/AchievementUnlocked/LeagueTierChanged
+  // are real event sources as of this sprint.
+  GAMIFICATION
+  // Added in ADR-029 (BackOffice MVP) — BuildingVerificationDecided /
+  // ManagerVerificationDecided replace the old ManagerVerified event this
+  // category's predecessor notification used, plus cover the previously-
+  // unnotified building-verification outcome.
+  VERIFICATION
+  // Added in ADR-030 (Marketplace Foundation) — ServiceProviderDecided is a
+  // real event source: a submitter learns whether their listing was
+  // approved or rejected.
+  MARKETPLACE
+  // Added in ADR-031 (Fraud & Abuse Center) — FraudCaseDecided (a reporter
+  // learns their report's outcome) and EnforcementActionIssued (a target
+  // Person is told their account/building/manager claim was restricted,
+  // per 07.03 Rule 019's appeal right — they can't appeal what they were
+  // never told about).
+  FRAUD
+  // Added in ADR-032 (Support & Operations Center) — SupportCaseResolved
+  // is a real event source: a ticket's creator learns staff resolved it.
+  SUPPORT
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum NotificationChannel {
+  IN_APP
+  PUSH
+  EMAIL
+  SMS
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  DELIVERED
+  FAILED
+}
+
+model Notification {
+  id            String               @id @default(cuid())
+  recipientId   String
+  recipient     Person               @relation("NotificationRecipient", fields: [recipientId], references: [id])
+  buildingId    String?
+  building      Building?            @relation(fields: [buildingId], references: [id])
+  category      NotificationCategory
+  priority      NotificationPriority @default(NORMAL)
+  title         String
+  body          String
+  // Generic pointer, no FK — same polymorphic-reference decision as
+  // ADR-026's DocumentReference, for the same reason (a notification can
+  // point at a Vote/ChargeBatch/Payment/Case/Document/Building without
+  // this module importing every domain module).
+  referenceType String?
+  referenceId   String?
+  // The domain event name that produced this notification (e.g.
+  // "PaymentApproved") — 08.10 Rule 021's "Notification Snapshot Must Be
+  // Preserved" traceability, and useful for debugging the event pipeline.
+  sourceEvent   String?
+  createdAt     DateTime             @default(now())
+  readAt        DateTime?
+  archivedAt    DateTime?
+
+  deliveries NotificationDelivery[]
+
+  @@index([recipientId])
+  @@index([recipientId, readAt])
+  @@index([buildingId])
+  @@map("notifications")
+}
+
+model NotificationDelivery {
+  id             String                     @id @default(cuid())
+  notificationId String
+  notification   Notification               @relation(fields: [notificationId], references: [id])
+  channel        NotificationChannel
+  status         NotificationDeliveryStatus @default(PENDING)
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  failureReason  String?
+  createdAt      DateTime                   @default(now())
+
+  @@index([notificationId])
+  @@map("notification_deliveries")
+}
+
+model NotificationPreference {
+  id               String   @id @default(cuid())
+  personId         String   @unique
+  person           Person   @relation("NotificationPreferenceOwner", fields: [personId], references: [id])
+  inAppEnabled     Boolean  @default(true)
+  pushEnabled      Boolean  @default(true)
+  emailEnabled     Boolean  @default(true)
+  smsEnabled       Boolean  @default(false)
+  marketingEnabled Boolean  @default(false)
+  updatedAt        DateTime @updatedAt
+
+  @@map("notification_preferences")
+}
+
+// 21_ADRs > ADR-060 — 08.10_Notification_API_v1.0 Rule 011 ("Notification
+// Templates Supported") / Rule 012 ("Template Variables Supported")'s own
+// field list (id/code/title_template/body_template/is_active), plus
+// 13_Notification_Architecture_v2.0's Frozen "No hardcoded user-visible
+// text. Dynamic placeholders are localized." principle. `code` is the
+// stable lookup key (e.g. a domain event name or business concept, no
+// format mandated by any source doc); `titleTemplate`/`bodyTemplate` use
+// literal `{{variable_name}}` placeholders, rendered by
+// `NotificationPolicy.renderTemplate`. Deliberately NOT yet consumed by
+// `NotificationEventListener`'s existing 24 hardcoded handlers — see
+// ADR-060 Decision for why that's a separate, later step.
+model NotificationTemplate {
+  id            String   @id @default(cuid())
+  code          String   @unique
+  titleTemplate String
+  bodyTemplate  String
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("notification_templates")
+}
+
+// ---------------------------------------------------------------------------
+// Gamification (15_Gamification_v2.0 — Frozen; see 21_ADRs > ADR-028).
+//
+// Unlike every prior domain in this reconciliation series, no v1.0-package
+// doc exists for Gamification at all — confirmed by the user 2026-07-09
+// (see 19_Current_Sprint). Built directly from the Frozen v2.0 doc alone,
+// with no cross-doc conflict to resolve — a first for this ADR series.
+//
+// 15_Gamification_v2.0 names nine pillars (XP, Achievements, Building
+// Score, League, Reputation, Daily Missions, Seasonal Events, Rewards,
+// Analytics). This MVP ships three: XP Engine, Achievements, Building
+// Score/League. Deliberately deferred (see ADR-028 Decision/Future
+// Review for the full rationale on each):
+//  - Reputation as its own signal set — folds into XP for this MVP; a
+//    real Reputation score needs the Anti-Abuse review queue this doc
+//    itself requires ("Abuse reports reduce reputation"), which belongs
+//    in BackOffice (not yet built — see 19_Current_Sprint Planned Next).
+//  - Daily Missions, Seasonal Events — both need a scheduler (BullMQ is
+//    an unused dependency, same gap already noted for Governance's
+//    auto-transitions and Cases' SLA tracking).
+//  - Rewards beyond XP + Achievement badges (Premium Trial, Partner
+//    Benefits) — depend on Monetization enforcement, which no domain
+//    currently implements (same gap noted in Documents'/ADR-026 Future
+//    Review).
+//  - Analytics dashboard (DAU, XP Distribution, Retention, etc.) — the
+//    underlying event data is now being recorded (XpTransaction,
+//    BuildingScoreEvent are append-only, analyzable), but no reporting
+//    layer/dashboard exists yet in any domain.
+//
+// Building Score here is a simple additive point-per-contributing-event
+// counter (see `xp-catalog.ts`'s `buildingScoreDelta`), NOT the full
+// weighted formula across 8 factors (Payment Rate, Participation,
+// Completed Profiles, Maintenance, Financial Health, Response Time,
+// Verified Owners, Community Activity) the Frozen doc describes — that
+// formula needs aggregate reporting queries across Finance/Governance/
+// Documents that don't exist yet. An honest MVP simplification, not a
+// bug — see ADR-028 Decision point 5.
+//
+// Three pre-existing event payloads were enriched this sprint so XP can
+// be attributed to the right person (previously missing, and previously
+// documented as a broadcast-fallback trade-off in ADR-027): BallotCast
+// Event.voterPersonId, PaymentApprovedEvent.payerId, CaseStatusChanged
+// Event.actorPersonId. All three are additive (new constructor params),
+// no existing reader of these events was broken. See ADR-028 Decision
+// point 3.
+//
+// This module also completes 15_Gamification's own "Business Event ->
+// Gamification Event -> XP Engine -> Achievement Engine -> League Engine
+// -> Notification -> Analytics" pipeline end-to-end: GamificationModule
+// listens to Building/Auth/Finance/Governance/Cases events (only imports
+// BuildingModule, exactly like NotificationEventListener) and in turn
+// EMITS its own events (XpAwarded/AchievementUnlocked/LeagueTierChanged)
+// that NotificationEventListener now also reacts to — see ADR-028
+// Decision point 8 and the `GAMIFICATION` NotificationCategory value
+// added above.
+// ---------------------------------------------------------------------------
+
+enum XpReason {
+  PROFILE_CREATED
+  BUILDING_SETUP_COMPLETED
+  CHARGE_PAID
+  VOTE_PARTICIPATED
+  CASE_RESOLVED
+  // 21_ADRs > ADR-041 — the clawback counterpart to CHARGE_PAID, recorded
+  // as its own negative-amount XpTransaction when a payment that already
+  // earned XP is later reversed or fully refunded. Never overwrites/
+  // deletes the original CHARGE_PAID row (append-only ledger convention).
+  CHARGE_PAID_REVERSED
+}
+
+enum AchievementCode {
+  FIRST_STEPS
+  BUILDING_FOUNDER
+  FIRST_PAYMENT
+  FIRST_VOTE
+  COMMUNITY_HELPER
+}
+
+enum LeagueTier {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
+  DIAMOND
+}
+
+// Append-only XP ledger — one row per award, never edited/deleted (same
+// "audit trail, not a mutable counter" pattern as LedgerEntry).
+// `Person.xpBalance` is the denormalized running total, kept in sync by
+// `GamificationRepository.awardXp` inside a single transaction — the
+// same "cache kept in sync by convention, not a DB constraint" trade-off
+// already accepted for `Fund.balance` (ADR-023).
+model XpTransaction {
+  id          String    @id @default(cuid())
+  personId    String
+  person      Person    @relation("XpTransactionPerson", fields: [personId], references: [id])
+  buildingId  String?
+  building    Building? @relation(fields: [buildingId], references: [id])
+  reason      XpReason
+  amount      Int
+  sourceEvent String?
+  // 21_ADRs > ADR-041 — polymorphic non-FK reference (same pattern as
+  // `DocumentReference` / `Notification.referenceType`/`referenceId`),
+  // added so a specific award (e.g. CHARGE_PAID for one Payment) can be
+  // found again later for clawback. Nullable/optional — only reasons that
+  // need a reversal path populate it; the other four XpReason values
+  // never set these two fields.
+  referenceType String?
+  referenceId   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([personId])
+  @@index([personId, reason])
+  @@index([referenceType, referenceId])
+  @@map("xp_transactions")
+}
+
+// Real rows, seeded via `prisma/seed.ts` (same "seed, don't hardcode"
+// choice as the rest of this schema) — `xpBonus` lets an achievement
+// grant bonus XP on top of whatever XpTransaction unlocked it (0 for all
+// five MVP achievements below; reserved for future tuning per 15_
+// Gamification's "XP values remain configurable").
+model AchievementDefinition {
+  id          String          @id @default(cuid())
+  code        AchievementCode @unique
+  title       String
+  description String
+  xpBonus     Int             @default(0)
+  createdAt   DateTime        @default(now())
+
+  unlocks PersonAchievement[]
+
+  @@map("achievement_definitions")
+}
+
+// Achievements are permanent (15_Gamification's own wording) — unlocked
+// once via the `@@unique([personId, definitionId])` constraint, never
+// revoked. `buildingId` is optional context (which building triggered
+// the unlock), not a scoping key — achievements belong to the person.
+model PersonAchievement {
+  id           String                @id @default(cuid())
+  personId     String
+  person       Person                @relation("PersonAchievementOwner", fields: [personId], references: [id])
+  definitionId String
+  definition   AchievementDefinition @relation(fields: [definitionId], references: [id])
+  buildingId   String?
+  building     Building?             @relation(fields: [buildingId], references: [id])
+  unlockedAt   DateTime              @default(now())
+
+  @@unique([personId, definitionId])
+  @@index([personId])
+  @@map("person_achievements")
+}
+
+// One row per building — `score`/`leagueTier` are the current state,
+// `BuildingScoreEvent` below is the append-only history explaining how
+// it got there (mirrors the XpTransaction/Person.xpBalance ledger/cache
+// split above).
+model BuildingScore {
+  id         String     @id @default(cuid())
+  buildingId String     @unique
+  building   Building   @relation(fields: [buildingId], references: [id])
+  score      Int        @default(0)
+  leagueTier LeagueTier @default(BRONZE)
+  updatedAt  DateTime   @updatedAt
+
+  history BuildingScoreEvent[]
+
+  @@map("building_scores")
+}
+
+model BuildingScoreEvent {
+  id              String        @id @default(cuid())
+  buildingScoreId String
+  buildingScore   BuildingScore @relation(fields: [buildingScoreId], references: [id])
+  delta           Int
+  reason          String
+  sourceEvent     String?
+  previousTier    LeagueTier
+  newTier         LeagueTier
+  createdAt       DateTime      @default(now())
+
+  @@index([buildingScoreId])
+  @@map("building_score_events")
+}
+
+// ---------------------------------------------------------------------------
+// BackOffice — Building & Manager Verification Queues (07_BackOffice_v2.0 —
+// Frozen; see 21_ADRs > ADR-029). Closes the `verifyManager` MVP placeholder
+// flagged in ADR-022/ADR-024's own Future Review sections since Sprint 3.9.
+//
+// Scope for this sprint (07_BackOffice_v2.0 names nine core modules —
+// Dashboard, Building Verification, Manager Verification, Fraud & Abuse,
+// Subscription Center, Support Center, Audit Center, Analytics, Feature
+// Flags): only Building Verification + Manager Verification are built here,
+// plus a minimal read endpoint over the Audit Log that already exists
+// (`AuditLog`, since ADR-022) — Fraud & Abuse, Subscription, Support, and a
+// dedicated Audit/Compliance UI are deferred to future ADRs, the same
+// "split a bundled roadmap item into sequential ADRs" pattern ADR-025 used
+// for Cases/Documents/Notifications. See ADR-029 Decision point 10 and
+// Future Review for the explicit split rationale.
+//
+// Reconciliation notes (v1.0 package `07.01_Building_Verification_Queue`,
+// `07.02_Manager_Verification_Queue`, `06.03_Manager_Verification_Flow`):
+//  - `BuildingStatus` (already Frozen-authored, pre-dating this reconciliation
+//    series — see ADR-021) is REUSED directly as both `Building.status` and
+//    `BuildingVerificationCase.status` instead of introducing a parallel,
+//    near-identical enum — `VERIFIED`/`REJECTED` already match 07.01 Rule
+//    010's final-status vocabulary; `PENDING_INFORMATION` was the one
+//    missing value, added above. 07.01 Rule 003's automated routing outcome
+//    (`AUTO_APPROVED`/`REVIEW_REQUIRED`) is a transient decision, not a
+//    persisted status — `AUTO_APPROVED` folds directly into `VERIFIED`.
+//  - "Admin Review" (07.02 Rule 002) vs "Admin Approval" (06.03 Rule 015) —
+//    two source docs name the same verification-source concept differently;
+//    `ADMIN_REVIEW` was kept (07.02 is the more schema/API-adjacent doc,
+//    same "prefer the concrete doc" precedent as every prior ADR).
+//  - "Multiple Active Manager Claims" (06.03 Rule 004, 07.02 Rule 004/005)
+//    is structurally impossible in this codebase already —
+//    `ManagerAssignmentPolicy.assertNoActiveManager` (ADR-022) has refused a
+//    second concurrent MANAGER membership since Sprint 3.9 — so no
+//    priority-escalation mechanism for that scenario was built; documenting
+//    this rather than adding a redundant guard for an unreachable state.
+//  - Risk scoring (07.01 Rule 002) is real but narrow for this MVP: the only
+//    computable-today signal is a same-street/different-postal-code address
+//    match (see `BuildingRepository.findSimilarAddressBuildings`) — "Known
+//    Fraud Patterns" and "Abnormal Registration Activity" both need the
+//    (deferred) Fraud & Abuse Center, not fabricated here.
+//  - Platform staff (`PlatformStaff`/`PlatformStaffRole`) is a NEW identity
+//    concept — nothing in this codebase modeled "platform operator" before
+//    this ADR (only building-scoped `Membership`). Deliberately collapsed to
+//    3 roles (REVIEWER/SENIOR_REVIEWER/PLATFORM_ADMIN) from the much longer
+//    list `07_BackOffice_v2.0`'s own Permissions section names (Support
+//    Agent, Moderator, Fraud Analyst, Finance Operator, Platform
+//    Administrator, System Administrator) — most of those only matter once
+//    Fraud/Subscription/Support ship. No self-service staff signup exists;
+//    `PlatformStaff` rows are seeded (`prisma/seed.ts`), matching this
+//    sprint's "no BackOffice admin UI yet" scope.
+// ---------------------------------------------------------------------------
+
+enum VerificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum BuildingVerificationDecision {
+  APPROVE
+  REJECT
+  REQUEST_INFORMATION
+}
+
+// 07.01 Rule 020: case history is never deleted. Appeals (Rule 014/015)
+// create a NEW case linked via `previousCaseId` rather than reopening the
+// old one — the old case's own decision stays exactly as it was decided.
+model BuildingVerificationCase {
+  id             String                        @id @default(cuid())
+  buildingId     String
+  building       Building                      @relation(fields: [buildingId], references: [id])
+  status         BuildingStatus
+  priority       VerificationPriority           @default(NORMAL)
+  riskScore      Int                            @default(0)
+  riskFlags      String[]                       @default([])
+  isAppeal       Boolean                        @default(false)
+  previousCaseId String?
+  previousCase   BuildingVerificationCase?      @relation("BuildingVerificationAppeal", fields: [previousCaseId], references: [id])
+  appeals        BuildingVerificationCase[]     @relation("BuildingVerificationAppeal")
+  assignedToId   String?
+  assignedTo     Person?                        @relation("BVCAssignee", fields: [assignedToId], references: [id])
+  reviewedById   String?
+  reviewedBy     Person?                        @relation("BVCReviewer", fields: [reviewedById], references: [id])
+  decision       BuildingVerificationDecision?
+  reason         String?
+  decidedAt      DateTime?
+  createdAt      DateTime                       @default(now())
+  updatedAt      DateTime                       @updatedAt
+
+  @@index([buildingId])
+  @@index([status, priority])
+  @@map("building_verification_cases")
+}
+
+enum ManagerVerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
+// 06.03 Rule 002/015, 07.02 Rule 002: how a PROVISIONAL manager became
+// VERIFIED. ELECTION/RECOVERY_APPOINTMENT are recorded here for
+// completeness but are not actually produced by THIS module — an elected
+// manager (Governance/ADR-024) and a BackOffice-appointed manager
+// (`ManagerAssignmentType.ELECTED`/`BACKOFFICE_ASSIGNED`) already go
+// straight to `VERIFIED` via `BuildingRepository.changeManager`, since the
+// assignment itself already IS the verification (see schema note on
+// `ManagerAssignmentType`). Only a bare `PROVISIONAL` self-claim needs the
+// case-based flow this module builds.
+enum ManagerVerificationSource {
+  OWNER_APPROVAL
+  ADMIN_REVIEW
+  ELECTION
+  RECOVERY_APPOINTMENT
+}
+
+enum ManagerVerificationDecision {
+  APPROVE
+  REJECT
+  SUSPEND
+  // 21_ADRs > ADR-040 — 07_BackOffice_v2.0 names "Approve, Reject, Suspend,
+  // Restore" as the Manager Verification module's four staff actions, but
+  // only three existed until now (surfaced as a disclosed gap in ADR-038
+  // while building VerifiedRolesGuard). Distinct from APPROVE — both
+  // produce `status: VERIFIED`, but `decision` exists specifically so an
+  // audit reader doesn't have to reverse-engineer which staff action
+  // actually happened (see this enum's sibling field's own doc comment).
+  RESTORE
+}
+
+// 07.02 Rule 001: every manager verification creates a case. One building
+// can have multiple cases over a manager's lifetime (initial verification,
+// later reverification per 06.03 Rule 006) — never overwritten, matching
+// the row-history convention used everywhere else in this schema.
+model ManagerVerificationCase {
+  id                      String                      @id @default(cuid())
+  buildingId              String
+  building                Building                    @relation(fields: [buildingId], references: [id])
+  membershipId            String
+  membership              Membership                  @relation(fields: [membershipId], references: [id])
+  candidateId             String
+  candidate               Person                      @relation("MVCCandidate", fields: [candidateId], references: [id])
+  status                  ManagerVerificationStatus   @default(PENDING)
+  verificationSource      ManagerVerificationSource?
+  // The explicit staff/owner-approval action that produced `status` — kept
+  // alongside `status` (not inferred from it) for the same reason
+  // `BuildingVerificationCase.decision` exists next to its own `status`: an
+  // API client/audit reader shouldn't have to reverse-engineer "REJECTED
+  // means someone chose REJECT" from a status enum that also holds
+  // non-decision values like PENDING.
+  decision                ManagerVerificationDecision?
+  priority                VerificationPriority         @default(NORMAL)
+  // 06.03 Rule 002 — the % of current owners whose approval verifies the
+  // manager. A field, not a hardcoded constant, per 15_Gamification-style
+  // "values remain configurable" precedent, even though nothing sets it to
+  // anything but the default 30 today.
+  requiredApprovalPercent Int                          @default(30)
+  isReverification        Boolean                      @default(false)
+  reviewedById            String?
+  reviewedBy              Person?                      @relation("MVCReviewer", fields: [reviewedById], references: [id])
+  reason                  String?
+  decidedAt               DateTime?
+  createdAt               DateTime                     @default(now())
+  updatedAt               DateTime                     @updatedAt
+
+  approvals ManagerVerificationApproval[]
+
+  @@index([buildingId])
+  @@index([membershipId])
+  @@index([status, priority])
+  @@map("manager_verification_cases")
+}
+
+// Append-only — one row per owner who approved, ever (06.03 Rule 002's
+// accumulating 30% threshold). `@@unique` prevents the same owner
+// double-counting toward the percentage.
+model ManagerVerificationApproval {
+  id            String                  @id @default(cuid())
+  caseId        String
+  case          ManagerVerificationCase @relation(fields: [caseId], references: [id])
+  ownerPersonId String
+  ownerPerson   Person                  @relation(fields: [ownerPersonId], references: [id])
+  approvedAt    DateTime                @default(now())
+
+  @@unique([caseId, ownerPersonId])
+  @@map("manager_verification_approvals")
+}
+
+enum PlatformStaffRole {
+  REVIEWER
+  SENIOR_REVIEWER
+  PLATFORM_ADMIN
+}
+
+// Global, not building-scoped — deliberately NOT modeled as a `Membership`
+// row (that model is building-scoped by design; platform staff review
+// buildings/managers they are never a member of). Seeded, not self-service
+// — see this section's header comment.
+model PlatformStaff {
+  id        String            @id @default(cuid())
+  personId  String            @unique
+  person    Person            @relation(fields: [personId], references: [id])
+  role      PlatformStaffRole
+  isActive  Boolean           @default(true)
+  createdAt DateTime          @default(now())
+
+  @@map("platform_staff")
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace Foundation (21_ADRs > ADR-030)
+//
+// Unlike every prior domain in this reconciliation series, NO document —
+// neither a Frozen v2.0 doc nor the v1.0 package — defines any concrete
+// rule, schema, or API for Marketplace. Every mention across both packages
+// is one of: a "Reserved ID" (FD-100), an "Excluded from MVP" / "Deferred
+// to V2" list entry, or a one-line "Future Modules"/"Future Expansion"
+// mention (see 21_ADRs > ADR-030 Context for the full list). `01_Executive
+// _Summary` and both MVP Scope documents (v1.0's 09.03, v2.0's 02) each
+// explicitly exclude Marketplace from MVP scope; "Escrow Transactions" is
+// separately, explicitly excluded (09.01_Project_Overview). This section
+// is therefore intentionally the thinnest possible scaffold, not a real
+// transactional marketplace:
+//  - No booking/hiring flow, no payment, no commission, no escrow — every
+//    one of those needs rules this project has never written down, and
+//    "Marketplace Commission" is itself named as a FUTURE revenue source
+//    (16_Monetization), implying the transaction mechanics are deliberately
+//    not built yet, not merely deferred by omission.
+//  - No ratings/reviews — unspecified anywhere, not invented here.
+//  - What IS built: a moderated directory. Any authenticated Person can
+//    submit a `ServiceProvider` listing (name/category/contact info); it
+//    starts `PENDING` and is invisible to everyone but its submitter until
+//    a platform staff member reviews it — directly realizing "Marketplace
+//    Moderation," the one item BackOffice's own Future Modules list already
+//    named (07_BackOffice_v2.0), using the `PlatformStaff`/`PlatformRolesGuard`
+//    infrastructure ADR-029 just built rather than inventing a second
+//    moderation mechanism.
+//  - Listings are platform-wide, not building-scoped (no `buildingId` FK)
+//    — every source mention frames Marketplace at the platform level
+//    ("Future Expansion", not a per-building feature), and the only
+//    prior cross-building-visible data this codebase has is Gamification's
+//    leaderboard (ADR-028 point 8), which this follows the same precedent
+//    of.
+//  - `ServiceProviderCategory`'s four values (MAINTENANCE/PROFESSIONAL
+//    _MANAGEMENT/INSURANCE/OTHER) are assembled from the only category-like
+//    nouns that appear anywhere across every scattered mention ("Maintenance
+//    Marketplace", "Building Service Marketplace", "Professional Management
+//    Services", "Insurance Partnerships") — this is explicitly a starting
+//    placeholder assembled from fragments, not a list transcribed from any
+//    single authoritative source, and should be revisited the moment a real
+//    Marketplace spec is written.
+model ServiceProvider {
+  id            String                  @id @default(cuid())
+  name          String
+  category      ServiceProviderCategory
+  description   String?
+  contactPhone  String?
+  contactEmail  String?
+  city          String?
+  status        ServiceProviderStatus   @default(PENDING)
+  isActive      Boolean                 @default(true)
+  submittedById String
+  submittedBy   Person                  @relation("ServiceProviderSubmittedBy", fields: [submittedById], references: [id])
+  reviewedById  String?
+  reviewedBy    Person?                 @relation("ServiceProviderReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt    DateTime?
+  reason        String?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  @@index([status, category])
+  @@map("service_providers")
+}
+
+enum ServiceProviderCategory {
+  MAINTENANCE
+  PROFESSIONAL_MANAGEMENT
+  INSURANCE
+  OTHER
+}
+
+enum ServiceProviderStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// ---------------------------------------------------------------------------
+// Fraud & Abuse Center (07.03_Fraud_And_Abuse_Center_v1.0 — Frozen; see
+// 21_ADRs > ADR-031)
+//
+// Unlike Marketplace (ADR-030), this domain has a real, Frozen, rule-
+// numbered source document (20 rules) — comparable to what Building/Manager
+// Verification had before ADR-029 concretized them. What it does NOT have
+// is any numeric scoring formula, API contract, or field-level schema (no
+// "07.03-adjacent" companion doc the way 07.01/07.02 had) — this section
+// is this reconciliation's own translation of that rule set into a schema,
+// same as ADR-029 did for 07.01/07.02. Deliberately out of scope for this
+// MVP (see ADR-031 Decision for the full list): the actual automatic
+// signal-detection engine behind Rule 001 (Multiple Manager Claims / Mass
+// Registrations / Suspicious Building Creation / Excessive Appeals /
+// Abnormal Activity all stay staff/system-triggered by hand, not auto-
+// computed — the same "one real heuristic, not a full fraud-signal set"
+// posture ADR-029 took for Building Verification's risk score); Rule 006's
+// case-linking graph (User/Building/Address/Related Activity); Rule 012's
+// Reporter Credibility tracking; Rule 020's analytics (Fraud Rate, False
+// Report Rate, Average Investigation Time). Role vocabulary reuses the
+// existing `PlatformStaff`/`PlatformRolesGuard` (REVIEWER/SENIOR_REVIEWER/
+// PLATFORM_ADMIN) rather than 07.03's own actor list (BackOffice Agent,
+// Investigator, Senior Reviewer, Operations Lead) or 07_BackOffice_v2.0's
+// separately-invented role list (which adds "Fraud Analyst") — the same
+// contradiction-resolution ADR-029 already applied to nine other source
+// documents; see ADR-031 Context for the full accounting.
+// ---------------------------------------------------------------------------
+
+enum FraudCaseStatus {
+  OPEN
+  UNDER_INVESTIGATION
+  CONFIRMED
+  DISMISSED
+}
+
+enum FraudCaseSource {
+  SYSTEM_SIGNAL
+  USER_REPORT
+}
+
+// 07.03 Rule 001's five named signal examples, plus OTHER for a user
+// report or a staff-opened case that doesn't fit any of them.
+enum FraudSignalType {
+  MULTIPLE_MANAGER_CLAIMS
+  MASS_REGISTRATIONS
+  SUSPICIOUS_BUILDING_CREATION
+  EXCESSIVE_APPEALS
+  ABNORMAL_ACTIVITY
+  OTHER
+}
+
+// 07.03 Rule 014, in ascending severity order (informal — not enforced by
+// the schema itself, see ADR-031 Decision on role-gating by type).
+enum EnforcementActionType {
+  WARNING
+  TEMPORARY_RESTRICTION
+  VERIFICATION_REVOCATION
+  ACCOUNT_SUSPENSION
+}
+
+// 07.03 Rule 017 — "Manager Claim" maps to this codebase's `Membership`
+// row (there is no separate "claim" entity; a PROVISIONAL/VERIFIED
+// Membership already IS the claim).
+enum EnforcementTargetType {
+  PERSON
+  BUILDING
+  MANAGER_CLAIM
+}
+
+enum EnforcementAppealStatus {
+  NONE
+  PENDING
+  UPHELD
+  OVERTURNED
+}
+
+// 07.03 Rule 003/018: every signal or report creates a case; case history
+// is never deleted. Rule 016 (Reopen) follows the same "new row, linked
+// via `previousCaseId`, never mutate the old one" convention already used
+// by `BuildingVerificationCase` appeals (ADR-029) rather than reopening a
+// CONFIRMED/DISMISSED row in place.
+model FraudCase {
+  id               String                @id @default(cuid())
+  status           FraudCaseStatus       @default(OPEN)
+  priority         VerificationPriority  @default(NORMAL)
+  source           FraudCaseSource
+  signalType       FraudSignalType?
+  reportedById     String?
+  reportedBy       Person?               @relation("FraudCaseReportedBy", fields: [reportedById], references: [id])
+  targetPersonId   String?
+  targetPerson     Person?               @relation("FraudCaseTargetPerson", fields: [targetPersonId], references: [id])
+  targetBuildingId String?
+  targetBuilding   Building?             @relation(fields: [targetBuildingId], references: [id])
+  description      String?
+  // Rule 005 "Evidence Aggregation" — free-text notes an investigator
+  // accumulates during UNDER_INVESTIGATION; no structured evidence-item
+  // model this sprint (no source field list to build one against).
+  evidenceNotes    String?
+  assignedToId     String?
+  assignedTo       Person?               @relation("FraudCaseAssignee", fields: [assignedToId], references: [id])
+  reviewedById     String?
+  reviewedBy       Person?               @relation("FraudCaseReviewer", fields: [reviewedById], references: [id])
+  reason           String?
+  isReopen         Boolean               @default(false)
+  previousCaseId   String?
+  previousCase     FraudCase?            @relation("FraudCaseReopen", fields: [previousCaseId], references: [id])
+  reopenedAs       FraudCase[]           @relation("FraudCaseReopen")
+  decidedAt        DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  enforcementActions EnforcementAction[]
+
+  @@index([status, priority])
+  @@index([targetPersonId])
+  @@index([targetBuildingId])
+  @@map("fraud_cases")
+}
+
+// 07.03 Rule 013/014/017/019. Deliberately NOT its own "Appeal Case" per
+// Rule 019's literal wording — an appeal here is inline fields on the
+// same row (appealStatus/appealReason/appealDecided*), not a second
+// FraudCase-shaped entity. See ADR-031 Decision for why this simplifies
+// the letter of Rule 019 while preserving its substance (a documented,
+// staff-decided appeal outcome).
+model EnforcementAction {
+  id                 String                  @id @default(cuid())
+  fraudCaseId        String
+  fraudCase          FraudCase               @relation(fields: [fraudCaseId], references: [id])
+  type               EnforcementActionType
+  targetType         EnforcementTargetType
+  targetPersonId     String?
+  targetPerson       Person?                 @relation("EnforcementActionTargetPerson", fields: [targetPersonId], references: [id])
+  targetBuildingId   String?
+  targetBuilding     Building?               @relation(fields: [targetBuildingId], references: [id])
+  targetMembershipId String?
+  targetMembership   Membership?             @relation(fields: [targetMembershipId], references: [id])
+  reason             String?
+  issuedById         String
+  issuedBy           Person                  @relation("EnforcementActionIssuedBy", fields: [issuedById], references: [id])
+  issuedAt           DateTime                @default(now())
+  appealStatus       EnforcementAppealStatus @default(NONE)
+  appealReason       String?
+  appealedAt         DateTime?
+  appealDecidedById  String?
+  appealDecidedBy    Person?                 @relation("EnforcementActionAppealDecidedBy", fields: [appealDecidedById], references: [id])
+  appealDecidedAt    DateTime?
+
+  @@index([fraudCaseId])
+  @@index([targetPersonId])
+  @@index([targetBuildingId])
+  @@map("enforcement_actions")
+}
+
+// ---------------------------------------------------------------------------
+// Support & Operations Center (07.05_Support_And_Operations_Center_v1.0 —
+// Frozen, 20 rules; see 21_ADRs > ADR-032)
+//
+// A platform-staff ticket queue, distinct in purpose from the member-facing
+// `Case` model (Cases MVP, ADR-025 — building-scoped complaints/requests/
+// suggestions routed to a building's own Manager/Board Member/Accountant).
+// This is BackOffice-facing: any Person can report a platform-level issue
+// (Technical/Billing/Verification/Fraud/Governance/Other, Rule 002), staff
+// (`PlatformStaff`, same REVIEWER/SENIOR_REVIEWER/PLATFORM_ADMIN roles as
+// every other BackOffice sub-domain) work it. Two enums are deliberately
+// REUSED rather than duplicated: `status` reuses `CaseStatus` (OPEN/
+// IN_PROGRESS/WAITING_USER/RESOLVED/CLOSED) — 07.05 Rule 005 is, value for
+// value, identical to the vocabulary `Case` already uses (confirmed by
+// reading the shipped schema before designing this, the same discipline
+// ADR-029's own Future Review named as worth repeating); `priority` reuses
+// `VerificationPriority` (LOW/NORMAL/HIGH/CRITICAL) — identical to 07.05
+// Rule 003. Deliberately out of scope this MVP (see ADR-032 Decision for
+// the full list): SLA breach tracking (Rule 009 — no thresholds specified
+// anywhere, and no scheduler exists in this codebase to detect a breach
+// even if one were); Knowledge Base references (Rule 016 — no KB entity
+// exists anywhere in this codebase; inventing one here would be a second,
+// unrelated domain smuggled into this ADR); parent/child case hierarchies
+// (Rule 013 — `mergedIntoId` covers the practical "these are the same
+// issue" need without a full tree); metrics/dashboard (Rule 019/020, same
+// "no reporting layer exists yet" gap Gamification/Fraud's own analytics
+// already deferred).
+// ---------------------------------------------------------------------------
+
+enum SupportCaseCategory {
+  TECHNICAL
+  BILLING
+  VERIFICATION
+  FRAUD
+  GOVERNANCE
+  OTHER
+}
+
+// 07.05 Rule 015's five named examples, plus OTHER for anything else.
+enum SupportCaseResolutionCode {
+  USER_ERROR
+  CONFIGURATION_ISSUE
+  BUG_FIXED
+  DUPLICATE_REQUEST
+  NOT_REPRODUCIBLE
+  OTHER
+}
+
+model SupportCase {
+  id               String                     @id @default(cuid())
+  category         SupportCaseCategory
+  status           CaseStatus                 @default(OPEN)
+  priority         VerificationPriority        @default(NORMAL)
+  subject          String
+  description      String
+  createdById      String
+  createdBy        Person                     @relation("SupportCaseCreatedBy", fields: [createdById], references: [id])
+  assignedToId     String?
+  assignedTo       Person?                    @relation("SupportCaseAssignee", fields: [assignedToId], references: [id])
+  // 07.05 Rule 014 — polymorphic link to a Building/User/Manager/
+  // Subscription/Fraud Case; same non-FK pointer pattern as
+  // `DocumentReference`/`Notification.referenceType` (ADR-026/027) for the
+  // same reason — a support ticket can point at any domain's entity
+  // without this module importing every domain module.
+  linkedEntityType String?
+  linkedEntityId   String?
+  resolutionCode   SupportCaseResolutionCode?
+  resolution       String?
+  // 07.05 Rule 012 — "these are the same issue." A lighter-weight
+  // resolution than a full parent/child tree (Rule 013, deferred — see
+  // this section's header comment).
+  mergedIntoId     String?
+  mergedInto       SupportCase?               @relation("SupportCaseMerge", fields: [mergedIntoId], references: [id])
+  mergedCases      SupportCase[]              @relation("SupportCaseMerge")
+  resolvedAt       DateTime?
+  closedAt         DateTime?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+
+  messages SupportCaseMessage[]
+
+  @@index([status, priority])
+  @@index([createdById])
+  @@index([assignedToId])
+  @@map("support_cases")
+}
+
+// 07.05 Rule 006 (internal notes) and Rule 017/018 (preserved
+// communication history) are unified into one threaded model rather than
+// two separate mechanisms — `isInternal` distinguishes a staff-only note
+// from a message visible to the ticket's own creator. See ADR-032 Decision
+// for why Rule 011's reopen also flows through this thread (a new message,
+// not a new linked `SupportCase` row) rather than following
+// `BuildingVerificationCase`'s appeal-chain convention.
+model SupportCaseMessage {
+  id         String      @id @default(cuid())
+  caseId     String
+  case       SupportCase @relation(fields: [caseId], references: [id])
+  senderId   String
+  sender     Person      @relation("SupportCaseMessageSender", fields: [senderId], references: [id])
+  body       String
+  isInternal Boolean     @default(false)
+  createdAt  DateTime    @default(now())
+
+  @@index([caseId])
+  @@map("support_case_messages")
+}
+
+// ---------------------------------------------------------------------------
+// Subscription Management (07.04_Subscription_Management_v1.0 — Frozen, 22
+// rules — and 04.04_Subscription_Rules_v1.0 — Frozen, 13 rules; see
+// 21_ADRs > ADR-033)
+//
+// Deliberately scoped to the STAFF-FACING half only: plan/status/feature-
+// grant state management, effective-feature resolution, and audit/history
+// — NOT billing, payment collection, or actual pricing (no source document
+// anywhere in either package states a currency amount; `02_MVP_Scope_v2.0`
+// separately excludes the payment gateway from MVP). This mirrors ADR-032's
+// own Future Review finding that this half is buildable without waiting on
+// Monetization enforcement.
+//
+// Two source documents disagree on the current plan set: `07.04` Rule 002
+// says MVP plans are FREE/PRO only (BUSINESS/ENTERPRISE are "Future");
+// `04.04` Rule 11 says FREE/PRO/ENTERPRISE are all "current." `BUSINESS` is
+// a `07.04`-only placeholder with zero elaboration anywhere and is
+// deliberately NOT added. `ENTERPRISE` IS added (`04.04`'s more concrete,
+// numbered rule plus its own dedicated Enterprise Plan feature section win
+// over `07.04`'s bare "Future" label) but its named features (Custom
+// Pricing, Custom Support, Advanced Integrations, Multi-Building
+// Operations) are capability categories, not individual gateable features
+// — ENTERPRISE is tracked as a tier label this sprint, with no
+// Enterprise-exclusive entries in `SubscriptionFeatureKey`.
+//
+// `SubscriptionFeatureKey`'s 20 values are transcribed directly from
+// `04.04`'s Free/Pro feature matrix (Free-active + Free-locked/Pro-active
+// lists, deduplicated) — NOT from `16_Monetization_v2.0`'s separate
+// "editions" feature lists, which use different names (Premium, not Pro)
+// and, on at least one feature (Voting — `16_Monetization` lists it as
+// Free-included; `04.04` lists it as Pro-only/locked-in-Free), directly
+// contradict `04.04`. This ADR does not resolve that contradiction — it
+// is disclosed, not silently picked a side on, because doing so would
+// require gating a REAL feature (Governance/Voting) on an unresolved
+// conflict between two Frozen documents. Consequently: this domain's
+// `SubscriptionFeatureKey`/effective-features resolution is NOT wired
+// into any other domain's guards or controllers this sprint — it is a
+// staff-visible reference/reporting mechanism only (Rule 021/022's
+// "Outputs: Feature Access Matrix" / deterministic ALLOWED-DENIED
+// requirement), never an actual access-control gate anywhere else in this
+// codebase. See ADR-033 Decision/Future Review for the full accounting.
+//
+// `SubscriptionStatus` (ACTIVE/TRIAL/EXPIRED/CANCELLED) is `07.04` Rule
+// 005's own 4-value list, transcribed as-is — even though both source
+// documents separately describe a real "Grace Period" state (Rule 007 /
+// 04.04 Rule 8), Rule 005 never lists a 5th status for it. Grace Period is
+// therefore modeled as a `gracePeriodEndsAt` timestamp layered on top of
+// EXPIRED, not a new enum value not present in the frozen rule — the same
+// "timestamp, not a new status," choice ADR-029 made for `Building
+// .recoveryModeEnteredAt`. CANCELLED has no rule anywhere distinguishing
+// its behavior from EXPIRED (both source docs are silent on this) — it is
+// treated identically (access limited, data preserved, effective features
+// fall back to FREE) as a disclosed simplification, not a documented rule.
+// ---------------------------------------------------------------------------
+
+enum SubscriptionPlan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+// 04.04's Free/Pro feature matrix, deduplicated. See this section's header
+// comment for why 16_Monetization's own, differently-named feature lists
+// were NOT used instead.
+enum SubscriptionFeatureKey {
+  BUILDING_REGISTRATION
+  PROPERTIES
+  OWNERS
+  TENANTS
+  BASIC_CHARGES
+  BASIC_PAYMENTS
+  DEBT_VIEW
+  IN_APP_NOTIFICATIONS
+  ONLINE_PAYMENT
+  DOCUMENTS
+  VOTING
+  MEETINGS
+  REQUESTS
+  REPORTS
+  FUNDS
+  ADVANCED_ACCOUNTING
+  SMS
+  EMAIL
+  PUSH_NOTIFICATIONS
+  AUTOMATION
+}
+
+// 07.04 Rule 008's examples (Promotion/Support/Partnership) plus 04.04's
+// own Feature Grant Rules examples (Trial Extension/Beta Testing),
+// combined — the two source docs give overlapping but non-identical
+// example lists, not a single canonical enum, so both are represented.
+enum FeatureGrantType {
+  PROMOTION
+  SUPPORT
+  PARTNERSHIP
+  TRIAL_EXTENSION
+  BETA_TESTING
+  OTHER
+}
+
+// 07.04 Rule 001: subscriptions belong to a Building, never a manager or
+// account — confirmed by both source documents (04.04 Rule 1 explicitly:
+// "if the manager changes, the building's subscription is preserved").
+// One row per Building (`@@unique`), auto-created TRIAL/FREE on
+// `BuildingCreatedEvent` (04.04 Rule 7 — "every new building receives 14
+// days of Trial access") by `BackOfficeEventListener`.
+model Subscription {
+  id                  String              @id @default(cuid())
+  buildingId          String              @unique
+  building            Building            @relation(fields: [buildingId], references: [id])
+  plan                SubscriptionPlan    @default(FREE)
+  status              SubscriptionStatus  @default(TRIAL)
+  // 04.04 Rule 7 (14 days, stated as a direct rule) is treated as
+  // canonical over 07.04 Rule 012's "14 or 30 days, as examples" framing
+  // — see this section's header comment.
+  trialEndsAt         DateTime?
+  // 07.04 Rule 013 ("One Trial Per Building") — prevents a re-trial after
+  // a building's first trial ends, even once its status moves elsewhere.
+  trialUsed           Boolean             @default(false)
+  // Neither source document commits to one canonical grace-period length
+  // (07.04 Rule 007 gives "7 or 15 days" as examples; 04.04 Rule 8 gives
+  // "7 days") — a configurable field with a default, not a hardcoded
+  // constant, same "values remain configurable" precedent as
+  // `ManagerVerificationCase.requiredApprovalPercent` (ADR-029).
+  gracePeriodDays     Int                 @default(7)
+  currentPeriodEndsAt DateTime?
+  gracePeriodEndsAt   DateTime?
+  cancelledAt         DateTime?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  featureGrants FeatureGrant[]
+  changeLogs    SubscriptionChangeLog[]
+
+  @@map("subscriptions")
+}
+
+// 07.04 Rule 008/009/017 — a Feature Grant overrides the plan's own
+// feature matrix for as long as it's active (not expired, not revoked).
+// 04.04's Feature Grant Rules section additionally allows a person-level
+// (not just building-level) grant target — NOT modeled here, since
+// `Subscription` itself (07.04 Rule 001) is exclusively building-scoped
+// and there is no existing per-person subscription concept to attach a
+// person-level grant to; disclosed as a deferred gap in ADR-033 Future
+// Review, not silently dropped.
+model FeatureGrant {
+  id             String                  @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription            @relation(fields: [subscriptionId], references: [id])
+  featureKey     SubscriptionFeatureKey
+  grantType      FeatureGrantType
+  reason         String?
+  grantedById    String
+  grantedBy      Person                  @relation("FeatureGrantGrantedBy", fields: [grantedById], references: [id])
+  grantedAt      DateTime                @default(now())
+  // 07.04 Rule 017 — a Grant may expire (e.g. "30 Day Promotion").
+  // `null` means no expiry (permanent until revoked).
+  expiresAt      DateTime?
+  revokedById    String?
+  revokedBy      Person?                 @relation("FeatureGrantRevokedBy", fields: [revokedById], references: [id])
+  revokedAt      DateTime?
+
+  @@index([subscriptionId])
+  @@index([subscriptionId, featureKey])
+  @@map("feature_grants")
+}
+
+// 07.04 Rule 010 (audit: Who/When/Old Plan/New Plan), Rule 016
+// (subscription history must be preserved), and Rule 020 (changes must be
+// reversible) are all served by one append-only log: reversibility here
+// means "the full history is queryable so a wrong change can be manually
+// reverted by staff and is itself auditable" — no source rule describes
+// an automated one-click undo API, so none was built.
+model SubscriptionChangeLog {
+  id             String              @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription        @relation(fields: [subscriptionId], references: [id])
+  fromPlan       SubscriptionPlan?
+  toPlan         SubscriptionPlan?
+  fromStatus     SubscriptionStatus?
+  toStatus       SubscriptionStatus?
+  // Nullable — a system-generated transition (e.g. auto-creating the
+  // initial TRIAL subscription on building creation) has no staff actor.
+  changedById    String?
+  changedBy      Person?             @relation("SubscriptionChangeLogChangedBy", fields: [changedById], references: [id])
+  reason         String?
+  createdAt      DateTime            @default(now())
+
+  @@index([subscriptionId])
+  @@map("subscription_change_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Zero Data Loss — Draft support (14_Zero_Data_Loss)
+// Generic draft store: one row per (person, workflow), versioned via
+// `revision`. Critical workflows (e.g. Building Setup Wizard) read/write
+// through this table so progress survives crashes/offline/app restarts.
+// ---------------------------------------------------------------------------
+
+model BuildingSetupDraft {
+  id         String   @id @default(cuid())
+  personId   String
+  person     Person   @relation(fields: [personId], references: [id])
+  device     String?
+  step       String // role_selection | building_info | address | review
+  payload    Json
+  revision   Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  expiresAt  DateTime?
+  submittedAt DateTime?
+
+  @@index([personId])
+  @@map("building_setup_drafts")
+}
+
+// ---------------------------------------------------------------------------
+// Audit — every important operation answers Who/When/What/Why (03_Core_Principles)
+// Audit history is immutable: rows are never updated or deleted.
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id          String    @id @default(cuid())
+  actorId     String?
+  actor       Person?   @relation(fields: [actorId], references: [id])
+  buildingId  String?
+  building    Building? @relation(fields: [buildingId], references: [id])
+  action      String // e.g. "BuildingCreated", "OwnershipTransferred"
+  entityType  String
+  entityId    String
+  reason      String?
+  metadata    Json?
+  requestId   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([actorId])
+  @@index([buildingId])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Audit & Compliance Center — fuller version (07.06_Audit_And_Compliance_
+// Center_v1.0 — see 21_ADRs > ADR-034). ADR-029 shipped only a minimal
+// PLATFORM_ADMIN-only search endpoint on `AuditLog` above (10.05.05 Rule
+// 007). This section adds the rest of 07.06's scope that is buildable
+// without missing infrastructure (no scheduler, no object storage — see
+// ADR-034 Context): Compliance Cases (Rule 011/012), a searchable
+// Timeline reconstruction and CSV export over the existing `AuditLog`
+// table (Rules 013/014), and Legal Hold (Rule 015). `AuditLog` itself is
+// intentionally UNCHANGED — no new column, no backfill migration — every
+// addition here is either a new table or pure query logic over the
+// existing immutable rows.
+//
+// `ComplianceCase.status` reuses `FraudCaseStatus` (OPEN/
+// UNDER_INVESTIGATION/CONFIRMED/DISMISSED) rather than a new enum —
+// 07.06 Rule 012 explicitly describes Compliance Cases as supporting
+// "investigations," and that four-state investigation lifecycle is
+// value-for-value identical to Fraud & Abuse's own (ADR-031), the same
+// enum-reuse discipline already applied to `CaseStatus`/
+// `VerificationPriority` (ADR-032/033). `priority` reuses
+// `VerificationPriority` for the same reason.
+// ---------------------------------------------------------------------------
+
+enum ComplianceCaseCategory {
+  REPEATED_FRAUD
+  REPEATED_SUSPENSION
+  FINANCIAL_ANOMALY
+  OTHER
+}
+
+// Rule 011 — "Audit Events May Create Compliance Cases" (examples:
+// Repeated Fraud, Repeated Suspensions, Financial Anomalies). A case can
+// be about a Person's pattern of behavior (`subjectActorId`) and/or a
+// specific entity (`linkedEntityType`/`linkedEntityId`, the same
+// polymorphic non-FK pointer convention `SupportCase`/`DocumentReference`
+// already use — Rule 011's examples span every domain, so no single FK
+// target fits). `sourceAuditLogIds` records which `AuditLog` rows
+// triggered/support the case (Rule 012's "supports investigations" —
+// the evidence trail), without turning `AuditLog` itself into a
+// non-immutable, back-referenced table.
+model ComplianceCase {
+  id       String                 @id @default(cuid())
+  category ComplianceCaseCategory
+  status   FraudCaseStatus        @default(OPEN)
+  priority VerificationPriority   @default(NORMAL)
+
+  subjectActorId String?
+  subjectActor   Person? @relation("ComplianceCaseSubject", fields: [subjectActorId], references: [id])
+
+  linkedEntityType String?
+  linkedEntityId   String?
+
+  sourceAuditLogIds String[]
+
+  description String
+  findings    String?
+
+  // true when opened by `ComplianceCaseService.detectAnomalies` (the
+  // staff-triggered heuristic sweep — see ADR-034 Decision point 5 for
+  // why this is on-demand, not scheduler-driven); false when a staff
+  // member opens it by hand. `openedById` is null exactly when
+  // `isAutoDetected` is true.
+  isAutoDetected Boolean @default(false)
+  openedById     String?
+  openedBy       Person? @relation("ComplianceCaseOpenedBy", fields: [openedById], references: [id])
+
+  assignedToId String?
+  assignedTo   Person? @relation("ComplianceCaseAssignedTo", fields: [assignedToId], references: [id])
+
+  decidedById    String?
+  decidedBy      Person?   @relation("ComplianceCaseDecidedBy", fields: [decidedById], references: [id])
+  decisionReason String?
+  decidedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([subjectActorId])
+  @@index([status])
+  @@index([linkedEntityType, linkedEntityId])
+  @@map("compliance_cases")
+}
+
+// Rule 015 — "Audit Records May Be Protected By Legal Hold." Pure state
+// this sprint: `AuditLog`'s own MVP retention policy is already "Never
+// Delete" (Rule 009), so a hold has no purge job to block yet — its real
+// value today is a recorded, queryable flag ("this entity is in a legal
+// case, do not let a future retention job touch it"), same polymorphic
+// pointer convention as `ComplianceCase.linkedEntityType`/`linkedEntityId`
+// above.
+model AuditLegalHold {
+  id         String @id @default(cuid())
+  entityType String
+  entityId   String
+  reason     String
+
+  placedById String
+  placedBy   Person   @relation("LegalHoldPlacedBy", fields: [placedById], references: [id])
+  placedAt   DateTime @default(now())
+
+  releasedById String?
+  releasedBy   Person?   @relation("LegalHoldReleasedBy", fields: [releasedById], references: [id])
+  releasedAt   DateTime?
+
+  isActive Boolean @default(true)
+
+  @@index([entityType, entityId])
+  @@map("audit_legal_holds")
+}
