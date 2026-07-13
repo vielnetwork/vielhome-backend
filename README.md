@@ -23,7 +23,15 @@ Business Rules, Architecture, Engineering Constitution).
   with a Membership Request escape hatch, owner invites (console-logged, see
   "Known risk areas"). See `21_ADRs > ADR-021` in the project's AIHandoff docs
   for the full rationale.
-- **Health** endpoint with a live DB check.
+- **Health**: `GET /health` (legacy, DB-only, kept for backward compatibility),
+  `GET /health/live` (liveness — no dependency checks), `GET /health/ready`
+  (readiness — Postgres + Redis checks in parallel). See `21_ADRs > ADR-064`.
+- **Observability/CI (ADR-064)**: `helmet` security headers (CSP disabled —
+  see `main.ts` comment — to keep Swagger UI at `/docs` working), structured
+  JSON logging in production (`src/common/logging/json-logger.service.ts`,
+  plain console output unchanged in dev), and a GitHub Actions CI pipeline
+  (`.github/workflows/ci.yml`) running lint/test/e2e/build against real
+  Postgres + Redis service containers on every push.
 
 Everything else in `19_Current_Sprint` (Finance, Notifications, Gamification,
 Marketplace, AI Assistant) is intentionally not started yet — build in that
@@ -135,6 +143,17 @@ rules live in `domain/`, orchestration in `application/`, persistence in
 
 ## Known risk areas (things to double-check on first real run)
 
+- **`package-lock.json` does not exist yet — CI will fail until this is
+  fixed**: this sandbox has never had npm registry access (unchanged since
+  ADR-022/Sprint 3.9), so `npm install` has never actually been run here,
+  and no lockfile has ever been generated or committed. The new
+  `.github/workflows/ci.yml` (ADR-064) uses `npm ci`, which *requires*
+  `package-lock.json` to exist and fails without one. Run `npm install`
+  locally once (your local runs have already been succeeding, so this may
+  already be effectively done — just confirm the resulting
+  `package-lock.json` is committed to git) before pushing to a remote that
+  runs this workflow. Tracked as a release blocker alongside ADR-063's
+  migration-baseline step — see `25_API_v1_Database_Freeze_Manifest_v1.0`.
 - **Prisma client types**: `npx prisma generate` must run (via `postinstall`
   triggered by `npm install`, or manually) before `tsc`/`ts-node` will
   resolve `@prisma/client` types like `MembershipRole`, `UnitType`,
@@ -162,10 +181,10 @@ rules live in `domain/`, orchestration in `application/`, persistence in
   `AuthorizationError` (403) otherwise, satisfying `05_Business_Rules >
   Security Rules`. `POST :id/membership-requests` deliberately has NO guard
   — a non-member requesting to join is the entire point of that endpoint.
-  Not yet covered: `resolveMembershipRequest` only checks *membership*, not
-  *role* — any member (not just OWNER/MANAGER) can currently approve/reject
-  a join request. Tightening that to a role check is a good next step
-  before Governance work lands.
+  **RESOLVED (ADR-064)**: `resolveMembershipRequest` previously only checked
+  *membership*, not *role* — any member (not just OWNER/MANAGER) could
+  approve/reject a join request. Now gated `RolesGuard` + `@Roles('OWNER',
+  'MANAGER')`, the same pattern `changeManager` already used.
 - **Membership Request has no review UI**: `POST/GET /buildings/:id/
   membership-requests` and `PATCH /buildings/:id/membership-requests/
   :requestId` (approve/reject) exist, but nothing in the mobile app surfaces

@@ -141,8 +141,18 @@ export class BuildingController {
     return this.buildings.listMembershipRequests(id);
   }
 
+  // 21_ADRs > ADR-064 — was `MembershipGuard` (any current member of any
+  // role), a real access-control gap this codebase's own README named
+  // explicitly ("any member, not just OWNER/MANAGER, can currently
+  // approve/reject a join request"). Approving/rejecting who joins the
+  // building is an OWNER/MANAGER-level decision, the same set 10.07.05's
+  // Authorization Layer already uses for comparable building-governance
+  // actions (see `changeManager` below, also `@Roles('MANAGER')`) — OWNER
+  // is added here since 04_Product_Architecture treats OWNER as having
+  // authority over building membership generally, not just MANAGER.
   @Patch(':id/membership-requests/:requestId')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('OWNER', 'MANAGER')
   resolveMembershipRequest(
     @Param('id') id: string,
     @Param('requestId') requestId2: string,

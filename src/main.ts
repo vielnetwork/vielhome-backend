@@ -2,9 +2,17 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+// 21_ADRs > ADR-064 — `import x = require(...)` deliberately, not
+// `import helmet from 'helmet'`: this project's tsconfig has
+// `allowSyntheticDefaultImports` but not `esModuleInterop`, and helmet's
+// own README documents `const helmet = require('helmet')` as the correct
+// CJS usage. `import = require` compiles to that exact call with no
+// interop-shim ambiguity, regardless of esModuleInterop.
+import helmet = require('helmet');
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import { JsonLoggerService } from './common/logging/json-logger.service';
 import type { AppConfig } from './config/configuration';
 
 async function bootstrap() {
@@ -31,7 +39,24 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule, {
     cors: corsOrigins.length > 0 ? { origin: corsOrigins, credentials: true } : true,
+    // 21_ADRs > ADR-064 — structured JSON logging in production only; dev
+    // keeps Nest's familiar console output (see JsonLoggerService itself).
+    logger: new JsonLoggerService(),
   });
+
+  // 21_ADRs > ADR-064 — 24_Release_Readiness_Audit_v1.0 > 3.1 named "no
+  // helmet-style security-header middleware" as a gap. `helmet()`'s
+  // defaults (14 header middlewares — HSTS, X-Frame-Options,
+  // X-Content-Type-Options, etc.) are applied early, before routing, per
+  // helmet's own documented convention. `contentSecurityPolicy: false` is
+  // a disclosed, deliberate exception: this app serves Swagger UI at
+  // `/docs` (see below), which relies on inline styles/scripts that
+  // helmet's default CSP blocks — a well-known Swagger+helmet interaction,
+  // not specific to this codebase. Every other default header stays on.
+  // Revisit with a Swagger-compatible custom CSP directive set if this
+  // API's Swagger UI is ever exposed outside a trusted network.
+  app.use(helmet({ contentSecurityPolicy: false }));
+
   const config = app.get(ConfigService<AppConfig, true>);
 
   app.setGlobalPrefix(config.get('apiPrefix', { infer: true }));

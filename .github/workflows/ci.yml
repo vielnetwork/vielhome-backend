@@ -1,0 +1,106 @@
+# 21_ADRs > ADR-064 — 24_Release_Readiness_Audit_v1.0 > 3.3 named "no CI
+# pipeline" as a gap. This workflow is the first CI this project has ever
+# had — it has never run in any environment before a maintainer's own local
+# machine or this repository's future GitHub remote runs it for the first
+# time. Treat the first real run as a genuine test pass, the same way
+# README.md already asks for the first local `npm install` run.
+#
+# Design notes (see ADR-064's Decision section for the full rationale):
+# - `prisma db push --accept-data-loss` is used instead of `prisma migrate
+#   deploy` deliberately. This CI database is ephemeral (a fresh service
+#   container every run, dropped when the job ends) — there is no data to
+#   lose, and `db push` does not depend on whether `prisma/migrations/`
+#   exists or has been committed yet (ADR-063's baseline script is a
+#   separate, user-run, local step). Using `migrate deploy` here would make
+#   CI's ability to pass depend on the timing of that unrelated local step.
+# - `npm ci` requires `package-lock.json`, which does not exist in this
+#   repository yet (no environment that has run this workflow's author's
+#   own sandbox has ever had npm registry access to generate one — see
+#   ADR-064's Future Review). Until a maintainer runs `npm install` locally
+#   once and commits the resulting lockfile, this workflow's first step
+#   will fail. This is disclosed, not hidden — see the delivery notes.
+# - `lint:ci` (not `lint`) is used deliberately: the existing `lint` script
+#   has `--fix` baked in, which would silently rewrite files and could mask
+#   a real failure instead of reporting one. CI should fail loudly on lint
+#   violations, not auto-correct them.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: vielhome
+          POSTGRES_PASSWORD: vielhome
+          POSTGRES_DB: vielhome_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vielhome"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://vielhome:vielhome@localhost:5432/vielhome_ci
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      # 21_ADRs > ADR-061 — production requires these to be explicitly set
+      # (no dev fallback). NODE_ENV=test would use the dev fallback anyway,
+      # but explicit test-only values here are clearer than relying on that
+      # fallback path inside CI.
+      JWT_ACCESS_SECRET: ci-test-access-secret-do-not-use-in-production
+      JWT_REFRESH_SECRET: ci-test-refresh-secret-do-not-use-in-production
+      CORS_ORIGINS: http://localhost:3000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # Requires package-lock.json to exist and be committed — see the
+      # header comment above and ADR-064's Future Review / release blockers.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Push database schema (ephemeral CI database — see header comment)
+        run: npx prisma db push --accept-data-loss
+
+      - name: Lint (non-mutating)
+        run: npm run lint:ci
+
+      - name: Unit tests
+        run: npm test -- --ci --coverage
+
+      - name: E2E tests
+        run: npm run test:e2e -- --ci
+
+      - name: Build
+        run: npm run build
