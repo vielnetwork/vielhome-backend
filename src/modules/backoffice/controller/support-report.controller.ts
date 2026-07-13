@@ -24,7 +24,11 @@ export class SupportReportController {
   constructor(private readonly service: SupportCaseService) {}
 
   @Post()
-  open(@Body() dto: OpenSupportCaseDto, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  open(
+    @Body() dto: OpenSupportCaseDto,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     // Members never set their own priority — 07.05 Rule 003's priority
     // scale is a staff-triage concept, so the member-facing route ignores
     // any client-supplied `priority` and always starts at the NORMAL

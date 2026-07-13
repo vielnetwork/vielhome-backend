@@ -66,7 +66,9 @@ export class BackOfficeRepository {
   findBuildingVerificationCaseById(id: string) {
     return this.prisma.buildingVerificationCase.findUnique({
       where: { id },
-      include: { building: { select: { id: true, name: true, addressLine: true, createdById: true } } },
+      include: {
+        building: { select: { id: true, name: true, addressLine: true, createdById: true } },
+      },
     });
   }
 
@@ -78,7 +80,11 @@ export class BackOfficeRepository {
     });
   }
 
-  listBuildingVerificationCases(filters: { status?: BuildingStatus; priority?: VerificationPriority; assignedToId?: string }) {
+  listBuildingVerificationCases(filters: {
+    status?: BuildingStatus;
+    priority?: VerificationPriority;
+    assignedToId?: string;
+  }) {
     return this.prisma.buildingVerificationCase.findMany({
       where: {
         status: filters.status,
@@ -152,7 +158,10 @@ export class BackOfficeRepository {
     });
   }
 
-  listManagerVerificationCases(filters: { status?: ManagerVerificationStatus; priority?: VerificationPriority }) {
+  listManagerVerificationCases(filters: {
+    status?: ManagerVerificationStatus;
+    priority?: VerificationPriority;
+  }) {
     return this.prisma.managerVerificationCase.findMany({
       where: { status: filters.status, priority: filters.priority },
       include: {
@@ -238,7 +247,11 @@ export class BackOfficeRepository {
     });
   }
 
-  listFraudCases(filters: { status?: FraudCaseStatus; priority?: VerificationPriority; assignedToId?: string }) {
+  listFraudCases(filters: {
+    status?: FraudCaseStatus;
+    priority?: VerificationPriority;
+    assignedToId?: string;
+  }) {
     return this.prisma.fraudCase.findMany({
       where: {
         status: filters.status,
@@ -256,14 +269,22 @@ export class BackOfficeRepository {
   }
 
   assignFraudCase(id: string, assignedToId: string) {
-    return this.prisma.fraudCase.update({ where: { id }, data: { assignedToId, status: 'UNDER_INVESTIGATION' } });
+    return this.prisma.fraudCase.update({
+      where: { id },
+      data: { assignedToId, status: 'UNDER_INVESTIGATION' },
+    });
   }
 
   addFraudCaseEvidence(id: string, evidenceNotes: string) {
     return this.prisma.fraudCase.update({ where: { id }, data: { evidenceNotes } });
   }
 
-  decideFraudCase(params: { id: string; status: FraudCaseStatus; reviewedById: string; reason?: string }) {
+  decideFraudCase(params: {
+    id: string;
+    status: FraudCaseStatus;
+    reviewedById: string;
+    reason?: string;
+  }) {
     return this.prisma.fraudCase.update({
       where: { id: params.id },
       data: {
@@ -304,7 +325,10 @@ export class BackOfficeRepository {
   }
 
   listEnforcementActionsForCase(fraudCaseId: string) {
-    return this.prisma.enforcementAction.findMany({ where: { fraudCaseId }, orderBy: { issuedAt: 'asc' } });
+    return this.prisma.enforcementAction.findMany({
+      where: { fraudCaseId },
+      orderBy: { issuedAt: 'asc' },
+    });
   }
 
   requestEnforcementAppeal(id: string, appealReason?: string) {
@@ -363,8 +387,11 @@ export class BackOfficeRepository {
     const userReportDismissed = countFor('DISMISSED', 'USER_REPORT');
     const userReportDecidedTotal = userReportConfirmed + userReportDismissed;
 
-    const investigationTimesMs = decidedCases.map((c) => c.decidedAt!.getTime() - c.createdAt.getTime());
-    const average = (values: number[]) => (values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null);
+    const investigationTimesMs = decidedCases.map(
+      (c) => c.decidedAt!.getTime() - c.createdAt.getTime(),
+    );
+    const average = (values: number[]) =>
+      values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null;
     const msToHours = (ms: number | null) => (ms === null ? null : ms / (1000 * 60 * 60));
 
     return {
@@ -374,7 +401,8 @@ export class BackOfficeRepository {
       // Fraction of decided cases confirmed as real fraud, within the window.
       fraudRate: decidedTotal > 0 ? confirmedCount / decidedTotal : null,
       // Fraction of decided USER_REPORT cases that turned out NOT to be fraud (DISMISSED), within the window.
-      falseReportRate: userReportDecidedTotal > 0 ? userReportDismissed / userReportDecidedTotal : null,
+      falseReportRate:
+        userReportDecidedTotal > 0 ? userReportDismissed / userReportDecidedTotal : null,
       avgInvestigationTimeHours: msToHours(average(investigationTimesMs)),
     };
   }
@@ -449,7 +477,10 @@ export class BackOfficeRepository {
   }
 
   assignSupportCase(id: string, assignedToId: string) {
-    return this.prisma.supportCase.update({ where: { id }, data: { assignedToId, status: 'IN_PROGRESS' } });
+    return this.prisma.supportCase.update({
+      where: { id },
+      data: { assignedToId, status: 'IN_PROGRESS' },
+    });
   }
 
   updateSupportCaseStatus(id: string, status: CaseStatus) {
@@ -463,7 +494,11 @@ export class BackOfficeRepository {
     });
   }
 
-  resolveSupportCase(params: { id: string; resolutionCode: SupportCaseResolutionCode; resolution?: string }) {
+  resolveSupportCase(params: {
+    id: string;
+    resolutionCode: SupportCaseResolutionCode;
+    resolution?: string;
+  }) {
     return this.prisma.supportCase.update({
       where: { id: params.id },
       data: {
@@ -493,7 +528,12 @@ export class BackOfficeRepository {
     });
   }
 
-  addSupportCaseMessage(params: { caseId: string; senderId: string; body: string; isInternal: boolean }) {
+  addSupportCaseMessage(params: {
+    caseId: string;
+    senderId: string;
+    body: string;
+    isInternal: boolean;
+  }) {
     return this.prisma.supportCaseMessage.create({
       data: {
         caseId: params.caseId,
@@ -531,7 +571,11 @@ export class BackOfficeRepository {
     const [byCategory, reopenCount, cases] = await Promise.all([
       this.prisma.supportCase.groupBy({ by: ['category'], where, _count: { category: true } }),
       this.prisma.auditLog.count({
-        where: { action: 'SupportCaseReopened', entityType: 'SupportCase', ...(where ? { createdAt: where.createdAt } : {}) },
+        where: {
+          action: 'SupportCaseReopened',
+          entityType: 'SupportCase',
+          ...(where ? { createdAt: where.createdAt } : {}),
+        },
       }),
       this.prisma.supportCase.findMany({
         where,
@@ -561,11 +605,15 @@ export class BackOfficeRepository {
       })
       .filter((ms): ms is number => ms !== null);
 
-    const average = (values: number[]) => (values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null);
+    const average = (values: number[]) =>
+      values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null;
     const msToHours = (ms: number | null) => (ms === null ? null : ms / (1000 * 60 * 60));
 
     return {
-      caseVolumeByCategory: byCategory.map((g) => ({ category: g.category, count: g._count.category })),
+      caseVolumeByCategory: byCategory.map((g) => ({
+        category: g.category,
+        count: g._count.category,
+      })),
       totalCaseVolume,
       avgResolutionTimeHours: msToHours(average(resolutionTimesMs)),
       avgResponseTimeHours: msToHours(average(responseTimesMs)),
@@ -625,7 +673,12 @@ export class BackOfficeRepository {
     return this.prisma.subscription.update({ where: { id }, data: { plan } });
   }
 
-  updateSubscriptionStatus(params: { id: string; status: SubscriptionStatus; cancelledAt?: Date; gracePeriodEndsAt?: Date | null }) {
+  updateSubscriptionStatus(params: {
+    id: string;
+    status: SubscriptionStatus;
+    cancelledAt?: Date;
+    gracePeriodEndsAt?: Date | null;
+  }) {
     return this.prisma.subscription.update({
       where: { id: params.id },
       data: {
@@ -757,10 +810,18 @@ export class BackOfficeRepository {
   }
 
   assignComplianceCase(id: string, assignedToId: string) {
-    return this.prisma.complianceCase.update({ where: { id }, data: { assignedToId, status: 'UNDER_INVESTIGATION' } });
+    return this.prisma.complianceCase.update({
+      where: { id },
+      data: { assignedToId, status: 'UNDER_INVESTIGATION' },
+    });
   }
 
-  decideComplianceCase(params: { id: string; status: FraudCaseStatus; decidedById: string; decisionReason?: string }) {
+  decideComplianceCase(params: {
+    id: string;
+    status: FraudCaseStatus;
+    decidedById: string;
+    decisionReason?: string;
+  }) {
     return this.prisma.complianceCase.update({
       where: { id: params.id },
       data: {
@@ -807,7 +868,12 @@ export class BackOfficeRepository {
 
   // --- Legal Hold (07.06 Rule 015) ---
 
-  createLegalHold(params: { entityType: string; entityId: string; reason: string; placedById: string }) {
+  createLegalHold(params: {
+    entityType: string;
+    entityId: string;
+    reason: string;
+    placedById: string;
+  }) {
     return this.prisma.auditLegalHold.create({ data: params });
   }
 
@@ -816,12 +882,18 @@ export class BackOfficeRepository {
   }
 
   findActiveLegalHold(entityType: string, entityId: string) {
-    return this.prisma.auditLegalHold.findFirst({ where: { entityType, entityId, isActive: true } });
+    return this.prisma.auditLegalHold.findFirst({
+      where: { entityType, entityId, isActive: true },
+    });
   }
 
   listLegalHolds(filters: { entityType?: string; entityId?: string; isActive?: boolean }) {
     return this.prisma.auditLegalHold.findMany({
-      where: { entityType: filters.entityType, entityId: filters.entityId, isActive: filters.isActive },
+      where: {
+        entityType: filters.entityType,
+        entityId: filters.entityId,
+        isActive: filters.isActive,
+      },
       orderBy: { placedAt: 'desc' },
     });
   }

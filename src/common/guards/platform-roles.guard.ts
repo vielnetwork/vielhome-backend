@@ -32,7 +32,10 @@ export class PlatformRolesGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const requiredRoles = this.reflector.get<PlatformStaffRole[]>(PLATFORM_ROLES_KEY, context.getHandler());
+    const requiredRoles = this.reflector.get<PlatformStaffRole[]>(
+      PLATFORM_ROLES_KEY,
+      context.getHandler(),
+    );
     if (!requiredRoles || requiredRoles.length === 0) {
       return false;
     }

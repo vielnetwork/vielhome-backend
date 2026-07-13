@@ -12,7 +12,12 @@ import { ResolveCaseDto } from './dto/resolve-case.dto';
 import { ReopenCaseDto } from './dto/reopen-case.dto';
 import { MergeCaseDto } from './dto/merge-case.dto';
 import { AuditService } from '../../../common/audit/audit.service';
-import { AuthorizationError, BusinessRuleViolationError, NotFoundAppError, ValidationError } from '../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+  NotFoundAppError,
+  ValidationError,
+} from '../../../common/errors/app-error';
 import { CaseAssignedEvent, CaseCreatedEvent, CaseStatusChangedEvent } from '../events/case.events';
 
 /** 08.08 Rule 008: cases are assignable to Manager/Board Member/Accountant — the same set gets privileged read/edit/internal-note access throughout this service. */
@@ -47,7 +52,12 @@ export class CasesService {
     return found;
   }
 
-  async createCase(buildingId: string, dto: CreateCaseDto, actorPersonId: string, requestId: string) {
+  async createCase(
+    buildingId: string,
+    dto: CreateCaseDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     await this.getBuilding(buildingId);
 
     if (dto.unitId) {
@@ -102,7 +112,10 @@ export class CasesService {
     if (privileged) return all;
 
     return all.filter(
-      (c) => c.visibility === 'PUBLIC' || c.createdById === actorPersonId || c.assigneeId === actorPersonId,
+      (c) =>
+        c.visibility === 'PUBLIC' ||
+        c.createdById === actorPersonId ||
+        c.assigneeId === actorPersonId,
     );
   }
 
@@ -113,7 +126,13 @@ export class CasesService {
     return found;
   }
 
-  async updateCase(buildingId: string, caseId: string, dto: UpdateCaseDto, actorPersonId: string, requestId: string) {
+  async updateCase(
+    buildingId: string,
+    caseId: string,
+    dto: UpdateCaseDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const found = await this.getCaseOrThrow(buildingId, caseId);
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
     this.policy.assertEditable(found.createdById, actorPersonId, privileged, found.status);
@@ -132,13 +151,21 @@ export class CasesService {
     return updated;
   }
 
-  async assignCase(buildingId: string, caseId: string, dto: AssignCaseDto, actorPersonId: string, requestId: string) {
+  async assignCase(
+    buildingId: string,
+    caseId: string,
+    dto: AssignCaseDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const found = await this.getCaseOrThrow(buildingId, caseId);
     this.policy.assertNotClosed(found.status);
 
     const assigneeRoles = await this.buildings.getRoles(dto.assignedToId, buildingId);
     if (assigneeRoles.length === 0) {
-      throw new BusinessRuleViolationError('The assignee must be a current member of this building.');
+      throw new BusinessRuleViolationError(
+        'The assignee must be a current member of this building.',
+      );
     }
     this.policy.assertAssignable(found.isAgainstManager, assigneeRoles.includes('MANAGER'));
 
@@ -169,7 +196,13 @@ export class CasesService {
     return this.cases.listAssignments(caseId);
   }
 
-  async addMessage(buildingId: string, caseId: string, dto: AddMessageDto, actorPersonId: string, requestId: string) {
+  async addMessage(
+    buildingId: string,
+    caseId: string,
+    dto: AddMessageDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const found = await this.getCaseOrThrow(buildingId, caseId);
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
     this.policy.assertVisible(found, actorPersonId, privileged);
@@ -205,7 +238,13 @@ export class CasesService {
     return privileged ? messages : messages.filter((m) => !m.isInternal);
   }
 
-  async resolveCase(buildingId: string, caseId: string, dto: ResolveCaseDto, actorPersonId: string, requestId: string) {
+  async resolveCase(
+    buildingId: string,
+    caseId: string,
+    dto: ResolveCaseDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const found = await this.getCaseOrThrow(buildingId, caseId);
     this.policy.assertResolvable(found.status);
 
@@ -252,11 +291,19 @@ export class CasesService {
     return updated;
   }
 
-  async reopenCase(buildingId: string, caseId: string, dto: ReopenCaseDto, actorPersonId: string, requestId: string) {
+  async reopenCase(
+    buildingId: string,
+    caseId: string,
+    dto: ReopenCaseDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const found = await this.getCaseOrThrow(buildingId, caseId);
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
     if (found.createdById !== actorPersonId && !privileged) {
-      throw new AuthorizationError('Only the case creator or a privileged role may reopen this case.');
+      throw new AuthorizationError(
+        'Only the case creator or a privileged role may reopen this case.',
+      );
     }
     this.policy.assertReopenable(found.status);
 
@@ -290,7 +337,13 @@ export class CasesService {
    * either way, the conservative default every other Cases action already
    * follows implicitly.
    */
-  async mergeCase(buildingId: string, caseId: string, dto: MergeCaseDto, actorPersonId: string, requestId: string) {
+  async mergeCase(
+    buildingId: string,
+    caseId: string,
+    dto: MergeCaseDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     if (caseId === dto.intoCaseId) {
       throw new ValidationError('A case cannot be merged into itself.');
     }

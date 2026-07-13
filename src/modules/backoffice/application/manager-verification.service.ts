@@ -116,7 +116,13 @@ export class ManagerVerificationService {
       metadata: { approverCount, totalOwners },
     });
 
-    if (!this.policy.meetsApprovalThreshold(approverCount, totalOwners, kase.requiredApprovalPercent ?? REQUIRED_APPROVAL_PERCENT)) {
+    if (
+      !this.policy.meetsApprovalThreshold(
+        approverCount,
+        totalOwners,
+        kase.requiredApprovalPercent ?? REQUIRED_APPROVAL_PERCENT,
+      )
+    ) {
       return { case: kase, resolved: false, approverCount, totalOwners };
     }
 
@@ -165,7 +171,8 @@ export class ManagerVerificationService {
     const kase = await this.getCase(caseId);
     this.policy.assertCaseOpen(kase.status);
 
-    const status = decision === 'APPROVE' ? 'VERIFIED' : decision === 'REJECT' ? 'REJECTED' : 'SUSPENDED';
+    const status =
+      decision === 'APPROVE' ? 'VERIFIED' : decision === 'REJECT' ? 'REJECTED' : 'SUSPENDED';
 
     const updated = await this.backOffice.decideManagerVerificationCase({
       id: caseId,
@@ -226,7 +233,12 @@ export class ManagerVerificationService {
    * set as `decide`), not a self-service action — no caller-identity
    * check, unlike `appealCase`.
    */
-  async restoreManagement(caseId: string, reviewerPersonId: string, reason: string | undefined, requestId: string) {
+  async restoreManagement(
+    caseId: string,
+    reviewerPersonId: string,
+    reason: string | undefined,
+    requestId: string,
+  ) {
     const suspended = await this.getCase(caseId);
     this.policy.assertCanRestore(suspended.status);
 
@@ -263,7 +275,12 @@ export class ManagerVerificationService {
 
     this.events.emit(
       'ManagerVerificationDecided',
-      new ManagerVerificationDecidedEvent(suspended.buildingId, restoreCase.id, 'VERIFIED', suspended.candidateId),
+      new ManagerVerificationDecidedEvent(
+        suspended.buildingId,
+        restoreCase.id,
+        'VERIFIED',
+        suspended.candidateId,
+      ),
     );
 
     return decided;

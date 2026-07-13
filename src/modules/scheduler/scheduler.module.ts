@@ -3,7 +3,10 @@ import { BullModule } from '@nestjs/bullmq';
 import { BackOfficeModule } from '../backoffice/backoffice.module';
 import { GovernanceModule } from '../governance/governance.module';
 import { SchedulerController } from './controller/scheduler.controller';
-import { ScheduledJobsProcessor, SCHEDULED_JOBS_QUEUE } from './application/scheduled-jobs.processor';
+import {
+  ScheduledJobsProcessor,
+  SCHEDULED_JOBS_QUEUE,
+} from './application/scheduled-jobs.processor';
 import { SchedulerBootstrapService } from './application/scheduler-bootstrap.service';
 import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
 
@@ -30,7 +33,11 @@ import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
  * (`SCHEDULED_JOBS_QUEUE`) it actually owns.
  */
 @Module({
-  imports: [BullModule.registerQueue({ name: SCHEDULED_JOBS_QUEUE }), BackOfficeModule, GovernanceModule],
+  imports: [
+    BullModule.registerQueue({ name: SCHEDULED_JOBS_QUEUE }),
+    BackOfficeModule,
+    GovernanceModule,
+  ],
   controllers: [SchedulerController],
   providers: [ScheduledJobsProcessor, SchedulerBootstrapService, PlatformRolesGuard],
 })

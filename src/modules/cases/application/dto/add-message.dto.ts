@@ -6,7 +6,11 @@ export class AddMessageDto {
   @IsString()
   message!: string;
 
-  @ApiProperty({ required: false, default: false, description: 'Only a privileged role (MANAGER/BOARD_MEMBER/ACCOUNTANT) may set this.' })
+  @ApiProperty({
+    required: false,
+    default: false,
+    description: 'Only a privileged role (MANAGER/BOARD_MEMBER/ACCOUNTANT) may set this.',
+  })
   @IsOptional()
   @IsBoolean()
   isInternal?: boolean;

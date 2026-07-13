@@ -84,12 +84,23 @@ export class MarketplaceService {
     });
   }
 
-  async decide(id: string, decision: 'APPROVE' | 'REJECT', reviewerPersonId: string, reason: string | undefined, requestId: string) {
+  async decide(
+    id: string,
+    decision: 'APPROVE' | 'REJECT',
+    reviewerPersonId: string,
+    reason: string | undefined,
+    requestId: string,
+  ) {
     const provider = await this.getCase(id);
     this.policy.assertReviewable(provider.status);
 
     const status = decision === 'APPROVE' ? 'APPROVED' : 'REJECTED';
-    const updated = await this.marketplace.decide({ id, status, reviewedById: reviewerPersonId, reason });
+    const updated = await this.marketplace.decide({
+      id,
+      status,
+      reviewedById: reviewerPersonId,
+      reason,
+    });
 
     await this.audit.record({
       actorId: reviewerPersonId,
@@ -101,7 +112,10 @@ export class MarketplaceService {
       metadata: { decision },
     });
 
-    this.events.emit('ServiceProviderDecided', new ServiceProviderDecidedEvent(id, status, provider.submittedById));
+    this.events.emit(
+      'ServiceProviderDecided',
+      new ServiceProviderDecidedEvent(id, status, provider.submittedById),
+    );
 
     return updated;
   }

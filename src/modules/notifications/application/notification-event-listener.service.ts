@@ -8,11 +8,27 @@ import type { ManagerChangedEvent } from '../../building/events/manager-changed.
 import type { OwnershipTransferInitiatedEvent } from '../../building/events/ownership-transferred.event';
 import type { TenancyCreatedEvent, TenancyEndedEvent } from '../../building/events/tenancy.events';
 import type { PersonAuthenticatedEvent } from '../../foundation/auth/events/person-authenticated.event';
-import type { ChargeBatchCancelledEvent, ChargeBatchIssuedEvent } from '../../finance/events/charge-batch.events';
-import type { PaymentApprovedEvent, PaymentRefundedEvent, PaymentRejectedEvent, PaymentReversedEvent } from '../../finance/events/payment.events';
+import type {
+  ChargeBatchCancelledEvent,
+  ChargeBatchIssuedEvent,
+} from '../../finance/events/charge-batch.events';
+import type {
+  PaymentApprovedEvent,
+  PaymentRefundedEvent,
+  PaymentRejectedEvent,
+  PaymentReversedEvent,
+} from '../../finance/events/payment.events';
 import type { AdjustmentCreatedEvent } from '../../finance/events/adjustment.events';
-import type { VoteCancelledEvent, VoteClosedEvent, VotePublishedEvent } from '../../governance/events/vote.events';
-import type { CaseAssignedEvent, CaseCreatedEvent, CaseStatusChangedEvent } from '../../cases/events/case.events';
+import type {
+  VoteCancelledEvent,
+  VoteClosedEvent,
+  VotePublishedEvent,
+} from '../../governance/events/vote.events';
+import type {
+  CaseAssignedEvent,
+  CaseCreatedEvent,
+  CaseStatusChangedEvent,
+} from '../../cases/events/case.events';
 import type { DocumentUploadedEvent } from '../../documents/events/document.events';
 import type {
   AchievementUnlockedEvent,
@@ -172,7 +188,10 @@ export class NotificationEventListener {
     const copy: Record<string, { title: string; body: string }> = {
       VERIFIED: { title: 'تأیید سمت مدیریت', body: 'سمت مدیریت شما تأیید شد.' },
       REJECTED: { title: 'رد درخواست مدیریت', body: 'درخواست تصدی سمت مدیریت شما رد شد.' },
-      SUSPENDED: { title: 'تعلیق سمت مدیریت', body: 'سمت مدیریت شما تا بررسی مجدد به حالت تعلیق درآمد.' },
+      SUSPENDED: {
+        title: 'تعلیق سمت مدیریت',
+        body: 'سمت مدیریت شما تا بررسی مجدد به حالت تعلیق درآمد.',
+      },
     };
     const message = copy[event.status];
     if (!message) return;
@@ -220,8 +239,14 @@ export class NotificationEventListener {
   @OnEvent('ServiceProviderDecided')
   async onServiceProviderDecided(event: ServiceProviderDecidedEvent) {
     const copy: Record<string, { title: string; body: string }> = {
-      APPROVED: { title: 'تأیید ثبت در بازارچهٔ خدمات', body: 'درخواست شما برای ثبت در بازارچهٔ خدمات تأیید شد.' },
-      REJECTED: { title: 'رد ثبت در بازارچهٔ خدمات', body: 'درخواست شما برای ثبت در بازارچهٔ خدمات رد شد.' },
+      APPROVED: {
+        title: 'تأیید ثبت در بازارچهٔ خدمات',
+        body: 'درخواست شما برای ثبت در بازارچهٔ خدمات تأیید شد.',
+      },
+      REJECTED: {
+        title: 'رد ثبت در بازارچهٔ خدمات',
+        body: 'درخواست شما برای ثبت در بازارچهٔ خدمات رد شد.',
+      },
     };
     const message = copy[event.status];
     if (!message) return;
@@ -451,7 +476,10 @@ export class NotificationEventListener {
 
   @OnEvent('CaseCreated')
   async onCaseCreated(event: CaseCreatedEvent) {
-    const recipientIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, PRIVILEGED_ROLES);
+    const recipientIds = await this.buildings.listCurrentMemberPersonIdsByRoles(
+      event.buildingId,
+      PRIVILEGED_ROLES,
+    );
     await this.notifications.notifyMany(recipientIds, {
       buildingId: event.buildingId,
       category: 'CASE',
@@ -491,7 +519,10 @@ export class NotificationEventListener {
    */
   @OnEvent('CaseStatusChanged')
   async onCaseStatusChanged(event: CaseStatusChangedEvent) {
-    const recipientIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, PRIVILEGED_ROLES);
+    const recipientIds = await this.buildings.listCurrentMemberPersonIdsByRoles(
+      event.buildingId,
+      PRIVILEGED_ROLES,
+    );
     await this.notifications.notifyMany(recipientIds, {
       buildingId: event.buildingId,
       category: 'CASE',

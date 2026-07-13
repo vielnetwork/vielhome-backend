@@ -58,6 +58,9 @@ export class GamificationController {
   @UseGuards(PlatformRolesGuard)
   @PlatformRoles('SENIOR_REVIEWER')
   getAnalytics(@Query('fromDate') fromDate?: string, @Query('toDate') toDate?: string) {
-    return this.gamification.getAnalytics(fromDate ? new Date(fromDate) : undefined, toDate ? new Date(toDate) : undefined);
+    return this.gamification.getAnalytics(
+      fromDate ? new Date(fromDate) : undefined,
+      toDate ? new Date(toDate) : undefined,
+    );
   }
 }

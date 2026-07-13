@@ -24,7 +24,11 @@ export class SupportCaseController {
   /** Staff-opened ticket — for platform-internal operational issues with no member reporter. */
   @Post()
   @PlatformRoles('REVIEWER')
-  open(@Body() dto: OpenSupportCaseDto, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  open(
+    @Body() dto: OpenSupportCaseDto,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.service.open(dto, user.sub, requestId);
   }
 
@@ -32,7 +36,10 @@ export class SupportCaseController {
   @Get('metrics')
   @PlatformRoles('SENIOR_REVIEWER')
   getMetrics(@Query('fromDate') fromDate?: string, @Query('toDate') toDate?: string) {
-    return this.service.getMetrics(fromDate ? new Date(fromDate) : undefined, toDate ? new Date(toDate) : undefined);
+    return this.service.getMetrics(
+      fromDate ? new Date(fromDate) : undefined,
+      toDate ? new Date(toDate) : undefined,
+    );
   }
 
   @Get()
@@ -71,7 +78,13 @@ export class SupportCaseController {
     @CurrentUser() user: JwtPayload,
     @RequestId() requestId: string,
   ) {
-    return this.service.addStaffMessage(caseId, dto.body, dto.isInternal ?? false, user.sub, requestId);
+    return this.service.addStaffMessage(
+      caseId,
+      dto.body,
+      dto.isInternal ?? false,
+      user.sub,
+      requestId,
+    );
   }
 
   @Post(':caseId/resolve')
@@ -87,13 +100,21 @@ export class SupportCaseController {
 
   @Post(':caseId/close')
   @PlatformRoles('REVIEWER')
-  close(@Param('caseId') caseId: string, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  close(
+    @Param('caseId') caseId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.service.close(caseId, user.sub, requestId);
   }
 
   @Post(':caseId/escalate')
   @PlatformRoles('SENIOR_REVIEWER')
-  escalate(@Param('caseId') caseId: string, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  escalate(
+    @Param('caseId') caseId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.service.escalate(caseId, user.sub, requestId);
   }
 

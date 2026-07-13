@@ -6,7 +6,10 @@ import { NotificationTemplateController } from './controller/notification-templa
 import { NotificationsService } from './application/notifications.service';
 import { NotificationEventListener } from './application/notification-event-listener.service';
 import { NotificationTemplateService } from './application/notification-template.service';
-import { NotificationDispatchProcessor, NOTIFICATION_DISPATCH_QUEUE } from './application/notification-dispatch.processor';
+import {
+  NotificationDispatchProcessor,
+  NOTIFICATION_DISPATCH_QUEUE,
+} from './application/notification-dispatch.processor';
 import { NotificationRepository } from './infrastructure/repositories/notification.repository';
 import { NotificationTemplateRepository } from './infrastructure/repositories/notification-template.repository';
 import { NotificationPolicy } from './domain/policies/notification.policy';
@@ -47,7 +50,11 @@ import { BackOfficeModule } from '../backoffice/backoffice.module';
     BackOfficeModule,
     BullModule.registerQueue({ name: NOTIFICATION_DISPATCH_QUEUE }),
   ],
-  controllers: [NotificationsController, NotificationPreferencesController, NotificationTemplateController],
+  controllers: [
+    NotificationsController,
+    NotificationPreferencesController,
+    NotificationTemplateController,
+  ],
   providers: [
     NotificationsService,
     NotificationEventListener,

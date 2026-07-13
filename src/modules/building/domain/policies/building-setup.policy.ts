@@ -68,9 +68,7 @@ export class BuildingSetupPolicy {
 
   assertUniqueUnitNumber(existingUnitNumbers: string[], candidate: string): void {
     if (existingUnitNumbers.includes(candidate)) {
-      throw new BusinessRuleViolationError(
-        `Unit "${candidate}" already exists in this building.`,
-      );
+      throw new BusinessRuleViolationError(`Unit "${candidate}" already exists in this building.`);
     }
   }
 

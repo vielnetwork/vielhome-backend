@@ -20,7 +20,9 @@ describe('LegalHoldPolicy', () => {
     });
 
     it('refuses releasing an already-released hold', () => {
-      expect(() => policy.assertCanRelease({ isActive: false })).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertCanRelease({ isActive: false })).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('refuses releasing a hold that does not exist', () => {

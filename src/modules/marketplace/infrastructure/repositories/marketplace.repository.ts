@@ -50,7 +50,12 @@ export class MarketplaceRepository {
     });
   }
 
-  decide(params: { id: string; status: ServiceProviderStatus; reviewedById: string; reason?: string }) {
+  decide(params: {
+    id: string;
+    status: ServiceProviderStatus;
+    reviewedById: string;
+    reason?: string;
+  }) {
     return this.prisma.serviceProvider.update({
       where: { id: params.id },
       data: {

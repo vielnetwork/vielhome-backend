@@ -1,5 +1,8 @@
 import { TenancyPolicy } from './tenancy.policy';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 describe('TenancyPolicy', () => {
   const policy = new TenancyPolicy();
@@ -10,7 +13,9 @@ describe('TenancyPolicy', () => {
     });
 
     it('refuses a second active tenancy on the same unit', () => {
-      expect(() => policy.assertUnitAvailableForTenancy({ id: 'tenancy-1' })).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertUnitAvailableForTenancy({ id: 'tenancy-1' })).toThrow(
+        BusinessRuleViolationError,
+      );
     });
   });
 
@@ -45,9 +50,12 @@ describe('TenancyPolicy', () => {
       expect(() => policy.assertCanGiveNotice('ACTIVE')).not.toThrow();
     });
 
-    it.each(['NOTICE_GIVEN', 'ENDED'] as const)('refuses giving notice on a %s tenancy', (status) => {
-      expect(() => policy.assertCanGiveNotice(status)).toThrow(BusinessRuleViolationError);
-    });
+    it.each(['NOTICE_GIVEN', 'ENDED'] as const)(
+      'refuses giving notice on a %s tenancy',
+      (status) => {
+        expect(() => policy.assertCanGiveNotice(status)).toThrow(BusinessRuleViolationError);
+      },
+    );
   });
 
   describe('assertCanEnd', () => {

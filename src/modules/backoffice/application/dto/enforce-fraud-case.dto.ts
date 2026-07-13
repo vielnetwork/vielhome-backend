@@ -2,7 +2,12 @@ import { ApiProperty } from '@nestjs/swagger';
 import type { EnforcementActionType, EnforcementTargetType } from '@prisma/client';
 import { IsEnum, IsOptional, IsString } from 'class-validator';
 
-const ACTION_TYPES = ['WARNING', 'TEMPORARY_RESTRICTION', 'VERIFICATION_REVOCATION', 'ACCOUNT_SUSPENSION'];
+const ACTION_TYPES = [
+  'WARNING',
+  'TEMPORARY_RESTRICTION',
+  'VERIFICATION_REVOCATION',
+  'ACCOUNT_SUSPENSION',
+];
 const TARGET_TYPES = ['PERSON', 'BUILDING', 'MANAGER_CLAIM'];
 
 /**

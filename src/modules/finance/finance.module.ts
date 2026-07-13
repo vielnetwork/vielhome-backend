@@ -14,7 +14,14 @@ import { BuildingModule } from '../building/building.module';
   // and role resolution instead of duplicating that logic.
   imports: [BuildingModule],
   controllers: [FinanceController],
-  providers: [FinanceService, FinanceRepository, ChargePolicy, PaymentPolicy, MembershipGuard, RolesGuard],
+  providers: [
+    FinanceService,
+    FinanceRepository,
+    ChargePolicy,
+    PaymentPolicy,
+    MembershipGuard,
+    RolesGuard,
+  ],
   exports: [FinanceService, FinanceRepository],
 })
 export class FinanceModule {}

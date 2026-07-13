@@ -1,5 +1,8 @@
 import { ManagerVerificationPolicy } from './manager-verification.policy';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 describe('ManagerVerificationPolicy', () => {
   const policy = new ManagerVerificationPolicy();
@@ -40,14 +43,19 @@ describe('ManagerVerificationPolicy', () => {
       expect(() => policy.assertCaseOpen('PENDING')).not.toThrow();
     });
 
-    it.each(['VERIFIED', 'REJECTED', 'SUSPENDED'] as const)('refuses a decided %s case', (status) => {
-      expect(() => policy.assertCaseOpen(status)).toThrow(BusinessRuleViolationError);
-    });
+    it.each(['VERIFIED', 'REJECTED', 'SUSPENDED'] as const)(
+      'refuses a decided %s case',
+      (status) => {
+        expect(() => policy.assertCaseOpen(status)).toThrow(BusinessRuleViolationError);
+      },
+    );
   });
 
   describe('assertNotSelfApproving', () => {
     it('refuses the candidate approving themself', () => {
-      expect(() => policy.assertNotSelfApproving('person-1', 'person-1')).toThrow(AuthorizationError);
+      expect(() => policy.assertNotSelfApproving('person-1', 'person-1')).toThrow(
+        AuthorizationError,
+      );
     });
 
     it('allows a different owner to approve', () => {
@@ -61,11 +69,15 @@ describe('ManagerVerificationPolicy', () => {
     });
 
     it('refuses appeal on a non-rejected case', () => {
-      expect(() => policy.assertCanAppeal('PENDING', 'person-1', 'person-1')).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertCanAppeal('PENDING', 'person-1', 'person-1')).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('refuses appeal from someone other than the candidate', () => {
-      expect(() => policy.assertCanAppeal('REJECTED', 'person-2', 'person-1')).toThrow(AuthorizationError);
+      expect(() => policy.assertCanAppeal('REJECTED', 'person-2', 'person-1')).toThrow(
+        AuthorizationError,
+      );
     });
   });
 
@@ -74,8 +86,11 @@ describe('ManagerVerificationPolicy', () => {
       expect(() => policy.assertCanRestore('SUSPENDED')).not.toThrow();
     });
 
-    it.each(['PENDING', 'VERIFIED', 'REJECTED'] as const)('refuses restoring a %s case', (status) => {
-      expect(() => policy.assertCanRestore(status)).toThrow(BusinessRuleViolationError);
-    });
+    it.each(['PENDING', 'VERIFIED', 'REJECTED'] as const)(
+      'refuses restoring a %s case',
+      (status) => {
+        expect(() => policy.assertCanRestore(status)).toThrow(BusinessRuleViolationError);
+      },
+    );
   });
 });

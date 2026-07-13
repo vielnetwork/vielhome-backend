@@ -1,5 +1,8 @@
 import { BuildingVerificationPolicy } from './building-verification.policy';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 describe('BuildingVerificationPolicy', () => {
   const policy = new BuildingVerificationPolicy();
@@ -10,7 +13,10 @@ describe('BuildingVerificationPolicy', () => {
     });
 
     it('flags SIMILAR_ADDRESS_DIFFERENT_POSTAL_CODE and scores 50 when one exists', () => {
-      expect(policy.evaluateRisk(true)).toEqual({ score: 50, flags: ['SIMILAR_ADDRESS_DIFFERENT_POSTAL_CODE'] });
+      expect(policy.evaluateRisk(true)).toEqual({
+        score: 50,
+        flags: ['SIMILAR_ADDRESS_DIFFERENT_POSTAL_CODE'],
+      });
     });
   });
 
@@ -25,13 +31,19 @@ describe('BuildingVerificationPolicy', () => {
   });
 
   describe('assertDecidable', () => {
-    it.each(['PENDING', 'UNDER_REVIEW', 'PENDING_INFORMATION'] as const)('allows deciding a %s case', (status) => {
-      expect(() => policy.assertDecidable(status)).not.toThrow();
-    });
+    it.each(['PENDING', 'UNDER_REVIEW', 'PENDING_INFORMATION'] as const)(
+      'allows deciding a %s case',
+      (status) => {
+        expect(() => policy.assertDecidable(status)).not.toThrow();
+      },
+    );
 
-    it.each(['VERIFIED', 'REJECTED', 'MERGED'] as const)('refuses deciding an already-terminal %s case', (status) => {
-      expect(() => policy.assertDecidable(status)).toThrow(BusinessRuleViolationError);
-    });
+    it.each(['VERIFIED', 'REJECTED', 'MERGED'] as const)(
+      'refuses deciding an already-terminal %s case',
+      (status) => {
+        expect(() => policy.assertDecidable(status)).toThrow(BusinessRuleViolationError);
+      },
+    );
   });
 
   describe('assertCanAppeal', () => {
@@ -40,11 +52,15 @@ describe('BuildingVerificationPolicy', () => {
     });
 
     it('refuses appeal on a non-rejected building', () => {
-      expect(() => policy.assertCanAppeal('UNDER_REVIEW', 'person-1', 'person-1')).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertCanAppeal('UNDER_REVIEW', 'person-1', 'person-1')).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('refuses appeal from someone other than the creator', () => {
-      expect(() => policy.assertCanAppeal('REJECTED', 'person-2', 'person-1')).toThrow(AuthorizationError);
+      expect(() => policy.assertCanAppeal('REJECTED', 'person-2', 'person-1')).toThrow(
+        AuthorizationError,
+      );
     });
   });
 });

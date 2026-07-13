@@ -29,7 +29,9 @@ export class NotificationTemplateController {
   @Get()
   @PlatformRoles('REVIEWER')
   list(@Query('isActive') isActive?: string) {
-    return this.templates.list({ isActive: isActive === undefined ? undefined : isActive === 'true' });
+    return this.templates.list({
+      isActive: isActive === undefined ? undefined : isActive === 'true',
+    });
   }
 
   @Get(':id')
@@ -40,7 +42,11 @@ export class NotificationTemplateController {
 
   @Post()
   @PlatformRoles('SENIOR_REVIEWER')
-  create(@Body() dto: CreateNotificationTemplateDto, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  create(
+    @Body() dto: CreateNotificationTemplateDto,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.templates.create(dto, user.sub, requestId);
   }
 

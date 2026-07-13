@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import type { SupportCaseCategory, SupportCaseResolutionCode, VerificationPriority } from '@prisma/client';
+import type {
+  SupportCaseCategory,
+  SupportCaseResolutionCode,
+  VerificationPriority,
+} from '@prisma/client';
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import { SupportCasePolicy } from '../domain/policies/support-case.policy';
 import { AuditService } from '../../../common/audit/audit.service';
@@ -72,7 +76,12 @@ export class SupportCaseService {
     return kase;
   }
 
-  listCases(filters: { status?: string; priority?: string; category?: string; assignedToId?: string }) {
+  listCases(filters: {
+    status?: string;
+    priority?: string;
+    category?: string;
+    assignedToId?: string;
+  }) {
     return this.backOffice.listSupportCases({
       status: filters.status as never,
       priority: filters.priority as never,
@@ -105,11 +114,22 @@ export class SupportCaseService {
   }
 
   /** Staff-side message — may be internal (staff-only) or a reply visible to the ticket's creator. */
-  async addStaffMessage(caseId: string, body: string, isInternal: boolean, senderId: string, requestId: string) {
+  async addStaffMessage(
+    caseId: string,
+    body: string,
+    isInternal: boolean,
+    senderId: string,
+    requestId: string,
+  ) {
     const kase = await this.getCase(caseId);
     this.policy.assertActionable(kase.status);
 
-    const message = await this.backOffice.addSupportCaseMessage({ caseId, senderId, body, isInternal });
+    const message = await this.backOffice.addSupportCaseMessage({
+      caseId,
+      senderId,
+      body,
+      isInternal,
+    });
 
     if (kase.status === 'OPEN' && !isInternal) {
       await this.backOffice.updateSupportCaseStatus(caseId, 'WAITING_USER');
@@ -165,7 +185,11 @@ export class SupportCaseService {
     const kase = await this.getCase(caseId);
     this.policy.assertActionable(kase.status);
 
-    const updated = await this.backOffice.resolveSupportCase({ id: caseId, resolutionCode, resolution });
+    const updated = await this.backOffice.resolveSupportCase({
+      id: caseId,
+      resolutionCode,
+      resolution,
+    });
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -214,7 +238,12 @@ export class SupportCaseService {
     this.policy.assertCanReopen(kase.status);
 
     const updated = await this.backOffice.reopenSupportCase(caseId);
-    await this.backOffice.addSupportCaseMessage({ caseId, senderId: actorPersonId, body: `Reopened: ${reason}`, isInternal: false });
+    await this.backOffice.addSupportCaseMessage({
+      caseId,
+      senderId: actorPersonId,
+      body: `Reopened: ${reason}`,
+      isInternal: false,
+    });
 
     await this.audit.record({
       actorId: actorPersonId,

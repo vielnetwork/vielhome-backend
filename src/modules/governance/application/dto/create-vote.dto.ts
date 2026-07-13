@@ -65,7 +65,10 @@ export class CreateVoteDto {
   @IsBoolean()
   isManagerElection?: boolean;
 
-  @ApiProperty({ required: false, description: 'Percentage (0-100) of eligible units that must vote for quorum.' })
+  @ApiProperty({
+    required: false,
+    description: 'Percentage (0-100) of eligible units that must vote for quorum.',
+  })
   @IsOptional()
   @IsInt()
   @Min(1)

@@ -27,7 +27,11 @@ export class ComplianceCaseController {
 
   @Post()
   @PlatformRoles('SENIOR_REVIEWER')
-  open(@Body() dto: OpenComplianceCaseDto, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  open(
+    @Body() dto: OpenComplianceCaseDto,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.service.open(dto, user.sub, requestId);
   }
 

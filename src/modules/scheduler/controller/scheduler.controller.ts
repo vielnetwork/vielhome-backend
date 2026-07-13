@@ -34,7 +34,11 @@ export class SchedulerController {
     if (!VALID_JOB_NAMES.includes(dto.jobName)) {
       throw new ValidationError(`Unknown job name. Valid values: ${VALID_JOB_NAMES.join(', ')}`);
     }
-    const job = await this.queue.add(dto.jobName, {}, { jobId: `manual:${dto.jobName}:${Date.now()}` });
+    const job = await this.queue.add(
+      dto.jobName,
+      {},
+      { jobId: `manual:${dto.jobName}:${Date.now()}` },
+    );
     return { jobId: job.id, jobName: dto.jobName, status: 'queued' };
   }
 }

@@ -71,7 +71,13 @@ export class ComplianceCaseService {
     return kase;
   }
 
-  listCases(filters: { status?: string; category?: string; priority?: string; assignedToId?: string; subjectActorId?: string }) {
+  listCases(filters: {
+    status?: string;
+    category?: string;
+    priority?: string;
+    assignedToId?: string;
+    subjectActorId?: string;
+  }) {
     return this.backOffice.listComplianceCases({
       status: filters.status as never,
       category: filters.category as never,
@@ -99,7 +105,13 @@ export class ComplianceCaseService {
     return updated;
   }
 
-  async decide(caseId: string, decision: 'CONFIRM' | 'DISMISS', deciderPersonId: string, reason: string | undefined, requestId: string) {
+  async decide(
+    caseId: string,
+    decision: 'CONFIRM' | 'DISMISS',
+    deciderPersonId: string,
+    reason: string | undefined,
+    requestId: string,
+  ) {
     const kase = await this.getCase(caseId);
     this.policy.assertInvestigable(kase.status);
 
@@ -134,20 +146,36 @@ export class ComplianceCaseService {
   async detectAnomalies(staffPersonId: string | undefined, requestId: string) {
     const created: Awaited<ReturnType<BackOfficeRepository['createComplianceCase']>>[] = [];
 
-    const fraudGroups = await this.backOffice.findPersonsWithRepeatedConfirmedFraud(REPEATED_FRAUD_THRESHOLD);
+    const fraudGroups =
+      await this.backOffice.findPersonsWithRepeatedConfirmedFraud(REPEATED_FRAUD_THRESHOLD);
     for (const g of fraudGroups) {
       if (!g.targetPersonId) continue;
-      const existing = await this.backOffice.findOpenComplianceCaseFor('REPEATED_FRAUD', g.targetPersonId);
+      const existing = await this.backOffice.findOpenComplianceCaseFor(
+        'REPEATED_FRAUD',
+        g.targetPersonId,
+      );
       if (existing) continue;
       created.push(
-        await this.autoOpen('REPEATED_FRAUD', g.targetPersonId, g._count.targetPersonId, staffPersonId, requestId, 'CONFIRMED fraud cases'),
+        await this.autoOpen(
+          'REPEATED_FRAUD',
+          g.targetPersonId,
+          g._count.targetPersonId,
+          staffPersonId,
+          requestId,
+          'CONFIRMED fraud cases',
+        ),
       );
     }
 
-    const suspensionGroups = await this.backOffice.findPersonsWithRepeatedSuspensions(REPEATED_SUSPENSION_THRESHOLD);
+    const suspensionGroups = await this.backOffice.findPersonsWithRepeatedSuspensions(
+      REPEATED_SUSPENSION_THRESHOLD,
+    );
     for (const g of suspensionGroups) {
       if (!g.targetPersonId) continue;
-      const existing = await this.backOffice.findOpenComplianceCaseFor('REPEATED_SUSPENSION', g.targetPersonId);
+      const existing = await this.backOffice.findOpenComplianceCaseFor(
+        'REPEATED_SUSPENSION',
+        g.targetPersonId,
+      );
       if (existing) continue;
       created.push(
         await this.autoOpen(
@@ -161,13 +189,25 @@ export class ComplianceCaseService {
       );
     }
 
-    const financialGroups = await this.backOffice.findActorsWithRepeatedRejectedPayments(FINANCIAL_ANOMALY_THRESHOLD);
+    const financialGroups = await this.backOffice.findActorsWithRepeatedRejectedPayments(
+      FINANCIAL_ANOMALY_THRESHOLD,
+    );
     for (const g of financialGroups) {
       if (!g.actorId) continue;
-      const existing = await this.backOffice.findOpenComplianceCaseFor('FINANCIAL_ANOMALY', g.actorId);
+      const existing = await this.backOffice.findOpenComplianceCaseFor(
+        'FINANCIAL_ANOMALY',
+        g.actorId,
+      );
       if (existing) continue;
       created.push(
-        await this.autoOpen('FINANCIAL_ANOMALY', g.actorId, g._count.actorId, staffPersonId, requestId, 'rejected-payment audit events'),
+        await this.autoOpen(
+          'FINANCIAL_ANOMALY',
+          g.actorId,
+          g._count.actorId,
+          staffPersonId,
+          requestId,
+          'rejected-payment audit events',
+        ),
       );
     }
 

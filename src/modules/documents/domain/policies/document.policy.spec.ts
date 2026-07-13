@@ -1,5 +1,9 @@
 import { DocumentPolicy } from './document.policy';
-import { AuthorizationError, BusinessRuleViolationError, ValidationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+  ValidationError,
+} from '../../../../common/errors/app-error';
 
 describe('DocumentPolicy', () => {
   let policy: DocumentPolicy;
@@ -29,7 +33,9 @@ describe('DocumentPolicy', () => {
     });
 
     it('requires a privileged role for GOVERNANCE/FINANCIAL/LEGAL', () => {
-      expect(() => policy.assertCategoryManageable('GOVERNANCE', false)).toThrow(AuthorizationError);
+      expect(() => policy.assertCategoryManageable('GOVERNANCE', false)).toThrow(
+        AuthorizationError,
+      );
       expect(() => policy.assertCategoryManageable('FINANCIAL', false)).toThrow(AuthorizationError);
       expect(() => policy.assertCategoryManageable('LEGAL', false)).toThrow(AuthorizationError);
     });

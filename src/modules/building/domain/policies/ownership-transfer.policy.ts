@@ -13,7 +13,9 @@ import { AuthorizationError } from '../../../../common/errors/app-error';
 export class OwnershipTransferPolicy {
   assertCallerIsCurrentOwner(isCurrentOwner: boolean): void {
     if (!isCurrentOwner) {
-      throw new AuthorizationError('Only the unit\'s current owner may initiate an ownership transfer.');
+      throw new AuthorizationError(
+        "Only the unit's current owner may initiate an ownership transfer.",
+      );
     }
   }
 }

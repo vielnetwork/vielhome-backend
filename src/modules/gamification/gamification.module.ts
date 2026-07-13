@@ -19,7 +19,13 @@ import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
   // unchanged since ADR-023.
   imports: [BuildingModule, BackOfficeModule],
   controllers: [GamificationController, BuildingGamificationController],
-  providers: [GamificationService, GamificationEventListener, GamificationRepository, GamificationPolicy, PlatformRolesGuard],
+  providers: [
+    GamificationService,
+    GamificationEventListener,
+    GamificationRepository,
+    GamificationPolicy,
+    PlatformRolesGuard,
+  ],
   exports: [GamificationService],
 })
 export class GamificationModule {}

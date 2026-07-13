@@ -12,4 +12,5 @@ export const PLATFORM_ROLES_KEY = 'requiredPlatformRoles';
  * AFTER `JwtAuthGuard` at the controller level. Multiple roles are OR'd:
  * any one of them is sufficient.
  */
-export const PlatformRoles = (...roles: PlatformStaffRole[]) => SetMetadata(PLATFORM_ROLES_KEY, roles);
+export const PlatformRoles = (...roles: PlatformStaffRole[]) =>
+  SetMetadata(PLATFORM_ROLES_KEY, roles);

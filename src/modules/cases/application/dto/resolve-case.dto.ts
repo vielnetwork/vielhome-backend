@@ -2,7 +2,14 @@ import { ApiProperty } from '@nestjs/swagger';
 import type { CaseResolutionCode } from '@prisma/client';
 import { IsEnum } from 'class-validator';
 
-const RESOLUTION_CODES = ['COMPLETED', 'REJECTED', 'DUPLICATE', 'INVALID', 'EXTERNAL_RESOLUTION', 'OTHER'];
+const RESOLUTION_CODES = [
+  'COMPLETED',
+  'REJECTED',
+  'DUPLICATE',
+  'INVALID',
+  'EXTERNAL_RESOLUTION',
+  'OTHER',
+];
 
 /**
  * 08.08 Rule 014 resolution code examples: COMPLETED, REJECTED, DUPLICATE,

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { SubscriptionFeatureKey, SubscriptionPlan, SubscriptionStatus } from '@prisma/client';
+import type { SubscriptionFeatureKey, SubscriptionPlan } from '@prisma/client';
 import { BusinessRuleViolationError } from '../../../../common/errors/app-error';
 
 /**
@@ -86,7 +86,11 @@ export class SubscriptionPolicy {
         return { featureKey, result: 'ALLOWED' as const, source: 'GRANT' as const };
       }
       const allowed = this.planIncludesFeature(plan, featureKey);
-      return { featureKey, result: (allowed ? 'ALLOWED' : 'DENIED') as FeatureAccessResult, source: 'PLAN' as const };
+      return {
+        featureKey,
+        result: (allowed ? 'ALLOWED' : 'DENIED') as FeatureAccessResult,
+        source: 'PLAN' as const,
+      };
     });
   }
 

@@ -17,7 +17,11 @@ export class LegalHoldService {
     private readonly audit: AuditService,
   ) {}
 
-  async place(params: { entityType: string; entityId: string; reason: string }, staffPersonId: string, requestId: string) {
+  async place(
+    params: { entityType: string; entityId: string; reason: string },
+    staffPersonId: string,
+    requestId: string,
+  ) {
     const existing = await this.backOffice.findActiveLegalHold(params.entityType, params.entityId);
     this.policy.assertCanPlace(existing);
 

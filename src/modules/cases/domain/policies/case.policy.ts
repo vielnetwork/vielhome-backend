@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 export interface CaseAccessInput {
   visibility: string;
@@ -26,12 +29,21 @@ export class CasePolicy {
   }
 
   /** Only the creator or a privileged role may edit a case's own fields (title/description/priority/visibility), and only while it's not closed. */
-  assertEditable(createdById: string, requesterPersonId: string, isPrivileged: boolean, status: string): void {
+  assertEditable(
+    createdById: string,
+    requesterPersonId: string,
+    isPrivileged: boolean,
+    status: string,
+  ): void {
     if (createdById !== requesterPersonId && !isPrivileged) {
-      throw new AuthorizationError('Only the case creator or a privileged role may edit this case.');
+      throw new AuthorizationError(
+        'Only the case creator or a privileged role may edit this case.',
+      );
     }
     if (status === 'CLOSED') {
-      throw new BusinessRuleViolationError('A closed case must be reopened before it can be edited.');
+      throw new BusinessRuleViolationError(
+        'A closed case must be reopened before it can be edited.',
+      );
     }
   }
 

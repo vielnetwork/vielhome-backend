@@ -12,10 +12,10 @@ export class VotePolicy {
   /** 04.06 Rule 8 / 06.06 Rule 004: every vote needs a start and end date, and the window must make sense. */
   assertValidVoteWindow(startAt: Date, endAt: Date): void {
     if (endAt <= startAt) {
-      throw new BusinessRuleViolationError('A vote\'s end date must be after its start date.');
+      throw new BusinessRuleViolationError("A vote's end date must be after its start date.");
     }
     if (endAt <= new Date()) {
-      throw new BusinessRuleViolationError('A vote\'s end date must be in the future.');
+      throw new BusinessRuleViolationError("A vote's end date must be in the future.");
     }
   }
 
@@ -25,7 +25,9 @@ export class VotePolicy {
       throw new BusinessRuleViolationError('Only a DRAFT vote can be published.');
     }
     if (optionCount < 2) {
-      throw new BusinessRuleViolationError('A vote needs at least two options before it can be published.');
+      throw new BusinessRuleViolationError(
+        'A vote needs at least two options before it can be published.',
+      );
     }
   }
 
@@ -35,11 +37,15 @@ export class VotePolicy {
    */
   assertValidElectionOptions(candidatePersonIds: string[]): void {
     if (candidatePersonIds.length === 0) {
-      throw new BusinessRuleViolationError('A manager-election vote needs at least one candidate option.');
+      throw new BusinessRuleViolationError(
+        'A manager-election vote needs at least one candidate option.',
+      );
     }
     const unique = new Set(candidatePersonIds);
     if (unique.size !== candidatePersonIds.length) {
-      throw new BusinessRuleViolationError('A manager-election vote cannot list the same candidate twice.');
+      throw new BusinessRuleViolationError(
+        'A manager-election vote cannot list the same candidate twice.',
+      );
     }
   }
 
@@ -49,7 +55,7 @@ export class VotePolicy {
       throw new BusinessRuleViolationError('This vote is not currently open for ballots.');
     }
     if (new Date() > endAt) {
-      throw new BusinessRuleViolationError('This vote\'s voting window has closed.');
+      throw new BusinessRuleViolationError("This vote's voting window has closed.");
     }
   }
 
@@ -57,7 +63,11 @@ export class VotePolicy {
    * 04.06 Rule 6, generalized to any election: a candidate cannot cast a
    * ballot in the election they are themselves standing in.
    */
-  assertNotVotingOnOwnCandidacy(isManagerElection: boolean, voterPersonId: string, candidatePersonIds: string[]): void {
+  assertNotVotingOnOwnCandidacy(
+    isManagerElection: boolean,
+    voterPersonId: string,
+    candidatePersonIds: string[],
+  ): void {
     if (isManagerElection && candidatePersonIds.includes(voterPersonId)) {
       throw new BusinessRuleViolationError('A candidate cannot vote in their own election.');
     }
@@ -102,17 +112,23 @@ export class VotePolicy {
       throw new BusinessRuleViolationError('A PROPERTY_TYPE-scoped vote requires scopeUnitType.');
     }
     if (scopeType === 'SELECTED_UNITS' && (!scopeUnitIds || scopeUnitIds.length === 0)) {
-      throw new BusinessRuleViolationError('A SELECTED_UNITS-scoped vote requires at least one scopeUnitIds entry.');
+      throw new BusinessRuleViolationError(
+        'A SELECTED_UNITS-scoped vote requires at least one scopeUnitIds entry.',
+      );
     }
 
     if (scopeType !== 'BLOCK' && scopeBlockId) {
       throw new BusinessRuleViolationError('scopeBlockId is only valid when scopeType is BLOCK.');
     }
     if (scopeType !== 'PROPERTY_TYPE' && scopeUnitType) {
-      throw new BusinessRuleViolationError('scopeUnitType is only valid when scopeType is PROPERTY_TYPE.');
+      throw new BusinessRuleViolationError(
+        'scopeUnitType is only valid when scopeType is PROPERTY_TYPE.',
+      );
     }
     if (scopeType !== 'SELECTED_UNITS' && scopeUnitIds && scopeUnitIds.length > 0) {
-      throw new BusinessRuleViolationError('scopeUnitIds is only valid when scopeType is SELECTED_UNITS.');
+      throw new BusinessRuleViolationError(
+        'scopeUnitIds is only valid when scopeType is SELECTED_UNITS.',
+      );
     }
   }
 }

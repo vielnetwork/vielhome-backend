@@ -36,7 +36,10 @@ export class CreateReferenceDto {
   @IsString()
   entityId!: string;
 
-  @ApiProperty({ required: false, description: 'Defaults to the document\'s current version if omitted.' })
+  @ApiProperty({
+    required: false,
+    description: "Defaults to the document's current version if omitted.",
+  })
   @IsOptional()
   @IsString()
   versionId?: string;

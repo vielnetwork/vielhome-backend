@@ -68,7 +68,11 @@ export class AuditController {
     @RequestId() requestId: string,
   ) {
     const results = await this.audit.getTimeline(entityType, entityId);
-    await this.recordAccess('AuditLogAccessed', user.sub, requestId, { entityType, entityId, view: 'timeline' });
+    await this.recordAccess('AuditLogAccessed', user.sub, requestId, {
+      entityType,
+      entityId,
+      view: 'timeline',
+    });
     return results;
   }
 
@@ -120,12 +124,20 @@ export class AuditController {
     @CurrentUser() user: JwtPayload,
     @RequestId() requestId: string,
   ) {
-    const results = await this.audit.getMetrics(fromDate ? new Date(fromDate) : undefined, toDate ? new Date(toDate) : undefined);
+    const results = await this.audit.getMetrics(
+      fromDate ? new Date(fromDate) : undefined,
+      toDate ? new Date(toDate) : undefined,
+    );
     await this.recordAccess('AuditLogAccessed', user.sub, requestId, { view: 'metrics' });
     return results;
   }
 
-  private recordAccess(action: 'AuditLogAccessed' | 'AuditLogExported', actorId: string, requestId: string, metadata: Record<string, unknown>) {
+  private recordAccess(
+    action: 'AuditLogAccessed' | 'AuditLogExported',
+    actorId: string,
+    requestId: string,
+    metadata: Record<string, unknown>,
+  ) {
     return this.audit.record({
       actorId,
       action,

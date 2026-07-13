@@ -52,13 +52,17 @@ describe('VotePolicy', () => {
     });
 
     it('rejects a duplicate candidate', () => {
-      expect(() => policy.assertValidElectionOptions(['p1', 'p1'])).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertValidElectionOptions(['p1', 'p1'])).toThrow(
+        BusinessRuleViolationError,
+      );
     });
   });
 
   describe('assertOpenForBallots', () => {
     it('allows an ACTIVE vote within its window', () => {
-      expect(() => policy.assertOpenForBallots('ACTIVE', new Date(Date.now() + 10_000))).not.toThrow();
+      expect(() =>
+        policy.assertOpenForBallots('ACTIVE', new Date(Date.now() + 10_000)),
+      ).not.toThrow();
     });
 
     it('rejects a non-ACTIVE vote', () => {
@@ -124,41 +128,55 @@ describe('VotePolicy', () => {
     });
 
     it('allows BLOCK with scopeBlockId', () => {
-      expect(() => policy.assertValidScope({ scopeType: 'BLOCK', scopeBlockId: 'block-1' })).not.toThrow();
+      expect(() =>
+        policy.assertValidScope({ scopeType: 'BLOCK', scopeBlockId: 'block-1' }),
+      ).not.toThrow();
     });
 
     it('rejects BLOCK without scopeBlockId', () => {
-      expect(() => policy.assertValidScope({ scopeType: 'BLOCK' })).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertValidScope({ scopeType: 'BLOCK' })).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('allows PROPERTY_TYPE with scopeUnitType', () => {
-      expect(() => policy.assertValidScope({ scopeType: 'PROPERTY_TYPE', scopeUnitType: 'RESIDENTIAL' })).not.toThrow();
+      expect(() =>
+        policy.assertValidScope({ scopeType: 'PROPERTY_TYPE', scopeUnitType: 'RESIDENTIAL' }),
+      ).not.toThrow();
     });
 
     it('rejects PROPERTY_TYPE without scopeUnitType', () => {
-      expect(() => policy.assertValidScope({ scopeType: 'PROPERTY_TYPE' })).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertValidScope({ scopeType: 'PROPERTY_TYPE' })).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('allows SELECTED_UNITS with at least one scopeUnitIds entry', () => {
-      expect(() => policy.assertValidScope({ scopeType: 'SELECTED_UNITS', scopeUnitIds: ['unit-1'] })).not.toThrow();
+      expect(() =>
+        policy.assertValidScope({ scopeType: 'SELECTED_UNITS', scopeUnitIds: ['unit-1'] }),
+      ).not.toThrow();
     });
 
     it('rejects SELECTED_UNITS with an empty scopeUnitIds', () => {
-      expect(() => policy.assertValidScope({ scopeType: 'SELECTED_UNITS', scopeUnitIds: [] })).toThrow(
-        BusinessRuleViolationError,
-      );
+      expect(() =>
+        policy.assertValidScope({ scopeType: 'SELECTED_UNITS', scopeUnitIds: [] }),
+      ).toThrow(BusinessRuleViolationError);
     });
 
     it('rejects a mismatched companion field (scopeBlockId set for PROPERTY_TYPE)', () => {
       expect(() =>
-        policy.assertValidScope({ scopeType: 'PROPERTY_TYPE', scopeUnitType: 'RESIDENTIAL', scopeBlockId: 'block-1' }),
+        policy.assertValidScope({
+          scopeType: 'PROPERTY_TYPE',
+          scopeUnitType: 'RESIDENTIAL',
+          scopeBlockId: 'block-1',
+        }),
       ).toThrow(BusinessRuleViolationError);
     });
 
     it('rejects scopeUnitIds set for a non-SELECTED_UNITS scope', () => {
-      expect(() => policy.assertValidScope({ scopeType: 'ENTIRE_BUILDING', scopeUnitIds: ['unit-1'] })).toThrow(
-        BusinessRuleViolationError,
-      );
+      expect(() =>
+        policy.assertValidScope({ scopeType: 'ENTIRE_BUILDING', scopeUnitIds: ['unit-1'] }),
+      ).toThrow(BusinessRuleViolationError);
     });
   });
 });

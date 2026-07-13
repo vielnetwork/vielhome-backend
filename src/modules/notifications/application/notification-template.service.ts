@@ -84,7 +84,10 @@ export class NotificationTemplateService {
    * this failure mode — surfaced here as `NotFoundAppError`, this
    * codebase's existing 404 type, rather than a new one-off error code.
    */
-  async render(code: string, variables: Record<string, string>): Promise<{ title: string; body: string }> {
+  async render(
+    code: string,
+    variables: Record<string, string>,
+  ): Promise<{ title: string; body: string }> {
     const template = await this.templates.findByCode(code);
     if (!template || !template.isActive) {
       throw new NotFoundAppError(`No active notification template found for code "${code}".`);

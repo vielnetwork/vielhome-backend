@@ -187,7 +187,13 @@ export class BuildingController {
     @Body() dto: ChangeManagerDto,
     @RequestId() requestId: string,
   ) {
-    return this.buildings.changeManager(id, dto.newManagerPersonId, dto.assignmentType, user.sub, requestId);
+    return this.buildings.changeManager(
+      id,
+      dto.newManagerPersonId,
+      dto.assignmentType,
+      user.sub,
+      requestId,
+    );
   }
 
   /**

@@ -252,8 +252,16 @@ export class FinanceController {
   /** 21_ADRs > ADR-055 — Collection Rate, same `MembershipGuard` tier as `financial-summary`/`ledger` (any current member may read it). */
   @Get(':id/collection-rate')
   @UseGuards(MembershipGuard)
-  getCollectionRate(@Param('id') id: string, @Query('fromDate') fromDate?: string, @Query('toDate') toDate?: string) {
-    return this.finance.getCollectionRate(id, fromDate ? new Date(fromDate) : undefined, toDate ? new Date(toDate) : undefined);
+  getCollectionRate(
+    @Param('id') id: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+  ) {
+    return this.finance.getCollectionRate(
+      id,
+      fromDate ? new Date(fromDate) : undefined,
+      toDate ? new Date(toDate) : undefined,
+    );
   }
 
   /** 21_ADRs > ADR-057 — Payment Registration Rate, Collection Rate's sibling MVP metric, same `MembershipGuard` tier. */

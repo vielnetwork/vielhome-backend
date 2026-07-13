@@ -14,7 +14,12 @@ import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
 import { ChargeBatchCancelledEvent, ChargeBatchIssuedEvent } from '../events/charge-batch.events';
-import { PaymentApprovedEvent, PaymentRefundedEvent, PaymentRejectedEvent, PaymentReversedEvent } from '../events/payment.events';
+import {
+  PaymentApprovedEvent,
+  PaymentRefundedEvent,
+  PaymentRejectedEvent,
+  PaymentReversedEvent,
+} from '../events/payment.events';
 import { AdjustmentCreatedEvent } from '../events/adjustment.events';
 
 @Injectable()
@@ -36,7 +41,12 @@ export class FinanceService {
 
   // --- Funds -----------------------------------------------------------------
 
-  async createFund(buildingId: string, dto: CreateFundDto, actorPersonId: string, requestId: string) {
+  async createFund(
+    buildingId: string,
+    dto: CreateFundDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     await this.getBuilding(buildingId);
 
     const fund = await this.finance.createFund({
@@ -89,7 +99,12 @@ export class FinanceService {
       .map((u) => ({ unitId: u.id, amount: Math.round(dto.ratePerSqm! * (u.areaSqm as number)) }));
   }
 
-  async createChargeBatch(buildingId: string, dto: CreateChargeBatchDto, actorPersonId: string, requestId: string) {
+  async createChargeBatch(
+    buildingId: string,
+    dto: CreateChargeBatchDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     await this.getBuilding(buildingId);
 
     const fund = dto.fundId
@@ -139,7 +154,12 @@ export class FinanceService {
     return batch;
   }
 
-  async issueChargeBatch(buildingId: string, chargeBatchId: string, actorPersonId: string, requestId: string) {
+  async issueChargeBatch(
+    buildingId: string,
+    chargeBatchId: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const batch = await this.getChargeBatch(buildingId, chargeBatchId);
     this.chargePolicy.assertIssuable(batch.status, batch.totalAmount);
 
@@ -170,7 +190,12 @@ export class FinanceService {
     return issued;
   }
 
-  async cancelChargeBatch(buildingId: string, chargeBatchId: string, actorPersonId: string, requestId: string) {
+  async cancelChargeBatch(
+    buildingId: string,
+    chargeBatchId: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const batch = await this.getChargeBatch(buildingId, chargeBatchId);
     const hasAnyPaidAmount = await this.finance.hasAnyPaidChargeItems(chargeBatchId);
     this.chargePolicy.assertCancellable(batch.status, hasAnyPaidAmount);
@@ -186,7 +211,10 @@ export class FinanceService {
       requestId,
     });
 
-    this.events.emit('ChargeBatchCancelled', new ChargeBatchCancelledEvent(chargeBatchId, buildingId, actorPersonId));
+    this.events.emit(
+      'ChargeBatchCancelled',
+      new ChargeBatchCancelledEvent(chargeBatchId, buildingId, actorPersonId),
+    );
 
     return cancelled;
   }
@@ -206,7 +234,13 @@ export class FinanceService {
 
   // --- Adjustments (08.05 Rule 014 — see 21_ADRs > ADR-037) -------------------
 
-  async createAdjustment(buildingId: string, unitId: string, dto: CreateAdjustmentDto, actorPersonId: string, requestId: string) {
+  async createAdjustment(
+    buildingId: string,
+    unitId: string,
+    dto: CreateAdjustmentDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     await this.getOwnUnit(buildingId, unitId);
     this.chargePolicy.assertValidAdjustmentAmount(dto.amount);
 
@@ -238,7 +272,10 @@ export class FinanceService {
       metadata: { unitId, amount: dto.amount },
     });
 
-    this.events.emit('AdjustmentCreated', new AdjustmentCreatedEvent(adjustment.id, buildingId, unitId, dto.amount, actorPersonId));
+    this.events.emit(
+      'AdjustmentCreated',
+      new AdjustmentCreatedEvent(adjustment.id, buildingId, unitId, dto.amount, actorPersonId),
+    );
 
     return adjustment;
   }
@@ -265,7 +302,13 @@ export class FinanceService {
    * gate is the ACCOUNTANT/MANAGER approval step below, where nothing
    * touches the ledger until a human with the right role confirms it.
    */
-  async createPayment(buildingId: string, unitId: string, dto: CreatePaymentDto, actorPersonId: string, requestId: string) {
+  async createPayment(
+    buildingId: string,
+    unitId: string,
+    dto: CreatePaymentDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     await this.getOwnUnit(buildingId, unitId);
     this.paymentPolicy.assertPositiveAmount(dto.amount);
 
@@ -317,7 +360,12 @@ export class FinanceService {
     return payment;
   }
 
-  async approvePayment(buildingId: string, paymentId: string, actorPersonId: string, requestId: string) {
+  async approvePayment(
+    buildingId: string,
+    paymentId: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const payment = await this.getOwnPayment(buildingId, paymentId);
     this.paymentPolicy.assertPending(payment.status);
 
@@ -343,13 +391,26 @@ export class FinanceService {
 
     this.events.emit(
       'PaymentApproved',
-      new PaymentApprovedEvent(paymentId, buildingId, payment.unitId, payment.amount, actorPersonId, payment.payerId),
+      new PaymentApprovedEvent(
+        paymentId,
+        buildingId,
+        payment.unitId,
+        payment.amount,
+        actorPersonId,
+        payment.payerId,
+      ),
     );
 
     return approved;
   }
 
-  async rejectPayment(buildingId: string, paymentId: string, dto: RejectPaymentDto, actorPersonId: string, requestId: string) {
+  async rejectPayment(
+    buildingId: string,
+    paymentId: string,
+    dto: RejectPaymentDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const payment = await this.getOwnPayment(buildingId, paymentId);
     this.paymentPolicy.assertPending(payment.status);
 
@@ -365,13 +426,22 @@ export class FinanceService {
       reason: dto.reason,
     });
 
-    this.events.emit('PaymentRejected', new PaymentRejectedEvent(paymentId, buildingId, payment.unitId, actorPersonId));
+    this.events.emit(
+      'PaymentRejected',
+      new PaymentRejectedEvent(paymentId, buildingId, payment.unitId, actorPersonId),
+    );
 
     return rejected;
   }
 
   /** Undoes an erroneous/bounced/fraudulent APPROVED payment (08.06 Rule 010/014 — see 21_ADRs > ADR-037). */
-  async reversePayment(buildingId: string, paymentId: string, dto: ReversePaymentDto, actorPersonId: string, requestId: string) {
+  async reversePayment(
+    buildingId: string,
+    paymentId: string,
+    dto: ReversePaymentDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const payment = await this.getOwnPayment(buildingId, paymentId);
     this.paymentPolicy.assertReversible(payment.status);
 
@@ -397,18 +467,35 @@ export class FinanceService {
 
     this.events.emit(
       'PaymentReversed',
-      new PaymentReversedEvent(paymentId, buildingId, payment.unitId, payment.amount, actorPersonId),
+      new PaymentReversedEvent(
+        paymentId,
+        buildingId,
+        payment.unitId,
+        payment.amount,
+        actorPersonId,
+      ),
     );
 
     return reversed;
   }
 
   /** Returns cash to the payer on a valid, already-APPROVED payment (08.06 Rules 010/013/015 — see 21_ADRs > ADR-037). */
-  async refundPayment(buildingId: string, paymentId: string, dto: RefundPaymentDto, actorPersonId: string, requestId: string) {
+  async refundPayment(
+    buildingId: string,
+    paymentId: string,
+    dto: RefundPaymentDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const payment = await this.getOwnPayment(buildingId, paymentId);
     const existingRefunds = await this.finance.findRefundsByPayment(paymentId);
     const refundAmount = dto.amount ?? payment.amount;
-    this.paymentPolicy.assertRefundable(payment.status, refundAmount, payment.amount, existingRefunds.length > 0);
+    this.paymentPolicy.assertRefundable(
+      payment.status,
+      refundAmount,
+      payment.amount,
+      existingRefunds.length > 0,
+    );
 
     const refund = await this.finance.createRefund({
       paymentId,

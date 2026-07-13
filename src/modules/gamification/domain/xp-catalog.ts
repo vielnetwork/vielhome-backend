@@ -41,13 +41,21 @@ export const XP_CATALOG: Record<XpReason, XpCatalogEntry> = {
   // authentication (no separate profile-completion concept exists yet).
   PROFILE_CREATED: { amount: 10, buildingScoreDelta: 0, achievementCode: 'FIRST_STEPS' },
   // 15_Gamification "Finish Building Setup +50 XP".
-  BUILDING_SETUP_COMPLETED: { amount: 50, buildingScoreDelta: 10, achievementCode: 'BUILDING_FOUNDER' },
+  BUILDING_SETUP_COMPLETED: {
+    amount: 50,
+    buildingScoreDelta: 10,
+    achievementCode: 'BUILDING_FOUNDER',
+  },
   // 15_Gamification "Pay Charge On Time +20 XP" — awarded on any approved
   // payment, not gated on comparing against ChargeBatch.dueDate (a
   // payment can span multiple charge items/batches and PaymentApproved's
   // payload doesn't carry due-date context) — an honest MVP
   // simplification, see ADR-028 Decision point 2.
-  CHARGE_PAID: { amount: CHARGE_PAID_AMOUNT, buildingScoreDelta: CHARGE_PAID_BUILDING_SCORE_DELTA, achievementCode: 'FIRST_PAYMENT' },
+  CHARGE_PAID: {
+    amount: CHARGE_PAID_AMOUNT,
+    buildingScoreDelta: CHARGE_PAID_BUILDING_SCORE_DELTA,
+    achievementCode: 'FIRST_PAYMENT',
+  },
   // 15_Gamification "Participate in Vote +15 XP".
   VOTE_PARTICIPATED: { amount: 15, buildingScoreDelta: 2, achievementCode: 'FIRST_VOTE' },
   // 15_Gamification "Help Community +25 XP" — approximated by resolving a
@@ -55,13 +63,46 @@ export const XP_CATALOG: Record<XpReason, XpCatalogEntry> = {
   // avoid double-rewarding a case that gets resolved then closed).
   CASE_RESOLVED: { amount: 25, buildingScoreDelta: 4, achievementCode: 'COMMUNITY_HELPER' },
   // 21_ADRs > ADR-041 — see the class doc comment above.
-  CHARGE_PAID_REVERSED: { amount: -CHARGE_PAID_AMOUNT, buildingScoreDelta: -CHARGE_PAID_BUILDING_SCORE_DELTA },
+  CHARGE_PAID_REVERSED: {
+    amount: -CHARGE_PAID_AMOUNT,
+    buildingScoreDelta: -CHARGE_PAID_BUILDING_SCORE_DELTA,
+  },
 };
 
-export const ACHIEVEMENT_SEED_DATA: Array<{ code: AchievementCode; title: string; description: string; xpBonus: number }> = [
-  { code: 'FIRST_STEPS', title: 'اولین قدم‌ها', description: 'حساب کاربری خود را در VielHome ایجاد کردید.', xpBonus: 0 },
-  { code: 'BUILDING_FOUNDER', title: 'بنیان‌گذار ساختمان', description: 'راه‌اندازی یک ساختمان را تکمیل کردید.', xpBonus: 0 },
-  { code: 'FIRST_PAYMENT', title: 'اولین پرداخت', description: 'اولین پرداخت شارژ خود را ثبت کردید.', xpBonus: 0 },
-  { code: 'FIRST_VOTE', title: 'اولین رأی', description: 'در اولین رأی‌گیری خود شرکت کردید.', xpBonus: 0 },
-  { code: 'COMMUNITY_HELPER', title: 'یاور جامعه', description: 'اولین درخواست/شکایت را با موفقیت حل کردید.', xpBonus: 0 },
+export const ACHIEVEMENT_SEED_DATA: Array<{
+  code: AchievementCode;
+  title: string;
+  description: string;
+  xpBonus: number;
+}> = [
+  {
+    code: 'FIRST_STEPS',
+    title: 'اولین قدم‌ها',
+    description: 'حساب کاربری خود را در VielHome ایجاد کردید.',
+    xpBonus: 0,
+  },
+  {
+    code: 'BUILDING_FOUNDER',
+    title: 'بنیان‌گذار ساختمان',
+    description: 'راه‌اندازی یک ساختمان را تکمیل کردید.',
+    xpBonus: 0,
+  },
+  {
+    code: 'FIRST_PAYMENT',
+    title: 'اولین پرداخت',
+    description: 'اولین پرداخت شارژ خود را ثبت کردید.',
+    xpBonus: 0,
+  },
+  {
+    code: 'FIRST_VOTE',
+    title: 'اولین رأی',
+    description: 'در اولین رأی‌گیری خود شرکت کردید.',
+    xpBonus: 0,
+  },
+  {
+    code: 'COMMUNITY_HELPER',
+    title: 'یاور جامعه',
+    description: 'اولین درخواست/شکایت را با موفقیت حل کردید.',
+    xpBonus: 0,
+  },
 ];

@@ -34,9 +34,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
         message: exception.message,
         details: exception.details,
       };
-      res
-        .status(exception.httpStatus)
-        .json(errorResponse([item], { requestId }));
+      res.status(exception.httpStatus).json(errorResponse([item], { requestId }));
       return;
     }
 
@@ -57,12 +55,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
       (exception as Error)?.stack,
     );
 
-    res.status(HttpStatus.INTERNAL_SERVER_ERROR).json(
-      errorResponse(
-        [{ code: 'UNEXPECTED_ERROR', message: 'Something went wrong. Please try again.' }],
-        { requestId },
-      ),
-    );
+    res
+      .status(HttpStatus.INTERNAL_SERVER_ERROR)
+      .json(
+        errorResponse(
+          [{ code: 'UNEXPECTED_ERROR', message: 'Something went wrong. Please try again.' }],
+          { requestId },
+        ),
+      );
   }
 
   private extractHttpExceptionMessages(body: unknown): string[] {

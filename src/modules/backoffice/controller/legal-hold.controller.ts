@@ -24,13 +24,21 @@ export class LegalHoldController {
 
   @Post()
   @PlatformRoles('PLATFORM_ADMIN')
-  place(@Body() dto: PlaceLegalHoldDto, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  place(
+    @Body() dto: PlaceLegalHoldDto,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.service.place(dto, user.sub, requestId);
   }
 
   @Get()
   @PlatformRoles('PLATFORM_ADMIN')
-  list(@Query('entityType') entityType?: string, @Query('entityId') entityId?: string, @Query('isActive') isActive?: string) {
+  list(
+    @Query('entityType') entityType?: string,
+    @Query('entityId') entityId?: string,
+    @Query('isActive') isActive?: string,
+  ) {
     return this.service.list({
       entityType,
       entityId,
@@ -40,7 +48,11 @@ export class LegalHoldController {
 
   @Post(':holdId/release')
   @PlatformRoles('PLATFORM_ADMIN')
-  release(@Param('holdId') holdId: string, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  release(
+    @Param('holdId') holdId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.service.release(holdId, user.sub, requestId);
   }
 }

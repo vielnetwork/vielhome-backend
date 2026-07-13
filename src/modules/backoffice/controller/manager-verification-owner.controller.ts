@@ -35,11 +35,7 @@ export class ManagerVerificationOwnerController {
 
   @Post('appeal')
   @UseGuards(JwtAuthGuard)
-  appeal(
-    @Param('id') id: string,
-    @CurrentUser() user: JwtPayload,
-    @RequestId() requestId: string,
-  ) {
+  appeal(@Param('id') id: string, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
     return this.service.appealCase(id, user.sub, requestId);
   }
 }

@@ -1,5 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { ChargeCalculationMethod, ChargeItemStatus, FundType, LedgerEntryType, PaymentMethod } from '@prisma/client';
+import {
+  ChargeCalculationMethod,
+  ChargeItemStatus,
+  FundType,
+  LedgerEntryType,
+  PaymentMethod,
+} from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 
 /**
@@ -48,7 +54,13 @@ export class FinanceRepository {
     return this.prisma.fund.findUnique({ where: { id: fundId } });
   }
 
-  createFund(params: { buildingId: string; name: string; type: FundType; description?: string; isDefault?: boolean }) {
+  createFund(params: {
+    buildingId: string;
+    name: string;
+    type: FundType;
+    description?: string;
+    isDefault?: boolean;
+  }) {
     return this.prisma.fund.create({ data: params });
   }
 
@@ -125,7 +137,10 @@ export class FinanceRepository {
   findChargeBatchById(id: string) {
     return this.prisma.chargeBatch.findUnique({
       where: { id },
-      include: { chargeItems: { include: { unit: { select: { id: true, unitNumber: true } } } }, fund: true },
+      include: {
+        chargeItems: { include: { unit: { select: { id: true, unitNumber: true } } } },
+        fund: true,
+      },
     });
   }
 
@@ -164,14 +179,23 @@ export class FinanceRepository {
    * records the receivable. See `affectsFundBalance` above for why neither
    * of the ledger entries written here touch `Fund.balance`.
    */
-  issueChargeBatch(params: { chargeBatchId: string; buildingId: string; fundId: string; totalAmount: number; actorId: string; requestId?: string }) {
+  issueChargeBatch(params: {
+    chargeBatchId: string;
+    buildingId: string;
+    fundId: string;
+    totalAmount: number;
+    actorId: string;
+    requestId?: string;
+  }) {
     return this.prisma.$transaction(async (tx) => {
       const batch = await tx.chargeBatch.update({
         where: { id: params.chargeBatchId },
         data: { status: 'ISSUED', issuedAt: new Date() },
       });
 
-      const items = await tx.chargeItem.findMany({ where: { chargeBatchId: params.chargeBatchId } });
+      const items = await tx.chargeItem.findMany({
+        where: { chargeBatchId: params.chargeBatchId },
+      });
 
       for (const item of items) {
         const credit = await tx.creditBalance.findUnique({ where: { unitId: item.unitId } });
@@ -185,7 +209,10 @@ export class FinanceRepository {
 
         await tx.chargeItem.update({
           where: { id: item.id },
-          data: { paidAmount: newPaidAmount, status: computeItemStatus(newPaidAmount, item.amount) },
+          data: {
+            paidAmount: newPaidAmount,
+            status: computeItemStatus(newPaidAmount, item.amount),
+          },
         });
         await tx.creditBalance.update({
           where: { unitId: item.unitId },
@@ -313,7 +340,10 @@ export class FinanceRepository {
         });
         await tx.chargeItem.update({
           where: { id: item.id },
-          data: { paidAmount: newPaidAmount, status: computeItemStatus(newPaidAmount, item.amount) },
+          data: {
+            paidAmount: newPaidAmount,
+            status: computeItemStatus(newPaidAmount, item.amount),
+          },
         });
 
         remaining -= applied;
@@ -371,7 +401,10 @@ export class FinanceRepository {
       });
 
       if (affectsFundBalance('PAYMENT')) {
-        await tx.fund.update({ where: { id: params.fundId }, data: { balance: { increment: params.amount } } });
+        await tx.fund.update({
+          where: { id: params.fundId },
+          data: { balance: { increment: params.amount } },
+        });
       }
 
       return payment;
@@ -430,7 +463,10 @@ export class FinanceRepository {
 
           await tx.chargeItem.update({
             where: { id: item.id },
-            data: { paidAmount: newPaidAmount, status: computeItemStatus(newPaidAmount, item.amount) },
+            data: {
+              paidAmount: newPaidAmount,
+              status: computeItemStatus(newPaidAmount, item.amount),
+            },
           });
 
           remaining -= applied;
@@ -492,7 +528,10 @@ export class FinanceRepository {
     ]);
 
     const chargeItemDebt = outstandingItems.reduce((sum, i) => sum + (i.amount - i.paidAmount), 0);
-    const adjustmentDebt = positiveAdjustments.reduce((sum, a) => sum + Math.max(0, a.amount - a.paidAmount), 0);
+    const adjustmentDebt = positiveAdjustments.reduce(
+      (sum, a) => sum + Math.max(0, a.amount - a.paidAmount),
+      0,
+    );
 
     return {
       chargeItemDebt,
@@ -518,14 +557,23 @@ export class FinanceRepository {
    * there's no per-source tracking of which credit came from which
    * payment to claw back more precisely.
    */
-  reversePayment(params: { paymentId: string; buildingId: string; fundId: string; amount: number; actorId: string; requestId?: string }) {
+  reversePayment(params: {
+    paymentId: string;
+    buildingId: string;
+    fundId: string;
+    amount: number;
+    actorId: string;
+    requestId?: string;
+  }) {
     return this.prisma.$transaction(async (tx) => {
       const payment = await tx.payment.update({
         where: { id: params.paymentId },
         data: { status: 'REVERSED', reversedAt: new Date() },
       });
 
-      const allocations = await tx.paymentAllocation.findMany({ where: { paymentId: params.paymentId } });
+      const allocations = await tx.paymentAllocation.findMany({
+        where: { paymentId: params.paymentId },
+      });
       let totalAllocated = 0;
       for (const alloc of allocations) {
         totalAllocated += alloc.amount;
@@ -535,7 +583,10 @@ export class FinanceRepository {
             const newPaidAmount = Math.max(0, item.paidAmount - alloc.amount);
             await tx.chargeItem.update({
               where: { id: item.id },
-              data: { paidAmount: newPaidAmount, status: computeItemStatus(newPaidAmount, item.amount) },
+              data: {
+                paidAmount: newPaidAmount,
+                status: computeItemStatus(newPaidAmount, item.amount),
+              },
             });
           }
         } else if (alloc.adjustmentId) {
@@ -555,7 +606,10 @@ export class FinanceRepository {
         const credit = await tx.creditBalance.findUnique({ where: { unitId: payment.unitId } });
         if (credit) {
           const newBalance = Math.max(0, credit.balance - overflow);
-          await tx.creditBalance.update({ where: { unitId: payment.unitId }, data: { balance: newBalance } });
+          await tx.creditBalance.update({
+            where: { unitId: payment.unitId },
+            data: { balance: newBalance },
+          });
         }
       }
 
@@ -573,7 +627,10 @@ export class FinanceRepository {
         },
       });
 
-      await tx.fund.update({ where: { id: params.fundId }, data: { balance: { decrement: params.amount } } });
+      await tx.fund.update({
+        where: { id: params.fundId },
+        data: { balance: { decrement: params.amount } },
+      });
 
       return payment;
     });
@@ -635,7 +692,10 @@ export class FinanceRepository {
         },
       });
 
-      await tx.fund.update({ where: { id: params.fundId }, data: { balance: { decrement: params.amount } } });
+      await tx.fund.update({
+        where: { id: params.fundId },
+        data: { balance: { decrement: params.amount } },
+      });
 
       return refund;
     });
@@ -648,28 +708,41 @@ export class FinanceRepository {
   // --- Reporting ---------------------------------------------------------------
 
   async getFinancialSummary(buildingId: string) {
-    const [funds, outstandingItems, positiveAdjustments, collected, refunded, chargeBatchCount] = await Promise.all([
-      this.prisma.fund.findMany({ where: { buildingId } }),
-      this.prisma.chargeItem.findMany({
-        where: { chargeBatch: { buildingId }, status: { not: 'PAID' } },
-        select: { amount: true, paidAmount: true },
-      }),
-      this.prisma.adjustment.aggregate({ where: { buildingId, amount: { gt: 0 } }, _sum: { amount: true } }),
-      this.prisma.payment.aggregate({ where: { buildingId, status: 'APPROVED' }, _sum: { amount: true } }),
-      // A payment's `amount` field only ever reflects the ORIGINAL amount
-      // (never edited — 08.06 Rule 015), so an APPROVED-and-partially-
-      // refunded payment (status stays APPROVED — see `createRefund`'s own
-      // comment) still counts its full original amount above; subtracting
-      // ITS refund here is what makes `totalCollected` net-accurate. A
-      // FULLY-refunded payment's status is REFUNDED, not APPROVED, so it's
-      // already excluded by the aggregate above — filtering this second
-      // aggregate to `payment.status: 'APPROVED'` too avoids subtracting
-      // that refund a second time (which would double-count it).
-      this.prisma.refund.aggregate({ where: { buildingId, payment: { status: 'APPROVED' } }, _sum: { amount: true } }),
-      this.prisma.chargeBatch.count({ where: { buildingId } }),
-    ]);
+    const [funds, outstandingItems, positiveAdjustments, collected, refunded, chargeBatchCount] =
+      await Promise.all([
+        this.prisma.fund.findMany({ where: { buildingId } }),
+        this.prisma.chargeItem.findMany({
+          where: { chargeBatch: { buildingId }, status: { not: 'PAID' } },
+          select: { amount: true, paidAmount: true },
+        }),
+        this.prisma.adjustment.aggregate({
+          where: { buildingId, amount: { gt: 0 } },
+          _sum: { amount: true },
+        }),
+        this.prisma.payment.aggregate({
+          where: { buildingId, status: 'APPROVED' },
+          _sum: { amount: true },
+        }),
+        // A payment's `amount` field only ever reflects the ORIGINAL amount
+        // (never edited — 08.06 Rule 015), so an APPROVED-and-partially-
+        // refunded payment (status stays APPROVED — see `createRefund`'s own
+        // comment) still counts its full original amount above; subtracting
+        // ITS refund here is what makes `totalCollected` net-accurate. A
+        // FULLY-refunded payment's status is REFUNDED, not APPROVED, so it's
+        // already excluded by the aggregate above — filtering this second
+        // aggregate to `payment.status: 'APPROVED'` too avoids subtracting
+        // that refund a second time (which would double-count it).
+        this.prisma.refund.aggregate({
+          where: { buildingId, payment: { status: 'APPROVED' } },
+          _sum: { amount: true },
+        }),
+        this.prisma.chargeBatch.count({ where: { buildingId } }),
+      ]);
 
-    const chargeItemOutstanding = outstandingItems.reduce((sum, i) => sum + (i.amount - i.paidAmount), 0);
+    const chargeItemOutstanding = outstandingItems.reduce(
+      (sum, i) => sum + (i.amount - i.paidAmount),
+      0,
+    );
     const totalOutstanding = chargeItemOutstanding + (positiveAdjustments._sum.amount ?? 0);
 
     return {
@@ -707,7 +780,12 @@ export class FinanceRepository {
   async getCollectionRate(buildingId: string, fromDate?: Date, toDate?: Date) {
     const dateFilter =
       fromDate || toDate
-        ? { createdAt: { ...(fromDate ? { gte: fromDate } : {}), ...(toDate ? { lte: toDate } : {}) } }
+        ? {
+            createdAt: {
+              ...(fromDate ? { gte: fromDate } : {}),
+              ...(toDate ? { lte: toDate } : {}),
+            },
+          }
         : {};
 
     const result = await this.prisma.chargeItem.aggregate({
@@ -749,7 +827,12 @@ export class FinanceRepository {
   async getPaymentRegistrationRate(buildingId: string, fromDate?: Date, toDate?: Date) {
     const dateFilter =
       fromDate || toDate
-        ? { createdAt: { ...(fromDate ? { gte: fromDate } : {}), ...(toDate ? { lte: toDate } : {}) } }
+        ? {
+            createdAt: {
+              ...(fromDate ? { gte: fromDate } : {}),
+              ...(toDate ? { lte: toDate } : {}),
+            },
+          }
         : {};
 
     const [billedResult, registeredResult] = await Promise.all([

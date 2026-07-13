@@ -17,7 +17,9 @@ export class ComplianceCasePolicy {
   /** A case can only be assigned/decided while OPEN or UNDER_INVESTIGATION — CONFIRMED/DISMISSED are terminal. */
   assertInvestigable(status: FraudCaseStatus): void {
     if (!OPEN_STATUSES.includes(status)) {
-      throw new BusinessRuleViolationError(`Compliance case is already decided (status: ${status}).`);
+      throw new BusinessRuleViolationError(
+        `Compliance case is already decided (status: ${status}).`,
+      );
     }
   }
 }

@@ -67,7 +67,11 @@ export class SubscriptionController {
   /** Manually applies the Trial/Grace-Period time-based transitions — standing in for the not-yet-built scheduler. See `SubscriptionService.evaluateExpiry`. */
   @Post('evaluate-expiry')
   @PlatformRoles('REVIEWER')
-  evaluateExpiry(@Param('buildingId') buildingId: string, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  evaluateExpiry(
+    @Param('buildingId') buildingId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.service.evaluateExpiry(buildingId, user.sub, requestId);
   }
 
@@ -81,7 +85,12 @@ export class SubscriptionController {
   ) {
     return this.service.createGrant(
       buildingId,
-      { featureKey: dto.featureKey, grantType: dto.grantType, reason: dto.reason, expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined },
+      {
+        featureKey: dto.featureKey,
+        grantType: dto.grantType,
+        reason: dto.reason,
+        expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+      },
       user.sub,
       requestId,
     );
@@ -89,7 +98,11 @@ export class SubscriptionController {
 
   @Post('grants/:grantId/revoke')
   @PlatformRoles('REVIEWER')
-  revokeGrant(@Param('grantId') grantId: string, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  revokeGrant(
+    @Param('grantId') grantId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.service.revokeGrant(grantId, user.sub, requestId);
   }
 }

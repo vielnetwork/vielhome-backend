@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import type { ManagerVerificationStatus } from '@prisma/client';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 /**
  * Pure business rules for the Manager Verification Queue (07.02 /
@@ -15,7 +18,11 @@ export class ManagerVerificationPolicy {
    * Governance's quorum calculation (ADR-024 Decision point 5).
    * `totalOwners = 0` never meets any threshold (nothing to divide by).
    */
-  meetsApprovalThreshold(approverCount: number, totalOwners: number, requiredPercent: number): boolean {
+  meetsApprovalThreshold(
+    approverCount: number,
+    totalOwners: number,
+    requiredPercent: number,
+  ): boolean {
     if (totalOwners <= 0) return false;
     return approverCount * 100 >= totalOwners * requiredPercent;
   }
@@ -40,7 +47,11 @@ export class ManagerVerificationPolicy {
   }
 
   /** 07.02 Rule 012: only the rejected candidate may appeal. */
-  assertCanAppeal(status: ManagerVerificationStatus, callerPersonId: string, candidateId: string): void {
+  assertCanAppeal(
+    status: ManagerVerificationStatus,
+    callerPersonId: string,
+    candidateId: string,
+  ): void {
     if (status !== 'REJECTED') {
       throw new BusinessRuleViolationError('Only a rejected manager verification may be appealed.');
     }
@@ -59,7 +70,9 @@ export class ManagerVerificationPolicy {
    */
   assertCanRestore(status: ManagerVerificationStatus): void {
     if (status !== 'SUSPENDED') {
-      throw new BusinessRuleViolationError(`Only a suspended manager verification can be restored (status: ${status}).`);
+      throw new BusinessRuleViolationError(
+        `Only a suspended manager verification can be restored (status: ${status}).`,
+      );
     }
   }
 }

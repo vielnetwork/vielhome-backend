@@ -20,7 +20,12 @@ describe('NotificationPolicy', () => {
 
   describe('isChannelEnabled', () => {
     const allOn = { inAppEnabled: true, pushEnabled: true, emailEnabled: true, smsEnabled: true };
-    const allOff = { inAppEnabled: false, pushEnabled: false, emailEnabled: false, smsEnabled: false };
+    const allOff = {
+      inAppEnabled: false,
+      pushEnabled: false,
+      emailEnabled: false,
+      smsEnabled: false,
+    };
 
     it('respects the per-channel preference for non-critical priorities', () => {
       expect(policy.isChannelEnabled('IN_APP', 'NORMAL', allOn)).toBe(true);
@@ -40,7 +45,10 @@ describe('NotificationPolicy', () => {
   describe('renderTemplate', () => {
     it('substitutes every matching {{variable}}', () => {
       const result = policy.renderTemplate(
-        { titleTemplate: 'شارژ {{building_name}}', bodyTemplate: 'مبلغ {{amount}} تا {{due_date}} سررسید دارد.' },
+        {
+          titleTemplate: 'شارژ {{building_name}}',
+          bodyTemplate: 'مبلغ {{amount}} تا {{due_date}} سررسید دارد.',
+        },
         { building_name: 'برج آفتاب', amount: '2,000,000', due_date: '1405/05/01' },
       );
       expect(result.title).toBe('شارژ برج آفتاب');
@@ -65,7 +73,10 @@ describe('NotificationPolicy', () => {
     });
 
     it('is a no-op on a template with no placeholders', () => {
-      const result = policy.renderTemplate({ titleTemplate: 'plain title', bodyTemplate: 'plain body' }, {});
+      const result = policy.renderTemplate(
+        { titleTemplate: 'plain title', bodyTemplate: 'plain body' },
+        {},
+      );
       expect(result).toEqual({ title: 'plain title', body: 'plain body' });
     });
   });

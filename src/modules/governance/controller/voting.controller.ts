@@ -51,7 +51,11 @@ export class VotingController {
 
   @Get(':id/votes')
   @UseGuards(MembershipGuard)
-  listVotes(@Param('id') id: string, @Query('category') category?: VoteCategory, @Query('status') status?: VoteStatus) {
+  listVotes(
+    @Param('id') id: string,
+    @Query('category') category?: VoteCategory,
+    @Query('status') status?: VoteStatus,
+  ) {
     return this.voting.listVotes(id, category, status);
   }
 

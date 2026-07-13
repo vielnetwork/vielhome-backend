@@ -46,7 +46,11 @@ export class MarketplaceModerationController {
 
   @Post(':id/deactivate')
   @PlatformRoles('REVIEWER')
-  deactivate(@Param('id') id: string, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  deactivate(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.marketplace.deactivate(id, user.sub, requestId);
   }
 }

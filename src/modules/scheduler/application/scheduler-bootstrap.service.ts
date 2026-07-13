@@ -47,6 +47,8 @@ export class SchedulerBootstrapService implements OnApplicationBootstrap {
       { jobId: JOB_NAMES.COMPLIANCE_DETECT_ANOMALIES, repeat: { pattern: '0 4 * * *' } },
     );
 
-    this.logger.log('Registered 4 repeatable scheduled jobs (governance auto-publish/auto-close, subscription evaluate-expiry, compliance detect-anomalies).');
+    this.logger.log(
+      'Registered 4 repeatable scheduled jobs (governance auto-publish/auto-close, subscription evaluate-expiry, compliance detect-anomalies).',
+    );
   }
 }

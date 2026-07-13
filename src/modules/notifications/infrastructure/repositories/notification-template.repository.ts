@@ -5,7 +5,12 @@ import { PrismaService } from '../../../../common/prisma/prisma.service';
 export class NotificationTemplateRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(params: { code: string; titleTemplate: string; bodyTemplate: string; isActive?: boolean }) {
+  create(params: {
+    code: string;
+    titleTemplate: string;
+    bodyTemplate: string;
+    isActive?: boolean;
+  }) {
     return this.prisma.notificationTemplate.create({ data: params });
   }
 
@@ -24,7 +29,10 @@ export class NotificationTemplateRepository {
     });
   }
 
-  update(id: string, params: { titleTemplate?: string; bodyTemplate?: string; isActive?: boolean }) {
+  update(
+    id: string,
+    params: { titleTemplate?: string; bodyTemplate?: string; isActive?: boolean },
+  ) {
     return this.prisma.notificationTemplate.update({ where: { id }, data: params });
   }
 }

@@ -57,7 +57,9 @@ export class NotificationsService {
     const priority = input.priority ?? 'NORMAL';
     const preference = await this.notifications.getOrCreatePreference(input.recipientId);
 
-    const channels = ALL_CHANNELS.filter((channel) => this.policy.isChannelEnabled(channel, priority, preference));
+    const channels = ALL_CHANNELS.filter((channel) =>
+      this.policy.isChannelEnabled(channel, priority, preference),
+    );
     if (channels.length === 0) return;
 
     const created = await this.notifications.createNotification({
@@ -114,7 +116,10 @@ export class NotificationsService {
     return this.notifications.listForPerson(personId, filter);
   }
 
-  async searchNotifications(personId: string, params: { title?: string; category?: NotificationCategory }) {
+  async searchNotifications(
+    personId: string,
+    params: { title?: string; category?: NotificationCategory },
+  ) {
     return this.notifications.searchForPerson(personId, params);
   }
 

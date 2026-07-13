@@ -8,7 +8,10 @@ import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
 import { BuildingVerificationDecidedEvent } from '../events/backoffice.events';
 
-const DECISION_TO_STATUS: Record<BuildingVerificationDecision, 'VERIFIED' | 'REJECTED' | 'PENDING_INFORMATION'> = {
+const DECISION_TO_STATUS: Record<
+  BuildingVerificationDecision,
+  'VERIFIED' | 'REJECTED' | 'PENDING_INFORMATION'
+> = {
   APPROVE: 'VERIFIED',
   REJECT: 'REJECTED',
   REQUEST_INFORMATION: 'PENDING_INFORMATION',
@@ -80,7 +83,12 @@ export class BuildingVerificationService {
     if (autoApproved) {
       this.events.emit(
         'BuildingVerificationDecided',
-        new BuildingVerificationDecidedEvent(params.buildingId, kase.id, status, params.createdById),
+        new BuildingVerificationDecidedEvent(
+          params.buildingId,
+          kase.id,
+          status,
+          params.createdById,
+        ),
       );
     }
   }
@@ -153,7 +161,12 @@ export class BuildingVerificationService {
     if (status === 'VERIFIED' || status === 'REJECTED') {
       this.events.emit(
         'BuildingVerificationDecided',
-        new BuildingVerificationDecidedEvent(kase.buildingId, caseId, status, kase.building.createdById),
+        new BuildingVerificationDecidedEvent(
+          kase.buildingId,
+          caseId,
+          status,
+          kase.building.createdById,
+        ),
       );
     }
 
@@ -161,7 +174,12 @@ export class BuildingVerificationService {
   }
 
   /** 07.01 Rule 014/015 — the building's own creator, on a rejected case, opens a new case that links back to the old one via `previousCaseId`. No fresh risk evaluation is run — an appeal always goes to manual review, never back through auto-approval. */
-  async appealCase(buildingId: string, callerPersonId: string, reason: string | undefined, requestId: string) {
+  async appealCase(
+    buildingId: string,
+    callerPersonId: string,
+    reason: string | undefined,
+    requestId: string,
+  ) {
     const building = await this.buildings.findById(buildingId);
     if (!building) throw new NotFoundAppError('Building not found.');
 

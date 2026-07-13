@@ -38,7 +38,12 @@ export class MeetingService {
     return meeting;
   }
 
-  async createMeeting(buildingId: string, dto: CreateMeetingDto, actorPersonId: string, requestId: string) {
+  async createMeeting(
+    buildingId: string,
+    dto: CreateMeetingDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     await this.getBuilding(buildingId);
 
     const meeting = await this.meetings.createMeeting({
@@ -99,7 +104,12 @@ export class MeetingService {
   }
 
   /** 04.06 Rule 13 — one-way; an archived meeting's record (including its minutes) is preserved as-is going forward. */
-  async archiveMeeting(buildingId: string, meetingId: string, actorPersonId: string, requestId: string) {
+  async archiveMeeting(
+    buildingId: string,
+    meetingId: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const meeting = await this.getMeetingOrThrow(buildingId, meetingId);
     this.policy.assertArchivable(meeting.archivedAt);
 

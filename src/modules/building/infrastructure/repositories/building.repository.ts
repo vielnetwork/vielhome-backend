@@ -138,7 +138,10 @@ export class BuildingRepository {
     return this.prisma.$transaction(async (tx) => {
       const building = await tx.building.create({
         data: {
-          name: params.name && params.name.trim().length > 0 ? params.name : `ساختمان ${params.mainStreet}`,
+          name:
+            params.name && params.name.trim().length > 0
+              ? params.name
+              : `ساختمان ${params.mainStreet}`,
           buildingType: params.buildingType,
           description: params.description,
           country: params.country,
@@ -276,7 +279,9 @@ export class BuildingRepository {
       where: { personId, buildingId, isCurrent: true },
       select: { role: true, managerState: true },
     });
-    return rows.filter((r) => r.role !== 'MANAGER' || r.managerState === 'VERIFIED').map((r) => r.role);
+    return rows
+      .filter((r) => r.role !== 'MANAGER' || r.managerState === 'VERIFIED')
+      .map((r) => r.role);
   }
 
   // --- Notification recipient resolution (21_ADRs > ADR-027) --------------
@@ -296,7 +301,10 @@ export class BuildingRepository {
   }
 
   /** Current members holding any of the given roles — used for privileged-role broadcasts (e.g. a new Case needs triage). */
-  async listCurrentMemberPersonIdsByRoles(buildingId: string, roles: MembershipRole[]): Promise<string[]> {
+  async listCurrentMemberPersonIdsByRoles(
+    buildingId: string,
+    roles: MembershipRole[],
+  ): Promise<string[]> {
     const rows = await this.prisma.membership.findMany({
       where: { buildingId, isCurrent: true, role: { in: roles } },
       select: { personId: true },
@@ -397,7 +405,10 @@ export class BuildingRepository {
       // NOT clear it yet — recovery only truly ends once that provisional
       // claim is itself verified (see `ManagerVerificationService`).
       if (managerState === 'VERIFIED') {
-        await tx.building.update({ where: { id: params.buildingId }, data: { recoveryModeEnteredAt: null } });
+        await tx.building.update({
+          where: { id: params.buildingId },
+          data: { recoveryModeEnteredAt: null },
+        });
       }
 
       return created;
@@ -494,7 +505,9 @@ export class BuildingRepository {
 
   /** Used by `OwnershipTransferPolicy.assertCallerIsCurrentOwner` — is this specific person the unit's current owner right now? (Not a building-wide `RolesGuard` check — that can't distinguish "an owner of this building" from "the owner of THIS unit".) */
   async isCurrentOwnerOfUnit(unitId: string, personId: string): Promise<boolean> {
-    const count = await this.prisma.ownership.count({ where: { unitId, personId, isCurrent: true } });
+    const count = await this.prisma.ownership.count({
+      where: { unitId, personId, isCurrent: true },
+    });
     return count > 0;
   }
 
@@ -602,10 +615,20 @@ export class BuildingRepository {
       const now = new Date();
       const tenancy = await tx.tenancy.update({
         where: { id: params.id },
-        data: { isCurrent: false, status: 'ENDED', endDate: now, terminationReason: params.terminationReason },
+        data: {
+          isCurrent: false,
+          status: 'ENDED',
+          endDate: now,
+          terminationReason: params.terminationReason,
+        },
       });
       await tx.membership.updateMany({
-        where: { unitId: params.unitId, personId: params.personId, role: 'TENANT', isCurrent: true },
+        where: {
+          unitId: params.unitId,
+          personId: params.personId,
+          role: 'TENANT',
+          isCurrent: true,
+        },
         data: { isCurrent: false, endedAt: now },
       });
       await tx.unit.update({

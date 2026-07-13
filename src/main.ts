@@ -7,8 +7,14 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 // `allowSyntheticDefaultImports` but not `esModuleInterop`, and helmet's
 // own README documents `const helmet = require('helmet')` as the correct
 // CJS usage. `import = require` compiles to that exact call with no
-// interop-shim ambiguity, regardless of esModuleInterop.
-import helmet = require('helmet');
+// interop-shim ambiguity, regardless of esModuleInterop. The lint rule
+// below (`@typescript-eslint/no-require-imports`, part of this project's
+// `plugin:@typescript-eslint/recommended` set) doesn't distinguish this
+// deliberate, correctness-motivated `import = require` from a stray
+// `require()` call — disabled for this one line only, not project-wide.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const helmet = require('helmet');
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
@@ -87,7 +93,9 @@ async function bootstrap() {
   const port = config.get('port', { infer: true });
   await app.listen(port);
   // eslint-disable-next-line no-console
-  console.log(`VielHome API listening on http://localhost:${port}/${config.get('apiPrefix', { infer: true })}`);
+  console.log(
+    `VielHome API listening on http://localhost:${port}/${config.get('apiPrefix', { infer: true })}`,
+  );
   // eslint-disable-next-line no-console
   console.log(`Swagger docs at http://localhost:${port}/docs`);
 }

@@ -24,7 +24,9 @@ export class PaymentPolicy {
    */
   assertPending(status: string): void {
     if (status !== 'PENDING_APPROVAL') {
-      throw new BusinessRuleViolationError(`This payment has already been ${status.toLowerCase()}.`);
+      throw new BusinessRuleViolationError(
+        `This payment has already been ${status.toLowerCase()}.`,
+      );
     }
   }
 
@@ -37,7 +39,9 @@ export class PaymentPolicy {
    */
   assertReversible(status: string): void {
     if (status !== 'APPROVED') {
-      throw new BusinessRuleViolationError(`Only an APPROVED payment can be reversed (this one is ${status}).`);
+      throw new BusinessRuleViolationError(
+        `Only an APPROVED payment can be reversed (this one is ${status}).`,
+      );
     }
   }
 
@@ -48,9 +52,16 @@ export class PaymentPolicy {
    * this MVP doesn't stack partial refunds (see the `Refund` model's own
    * schema comment).
    */
-  assertRefundable(status: string, refundAmount: number, paymentAmount: number, alreadyRefunded: boolean): void {
+  assertRefundable(
+    status: string,
+    refundAmount: number,
+    paymentAmount: number,
+    alreadyRefunded: boolean,
+  ): void {
     if (status !== 'APPROVED') {
-      throw new BusinessRuleViolationError(`Only an APPROVED payment can be refunded (this one is ${status}).`);
+      throw new BusinessRuleViolationError(
+        `Only an APPROVED payment can be refunded (this one is ${status}).`,
+      );
     }
     if (alreadyRefunded) {
       throw new BusinessRuleViolationError('This payment has already been refunded.');

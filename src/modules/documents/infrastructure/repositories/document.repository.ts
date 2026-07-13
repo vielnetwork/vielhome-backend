@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { DocumentCategory, DocumentReferenceEntityType, DocumentStatus, DocumentVisibility } from '@prisma/client';
+import {
+  DocumentCategory,
+  DocumentReferenceEntityType,
+  DocumentStatus,
+  DocumentVisibility,
+} from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 
 @Injectable()
@@ -63,7 +68,11 @@ export class DocumentRepository {
 
   listDocuments(
     buildingId: string,
-    filter?: { category?: DocumentCategory; visibility?: DocumentVisibility; status?: DocumentStatus },
+    filter?: {
+      category?: DocumentCategory;
+      visibility?: DocumentVisibility;
+      status?: DocumentStatus;
+    },
   ) {
     return this.prisma.document.findMany({
       where: {
@@ -76,7 +85,10 @@ export class DocumentRepository {
     });
   }
 
-  searchDocuments(buildingId: string, params: { title?: string; category?: DocumentCategory; tags?: string[] }) {
+  searchDocuments(
+    buildingId: string,
+    params: { title?: string; category?: DocumentCategory; tags?: string[] },
+  ) {
     return this.prisma.document.findMany({
       where: {
         buildingId,
@@ -93,7 +105,10 @@ export class DocumentRepository {
   }
 
   findVersionWithDocument(versionId: string) {
-    return this.prisma.documentVersion.findUnique({ where: { id: versionId }, include: { document: true } });
+    return this.prisma.documentVersion.findUnique({
+      where: { id: versionId },
+      include: { document: true },
+    });
   }
 
   /** 06.08 Rule 007: a new upload is always a new version, never an overwrite — unsets the previous current version in the same transaction. */
@@ -138,7 +153,11 @@ export class DocumentRepository {
     return this.prisma.document.update({ where: { id }, data: { status: 'ARCHIVED' } });
   }
 
-  createReference(params: { documentVersionId: string; entityType: DocumentReferenceEntityType; entityId: string }) {
+  createReference(params: {
+    documentVersionId: string;
+    entityType: DocumentReferenceEntityType;
+    entityId: string;
+  }) {
     return this.prisma.documentReference.create({ data: params });
   }
 

@@ -25,7 +25,11 @@ export class FraudCaseController {
 
   @Post()
   @PlatformRoles('REVIEWER')
-  open(@Body() dto: OpenFraudCaseDto, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  open(
+    @Body() dto: OpenFraudCaseDto,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.service.openCase(dto, user.sub, requestId);
   }
 
@@ -33,7 +37,10 @@ export class FraudCaseController {
   @Get('metrics')
   @PlatformRoles('SENIOR_REVIEWER')
   getMetrics(@Query('fromDate') fromDate?: string, @Query('toDate') toDate?: string) {
-    return this.service.getMetrics(fromDate ? new Date(fromDate) : undefined, toDate ? new Date(toDate) : undefined);
+    return this.service.getMetrics(
+      fromDate ? new Date(fromDate) : undefined,
+      toDate ? new Date(toDate) : undefined,
+    );
   }
 
   @Get()
@@ -124,6 +131,12 @@ export class FraudCaseController {
     @CurrentUser() user: JwtPayload,
     @RequestId() requestId: string,
   ) {
-    return this.service.decideEnforcementAppeal(actionId, dto.decision, user.sub, dto.reason, requestId);
+    return this.service.decideEnforcementAppeal(
+      actionId,
+      dto.decision,
+      user.sub,
+      dto.reason,
+      requestId,
+    );
   }
 }

@@ -32,7 +32,10 @@ export class ManagerAssignmentPolicy {
    * A manager cannot be handed off to themselves — that's not a
    * succession, it's a no-op that would still burn an audit/history row.
    */
-  assertNotSelfHandoff(currentManagerPersonId: string | undefined, newManagerPersonId: string): void {
+  assertNotSelfHandoff(
+    currentManagerPersonId: string | undefined,
+    newManagerPersonId: string,
+  ): void {
     if (currentManagerPersonId && currentManagerPersonId === newManagerPersonId) {
       throw new BusinessRuleViolationError('This person is already the active manager.');
     }
@@ -57,15 +60,17 @@ export class ManagerAssignmentPolicy {
   /** Only a PROVISIONAL manager can be verified — nothing else is waiting on this step. */
   assertProvisional(managerState: string | null | undefined): void {
     if (managerState !== 'PROVISIONAL') {
-      throw new BusinessRuleViolationError(
-        'Only a provisional manager can be verified.',
-      );
+      throw new BusinessRuleViolationError('Only a provisional manager can be verified.');
     }
   }
 
-  assertHasActiveManager(existing: ActiveManagerMembership | null): asserts existing is ActiveManagerMembership {
+  assertHasActiveManager(
+    existing: ActiveManagerMembership | null,
+  ): asserts existing is ActiveManagerMembership {
     if (!existing) {
-      throw new BusinessRuleViolationError('This building does not currently have an active manager.');
+      throw new BusinessRuleViolationError(
+        'This building does not currently have an active manager.',
+      );
     }
   }
 }

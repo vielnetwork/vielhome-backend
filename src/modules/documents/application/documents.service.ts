@@ -70,7 +70,12 @@ export class DocumentsService {
     return found;
   }
 
-  async createDocument(buildingId: string, dto: CreateDocumentDto, actorPersonId: string, requestId: string) {
+  async createDocument(
+    buildingId: string,
+    dto: CreateDocumentDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     await this.getBuilding(buildingId);
     await this.assertMember(actorPersonId, buildingId);
 
@@ -103,7 +108,10 @@ export class DocumentsService {
       metadata: { category: document.category, versionId: version.id },
     });
 
-    this.events.emit('DocumentUploaded', new DocumentUploadedEvent(document.id, buildingId, actorPersonId, document.category));
+    this.events.emit(
+      'DocumentUploaded',
+      new DocumentUploadedEvent(document.id, buildingId, actorPersonId, document.category),
+    );
 
     return { document, version };
   }
@@ -170,7 +178,10 @@ export class DocumentsService {
           metadata: { category: document.category, versionId: version.id, bulkIndex: index },
         });
 
-        this.events.emit('DocumentUploaded', new DocumentUploadedEvent(document.id, buildingId, actorPersonId, document.category));
+        this.events.emit(
+          'DocumentUploaded',
+          new DocumentUploadedEvent(document.id, buildingId, actorPersonId, document.category),
+        );
 
         results.push({ index, status: 'created', document, version });
       } catch (err) {
@@ -200,7 +211,11 @@ export class DocumentsService {
   async listDocuments(
     buildingId: string,
     actorPersonId: string,
-    filter?: { category?: DocumentCategory; visibility?: DocumentVisibility; status?: DocumentStatus },
+    filter?: {
+      category?: DocumentCategory;
+      visibility?: DocumentVisibility;
+      status?: DocumentStatus;
+    },
   ) {
     await this.assertMember(actorPersonId, buildingId);
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
@@ -232,7 +247,12 @@ export class DocumentsService {
     return { ...found, currentVersion };
   }
 
-  async uploadVersion(documentId: string, dto: UploadVersionDto, actorPersonId: string, requestId: string) {
+  async uploadVersion(
+    documentId: string,
+    dto: UploadVersionDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const found = await this.getDocumentOrThrow(documentId);
     await this.assertMember(actorPersonId, found.buildingId);
     const privileged = await this.isPrivileged(actorPersonId, found.buildingId);
@@ -268,7 +288,12 @@ export class DocumentsService {
     return version;
   }
 
-  async archiveDocument(documentId: string, dto: ArchiveDocumentDto, actorPersonId: string, requestId: string) {
+  async archiveDocument(
+    documentId: string,
+    dto: ArchiveDocumentDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const found = await this.getDocumentOrThrow(documentId);
     await this.assertMember(actorPersonId, found.buildingId);
     const privileged = await this.isPrivileged(actorPersonId, found.buildingId);
@@ -287,12 +312,20 @@ export class DocumentsService {
       reason: dto.reason,
     });
 
-    this.events.emit('DocumentArchived', new DocumentArchivedEvent(documentId, found.buildingId, actorPersonId));
+    this.events.emit(
+      'DocumentArchived',
+      new DocumentArchivedEvent(documentId, found.buildingId, actorPersonId),
+    );
 
     return updated;
   }
 
-  async createReference(documentId: string, dto: CreateReferenceDto, actorPersonId: string, requestId: string) {
+  async createReference(
+    documentId: string,
+    dto: CreateReferenceDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const found = await this.getDocumentOrThrow(documentId);
     await this.assertMember(actorPersonId, found.buildingId);
 

@@ -10,8 +10,18 @@ import { CreateVoteDto } from './dto/create-vote.dto';
 import { CastBallotDto } from './dto/cast-ballot.dto';
 import { CancelVoteDto } from './dto/cancel-vote.dto';
 import { AuditService } from '../../../common/audit/audit.service';
-import { AuthorizationError, BusinessRuleViolationError, DuplicateError, NotFoundAppError } from '../../../common/errors/app-error';
-import { BallotCastEvent, VoteCancelledEvent, VoteClosedEvent, VotePublishedEvent } from '../events/vote.events';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+  DuplicateError,
+  NotFoundAppError,
+} from '../../../common/errors/app-error';
+import {
+  BallotCastEvent,
+  VoteCancelledEvent,
+  VoteClosedEvent,
+  VotePublishedEvent,
+} from '../events/vote.events';
 
 const DEFAULT_REFERENDUM_OPTIONS = [
   { label: 'موافق', value: 'YES' },
@@ -20,7 +30,11 @@ const DEFAULT_REFERENDUM_OPTIONS = [
 ];
 
 /** 06.06 Rule 011/012/013/014: quorum is a percentage of eligible units that must have cast a ballot, evaluated at closure. No quorum requirement means it's always considered met. */
-function isQuorumMet(quorumPercent: number | null, totalEligibleCount: number, totalBallotCount: number): boolean {
+function isQuorumMet(
+  quorumPercent: number | null,
+  totalEligibleCount: number,
+  totalBallotCount: number,
+): boolean {
   if (quorumPercent == null) return true;
   if (totalEligibleCount === 0) return false;
   return totalBallotCount * 100 >= quorumPercent * totalEligibleCount;
@@ -46,7 +60,12 @@ export class VotingService {
     return building;
   }
 
-  async createVote(buildingId: string, dto: CreateVoteDto, actorPersonId: string, requestId: string) {
+  async createVote(
+    buildingId: string,
+    dto: CreateVoteDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     await this.getBuilding(buildingId);
 
     const startAt = new Date(dto.startAt);
@@ -56,10 +75,13 @@ export class VotingService {
     const isManagerElection = dto.isManagerElection ?? false;
 
     if (isManagerElection && (!dto.options || dto.options.length === 0)) {
-      throw new BusinessRuleViolationError('A manager-election vote requires explicit candidate options.');
+      throw new BusinessRuleViolationError(
+        'A manager-election vote requires explicit candidate options.',
+      );
     }
 
-    const rawOptions = dto.options && dto.options.length > 0 ? dto.options : DEFAULT_REFERENDUM_OPTIONS;
+    const rawOptions =
+      dto.options && dto.options.length > 0 ? dto.options : DEFAULT_REFERENDUM_OPTIONS;
 
     if (isManagerElection) {
       const candidatePersonIds = rawOptions.map((o) => o.value);
@@ -83,7 +105,9 @@ export class VotingService {
     if (dto.meetingId) {
       const meeting = await this.meetings.findById(dto.meetingId);
       if (!meeting || meeting.buildingId !== buildingId) {
-        throw new BusinessRuleViolationError('The referenced meeting does not exist in this building.');
+        throw new BusinessRuleViolationError(
+          'The referenced meeting does not exist in this building.',
+        );
       }
     }
 
@@ -104,14 +128,21 @@ export class VotingService {
     if (scopeType === 'BLOCK' && dto.scopeBlockId) {
       const block = await this.buildings.findBlockById(dto.scopeBlockId);
       if (!block || block.buildingId !== buildingId) {
-        throw new BusinessRuleViolationError('scopeBlockId does not refer to a Block in this building.');
+        throw new BusinessRuleViolationError(
+          'scopeBlockId does not refer to a Block in this building.',
+        );
       }
     }
 
     if (scopeType === 'SELECTED_UNITS' && dto.scopeUnitIds && dto.scopeUnitIds.length > 0) {
-      const matchCount = await this.buildings.countUnitsByIdsInBuilding(buildingId, dto.scopeUnitIds);
+      const matchCount = await this.buildings.countUnitsByIdsInBuilding(
+        buildingId,
+        dto.scopeUnitIds,
+      );
       if (matchCount !== dto.scopeUnitIds.length) {
-        throw new BusinessRuleViolationError('scopeUnitIds must all refer to Units in this building.');
+        throw new BusinessRuleViolationError(
+          'scopeUnitIds must all refer to Units in this building.',
+        );
       }
     }
 
@@ -158,7 +189,12 @@ export class VotingService {
     return vote;
   }
 
-  async publishVote(buildingId: string, voteId: string, actorPersonId: string | undefined, requestId: string) {
+  async publishVote(
+    buildingId: string,
+    voteId: string,
+    actorPersonId: string | undefined,
+    requestId: string,
+  ) {
     const vote = await this.getVote(buildingId, voteId);
     this.policy.assertPublishable(vote.status, vote.options.length);
 
@@ -185,7 +221,13 @@ export class VotingService {
    * — see the MVP simplification note in schema.prisma for why co-owned
    * units simply have no eligible voter rather than a simulated Abstain.
    */
-  async castBallot(buildingId: string, voteId: string, dto: CastBallotDto, actorPersonId: string, requestId: string) {
+  async castBallot(
+    buildingId: string,
+    voteId: string,
+    dto: CastBallotDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const vote = await this.getVote(buildingId, voteId);
     this.policy.assertOpenForBallots(vote.status, vote.endAt);
 
@@ -234,7 +276,10 @@ export class VotingService {
       metadata: { voteId, unitId: dto.unitId },
     });
 
-    this.events.emit('BallotCast', new BallotCastEvent(voteId, buildingId, dto.unitId, actorPersonId));
+    this.events.emit(
+      'BallotCast',
+      new BallotCastEvent(voteId, buildingId, dto.unitId, actorPersonId),
+    );
 
     return ballot;
   }
@@ -249,7 +294,12 @@ export class VotingService {
    * publishes — a failed handoff is audited, not silently swallowed, but
    * it never blocks the vote itself from closing honestly.
    */
-  async closeVote(buildingId: string, voteId: string, actorPersonId: string | undefined, requestId: string) {
+  async closeVote(
+    buildingId: string,
+    voteId: string,
+    actorPersonId: string | undefined,
+    requestId: string,
+  ) {
     const vote = await this.getVote(buildingId, voteId);
     this.policy.assertClosable(vote.status);
 
@@ -284,7 +334,11 @@ export class VotingService {
     }
     if (tie) winningOptionId = null;
 
-    const resultStatus: VoteResultStatus = !quorumMet ? 'QUORUM_NOT_MET' : winningOptionId ? 'PASSED' : 'NOT_PASSED';
+    const resultStatus: VoteResultStatus = !quorumMet
+      ? 'QUORUM_NOT_MET'
+      : winningOptionId
+        ? 'PASSED'
+        : 'NOT_PASSED';
 
     const { vote: closedVote, result } = await this.voting.closeVote({
       voteId,
@@ -305,13 +359,22 @@ export class VotingService {
       metadata: { resultStatus, totalEligibleCount, totalBallotCount, quorumMet },
     });
 
-    this.events.emit('VoteClosed', new VoteClosedEvent(voteId, buildingId, resultStatus, actorPersonId));
+    this.events.emit(
+      'VoteClosed',
+      new VoteClosedEvent(voteId, buildingId, resultStatus, actorPersonId),
+    );
 
     if (vote.isManagerElection && resultStatus === 'PASSED' && winningOptionId) {
       const winningOption = vote.options.find((o) => o.id === winningOptionId);
       if (winningOption) {
         try {
-          await this.buildingService.changeManager(buildingId, winningOption.value, 'ELECTED', actorPersonId, requestId);
+          await this.buildingService.changeManager(
+            buildingId,
+            winningOption.value,
+            'ELECTED',
+            actorPersonId,
+            requestId,
+          );
           await this.audit.record({
             actorId: actorPersonId,
             buildingId,
@@ -342,7 +405,13 @@ export class VotingService {
     return { vote: closedVote, result };
   }
 
-  async cancelVote(buildingId: string, voteId: string, dto: CancelVoteDto, actorPersonId: string, requestId: string) {
+  async cancelVote(
+    buildingId: string,
+    voteId: string,
+    dto: CancelVoteDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const vote = await this.getVote(buildingId, voteId);
     this.policy.assertCancellable(vote.status);
 

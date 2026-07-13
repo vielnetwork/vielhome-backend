@@ -1,7 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsString } from 'class-validator';
 
-const FUND_TYPES = ['CURRENT', 'RESERVE', 'EMERGENCY', 'RENOVATION', 'INSURANCE', 'CUSTOM'] as const;
+const FUND_TYPES = [
+  'CURRENT',
+  'RESERVE',
+  'EMERGENCY',
+  'RENOVATION',
+  'INSURANCE',
+  'CUSTOM',
+] as const;
 
 export class CreateFundDto {
   @ApiProperty()

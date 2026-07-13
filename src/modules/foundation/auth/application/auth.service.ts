@@ -83,7 +83,9 @@ export class AuthService {
   ): Promise<TokenPair & { personId: string; isNewPerson: boolean; hasBuildings: boolean }> {
     const otpRequest = await this.repo.findLatestActiveOtp(dto.phone, dto.purpose);
     if (!otpRequest) {
-      throw new BusinessRuleViolationError('No active code found for this number. Request a new one.');
+      throw new BusinessRuleViolationError(
+        'No active code found for this number. Request a new one.',
+      );
     }
 
     this.otpPolicy.assertNotExpired(otpRequest);
@@ -109,7 +111,9 @@ export class AuthService {
     // `isSuspended: false`), but the check runs unconditionally rather
     // than special-casing it — one less branch to get wrong.
     if (person.isSuspended) {
-      throw new AuthorizationError('Your account has been suspended. Contact support for assistance.');
+      throw new AuthorizationError(
+        'Your account has been suspended. Contact support for assistance.',
+      );
     }
 
     // Owner-invite auto-linking (06_User_Flows > Building Setup Assistant:
@@ -163,7 +167,9 @@ export class AuthService {
     // than a confusing "refresh succeeded, then every real request 403s."
     const person = await this.repo.findPersonById(existing.personId);
     if (!person || person.isSuspended) {
-      throw new AuthorizationError('Your account has been suspended. Contact support for assistance.');
+      throw new AuthorizationError(
+        'Your account has been suspended. Contact support for assistance.',
+      );
     }
 
     const tokens = await this.issueTokenPair(existing.personId, existing.deviceId);

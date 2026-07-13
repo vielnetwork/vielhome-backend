@@ -1,6 +1,14 @@
 import { Injectable } from '@nestjs/common';
-import type { EnforcementActionType, EnforcementAppealStatus, FraudCaseStatus, PlatformStaffRole } from '@prisma/client';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import type {
+  EnforcementActionType,
+  EnforcementAppealStatus,
+  FraudCaseStatus,
+  PlatformStaffRole,
+} from '@prisma/client';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 const OPEN_STATUSES: FraudCaseStatus[] = ['OPEN', 'UNDER_INVESTIGATION'];
 const TERMINAL_STATUSES: FraudCaseStatus[] = ['CONFIRMED', 'DISMISSED'];
@@ -30,7 +38,9 @@ export class FraudCasePolicy {
   /** 07.03 Rule 016: only a terminal (CONFIRMED/DISMISSED) case may be reopened. */
   assertCanReopen(status: FraudCaseStatus): void {
     if (!TERMINAL_STATUSES.includes(status)) {
-      throw new BusinessRuleViolationError('Only a decided case (CONFIRMED or DISMISSED) may be reopened.');
+      throw new BusinessRuleViolationError(
+        'Only a decided case (CONFIRMED or DISMISSED) may be reopened.',
+      );
     }
   }
 
@@ -41,12 +51,20 @@ export class FraudCasePolicy {
    * unbounded chain — see ADR-031 Decision for why a repeat-appeal flow
    * isn't built without a source rule describing one.
    */
-  assertCanAppealEnforcement(appealStatus: EnforcementAppealStatus, targetPersonId: string | null, callerPersonId: string): void {
+  assertCanAppealEnforcement(
+    appealStatus: EnforcementAppealStatus,
+    targetPersonId: string | null,
+    callerPersonId: string,
+  ): void {
     if (appealStatus !== 'NONE') {
-      throw new BusinessRuleViolationError(`This enforcement action already has an appeal (status: ${appealStatus}).`);
+      throw new BusinessRuleViolationError(
+        `This enforcement action already has an appeal (status: ${appealStatus}).`,
+      );
     }
     if (targetPersonId !== callerPersonId) {
-      throw new AuthorizationError('Only the person an enforcement action was issued against may appeal it.');
+      throw new AuthorizationError(
+        'Only the person an enforcement action was issued against may appeal it.',
+      );
     }
   }
 
@@ -72,7 +90,9 @@ export class FraudCasePolicy {
    */
   assertCanIssueEnforcement(type: EnforcementActionType, staffRole: PlatformStaffRole): void {
     if (ADMIN_ONLY_ACTION_TYPES.has(type) && staffRole !== 'PLATFORM_ADMIN') {
-      throw new AuthorizationError(`Issuing a(n) ${type} enforcement action requires PLATFORM_ADMIN.`);
+      throw new AuthorizationError(
+        `Issuing a(n) ${type} enforcement action requires PLATFORM_ADMIN.`,
+      );
     }
   }
 }

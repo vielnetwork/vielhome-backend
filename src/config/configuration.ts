@@ -59,9 +59,13 @@ export default (): AppConfig => {
       // string instead of failing loudly. In production this now throws
       // at boot (via `requireEnv`'s own no-fallback path) instead of
       // silently running insecure.
-      accessSecret: isProduction ? requireEnv('JWT_ACCESS_SECRET') : requireEnv('JWT_ACCESS_SECRET', 'dev-only-access-secret'),
+      accessSecret: isProduction
+        ? requireEnv('JWT_ACCESS_SECRET')
+        : requireEnv('JWT_ACCESS_SECRET', 'dev-only-access-secret'),
       accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',
-      refreshSecret: isProduction ? requireEnv('JWT_REFRESH_SECRET') : requireEnv('JWT_REFRESH_SECRET', 'dev-only-refresh-secret'),
+      refreshSecret: isProduction
+        ? requireEnv('JWT_REFRESH_SECRET')
+        : requireEnv('JWT_REFRESH_SECRET', 'dev-only-refresh-secret'),
       refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN ?? '30d',
     },
     otp: {

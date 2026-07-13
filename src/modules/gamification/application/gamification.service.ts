@@ -69,7 +69,13 @@ export class GamificationService {
 
     this.events.emit(
       'XpAwarded',
-      new XpAwardedEvent(input.personId, input.buildingId ?? null, input.reason, catalogEntry.amount, newBalance),
+      new XpAwardedEvent(
+        input.personId,
+        input.buildingId ?? null,
+        input.reason,
+        catalogEntry.amount,
+        newBalance,
+      ),
     );
 
     if (isFirstOccurrence && catalogEntry.achievementCode) {
@@ -100,7 +106,12 @@ export class GamificationService {
     }
 
     if (input.buildingId && catalogEntry.buildingScoreDelta !== 0) {
-      await this.applyBuildingScoreDelta(input.buildingId, catalogEntry.buildingScoreDelta, input.reason, input.sourceEvent);
+      await this.applyBuildingScoreDelta(
+        input.buildingId,
+        catalogEntry.buildingScoreDelta,
+        input.reason,
+        input.sourceEvent,
+      );
     }
   }
 
@@ -131,9 +142,15 @@ export class GamificationService {
    * actually fire twice in practice, but costs one extra read to be sure).
    */
   async clawbackChargePaidXp(params: { paymentId: string; sourceEvent?: string }): Promise<void> {
-    const original = await this.gamification.findXpTransactionByReference('PAYMENT', params.paymentId, 'CHARGE_PAID');
+    const original = await this.gamification.findXpTransactionByReference(
+      'PAYMENT',
+      params.paymentId,
+      'CHARGE_PAID',
+    );
     if (!original) {
-      this.logger.log(`clawbackChargePaidXp: no CHARGE_PAID award found for payment ${params.paymentId}, nothing to claw back.`);
+      this.logger.log(
+        `clawbackChargePaidXp: no CHARGE_PAID award found for payment ${params.paymentId}, nothing to claw back.`,
+      );
       return;
     }
 
@@ -160,11 +177,22 @@ export class GamificationService {
     reason: string,
     sourceEvent?: string,
   ): Promise<void> {
-    const result = await this.gamification.applyBuildingScoreDelta(buildingId, delta, reason, sourceEvent);
+    const result = await this.gamification.applyBuildingScoreDelta(
+      buildingId,
+      delta,
+      reason,
+      sourceEvent,
+    );
 
     this.events.emit(
       'BuildingScoreChanged',
-      new BuildingScoreChangedEvent(buildingId, result.score, delta, result.previousTier, result.newTier),
+      new BuildingScoreChangedEvent(
+        buildingId,
+        result.score,
+        delta,
+        result.previousTier,
+        result.newTier,
+      ),
     );
 
     if (result.tierChanged) {

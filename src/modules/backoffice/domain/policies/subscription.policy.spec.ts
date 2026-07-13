@@ -52,15 +52,21 @@ describe('SubscriptionPolicy', () => {
     });
 
     it('is inactive once revoked', () => {
-      expect(policy.isGrantActive({ expiresAt: null, revokedAt: new Date('2026-01-10T00:00:00Z') }, now)).toBe(false);
+      expect(
+        policy.isGrantActive({ expiresAt: null, revokedAt: new Date('2026-01-10T00:00:00Z') }, now),
+      ).toBe(false);
     });
 
     it('is inactive once expired', () => {
-      expect(policy.isGrantActive({ expiresAt: new Date('2026-01-14T00:00:00Z'), revokedAt: null }, now)).toBe(false);
+      expect(
+        policy.isGrantActive({ expiresAt: new Date('2026-01-14T00:00:00Z'), revokedAt: null }, now),
+      ).toBe(false);
     });
 
     it('is active before its expiry', () => {
-      expect(policy.isGrantActive({ expiresAt: new Date('2026-02-01T00:00:00Z'), revokedAt: null }, now)).toBe(true);
+      expect(
+        policy.isGrantActive({ expiresAt: new Date('2026-02-01T00:00:00Z'), revokedAt: null }, now),
+      ).toBe(true);
     });
   });
 

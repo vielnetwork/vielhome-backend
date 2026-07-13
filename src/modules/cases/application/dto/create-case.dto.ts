@@ -11,7 +11,11 @@ const CASE_VISIBILITIES = ['PUBLIC', 'PRIVATE'] as const;
  * OPEN (06.07 Rule 004) — there is no `status` field here.
  */
 export class CreateCaseDto {
-  @ApiProperty({ required: false, description: "The unit this case concerns, if any (06.07 Step 3: scope may be Property/Block/Building)." })
+  @ApiProperty({
+    required: false,
+    description:
+      'The unit this case concerns, if any (06.07 Step 3: scope may be Property/Block/Building).',
+  })
   @IsOptional()
   @IsString()
   unitId?: string;
@@ -41,7 +45,8 @@ export class CreateCaseDto {
   @ApiProperty({
     required: false,
     default: false,
-    description: '06.07 Rule 017: marks this as a complaint about the current manager — blocks it from ever being assigned to whoever holds the MANAGER role.',
+    description:
+      '06.07 Rule 017: marks this as a complaint about the current manager — blocks it from ever being assigned to whoever holds the MANAGER role.',
   })
   @IsOptional()
   @IsBoolean()

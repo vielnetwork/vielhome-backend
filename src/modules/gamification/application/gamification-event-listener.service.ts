@@ -3,7 +3,11 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { GamificationService } from './gamification.service';
 import type { BuildingCreatedEvent } from '../../building/events/building-created.event';
 import type { PersonAuthenticatedEvent } from '../../foundation/auth/events/person-authenticated.event';
-import type { PaymentApprovedEvent, PaymentRefundedEvent, PaymentReversedEvent } from '../../finance/events/payment.events';
+import type {
+  PaymentApprovedEvent,
+  PaymentRefundedEvent,
+  PaymentReversedEvent,
+} from '../../finance/events/payment.events';
 import type { BallotCastEvent } from '../../governance/events/vote.events';
 import type { CaseStatusChangedEvent } from '../../cases/events/case.events';
 
@@ -75,7 +79,10 @@ export class GamificationEventListener {
    */
   @OnEvent('PaymentReversed')
   async onPaymentReversed(event: PaymentReversedEvent) {
-    await this.gamification.clawbackChargePaidXp({ paymentId: event.paymentId, sourceEvent: event.eventName });
+    await this.gamification.clawbackChargePaidXp({
+      paymentId: event.paymentId,
+      sourceEvent: event.eventName,
+    });
   }
 
   /**
@@ -92,7 +99,10 @@ export class GamificationEventListener {
   @OnEvent('PaymentRefunded')
   async onPaymentRefunded(event: PaymentRefundedEvent) {
     if (!event.isFullRefund) return;
-    await this.gamification.clawbackChargePaidXp({ paymentId: event.paymentId, sourceEvent: event.eventName });
+    await this.gamification.clawbackChargePaidXp({
+      paymentId: event.paymentId,
+      sourceEvent: event.eventName,
+    });
   }
 
   @OnEvent('BallotCast')

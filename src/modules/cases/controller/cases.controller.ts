@@ -66,7 +66,11 @@ export class CasesController {
 
   @Get(':id/cases/:caseId')
   @UseGuards(MembershipGuard)
-  getCase(@Param('id') id: string, @Param('caseId') caseId: string, @CurrentUser() user: JwtPayload) {
+  getCase(
+    @Param('id') id: string,
+    @Param('caseId') caseId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
     return this.cases.getCase(id, caseId, user.sub);
   }
 
@@ -97,7 +101,11 @@ export class CasesController {
 
   @Get(':id/cases/:caseId/assignments')
   @UseGuards(MembershipGuard)
-  listAssignments(@Param('id') id: string, @Param('caseId') caseId: string, @CurrentUser() user: JwtPayload) {
+  listAssignments(
+    @Param('id') id: string,
+    @Param('caseId') caseId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
     return this.cases.listAssignments(id, caseId, user.sub);
   }
 
@@ -115,7 +123,11 @@ export class CasesController {
 
   @Get(':id/cases/:caseId/messages')
   @UseGuards(MembershipGuard)
-  listMessages(@Param('id') id: string, @Param('caseId') caseId: string, @CurrentUser() user: JwtPayload) {
+  listMessages(
+    @Param('id') id: string,
+    @Param('caseId') caseId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
     return this.cases.listMessages(id, caseId, user.sub);
   }
 

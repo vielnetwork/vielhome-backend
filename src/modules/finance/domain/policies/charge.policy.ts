@@ -18,23 +18,33 @@ export class ChargePolicy {
   /** Exactly one calculation input set must be present, matching the method. */
   assertValidCalculationInputs(
     method: 'FIXED' | 'AREA_BASED' | 'MIXED',
-    input: { amountPerUnit?: number; ratePerSqm?: number; items?: Array<{ unitId: string; amount: number }> },
+    input: {
+      amountPerUnit?: number;
+      ratePerSqm?: number;
+      items?: Array<{ unitId: string; amount: number }>;
+    },
   ): void {
     if (method === 'FIXED') {
       if (!input.amountPerUnit || input.amountPerUnit <= 0) {
-        throw new BusinessRuleViolationError('A FIXED charge batch requires a positive amountPerUnit.');
+        throw new BusinessRuleViolationError(
+          'A FIXED charge batch requires a positive amountPerUnit.',
+        );
       }
       return;
     }
     if (method === 'AREA_BASED') {
       if (!input.ratePerSqm || input.ratePerSqm <= 0) {
-        throw new BusinessRuleViolationError('An AREA_BASED charge batch requires a positive ratePerSqm.');
+        throw new BusinessRuleViolationError(
+          'An AREA_BASED charge batch requires a positive ratePerSqm.',
+        );
       }
       return;
     }
     // MIXED
     if (!input.items || input.items.length === 0) {
-      throw new BusinessRuleViolationError('A MIXED charge batch requires at least one explicit item.');
+      throw new BusinessRuleViolationError(
+        'A MIXED charge batch requires at least one explicit item.',
+      );
     }
     if (input.items.some((i) => i.amount <= 0)) {
       throw new BusinessRuleViolationError('Every MIXED charge item amount must be positive.');

@@ -1,5 +1,8 @@
 import { CasePolicy } from './case.policy';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 describe('CasePolicy', () => {
   let policy: CasePolicy;
@@ -11,31 +14,51 @@ describe('CasePolicy', () => {
   describe('assertVisible', () => {
     it('allows anyone to see a PUBLIC case', () => {
       expect(() =>
-        policy.assertVisible({ visibility: 'PUBLIC', createdById: 'p1', assigneeId: null }, 'p2', false),
+        policy.assertVisible(
+          { visibility: 'PUBLIC', createdById: 'p1', assigneeId: null },
+          'p2',
+          false,
+        ),
       ).not.toThrow();
     });
 
     it('allows the creator to see their own PRIVATE case', () => {
       expect(() =>
-        policy.assertVisible({ visibility: 'PRIVATE', createdById: 'p1', assigneeId: null }, 'p1', false),
+        policy.assertVisible(
+          { visibility: 'PRIVATE', createdById: 'p1', assigneeId: null },
+          'p1',
+          false,
+        ),
       ).not.toThrow();
     });
 
     it('allows the assignee to see a PRIVATE case', () => {
       expect(() =>
-        policy.assertVisible({ visibility: 'PRIVATE', createdById: 'p1', assigneeId: 'p2' }, 'p2', false),
+        policy.assertVisible(
+          { visibility: 'PRIVATE', createdById: 'p1', assigneeId: 'p2' },
+          'p2',
+          false,
+        ),
       ).not.toThrow();
     });
 
     it('allows a privileged role to see any PRIVATE case', () => {
       expect(() =>
-        policy.assertVisible({ visibility: 'PRIVATE', createdById: 'p1', assigneeId: null }, 'p3', true),
+        policy.assertVisible(
+          { visibility: 'PRIVATE', createdById: 'p1', assigneeId: null },
+          'p3',
+          true,
+        ),
       ).not.toThrow();
     });
 
     it('rejects an unrelated, non-privileged person', () => {
       expect(() =>
-        policy.assertVisible({ visibility: 'PRIVATE', createdById: 'p1', assigneeId: null }, 'p3', false),
+        policy.assertVisible(
+          { visibility: 'PRIVATE', createdById: 'p1', assigneeId: null },
+          'p3',
+          false,
+        ),
       ).toThrow(AuthorizationError);
     });
   });
@@ -54,7 +77,9 @@ describe('CasePolicy', () => {
     });
 
     it('rejects editing a closed case', () => {
-      expect(() => policy.assertEditable('p1', 'p1', false, 'CLOSED')).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertEditable('p1', 'p1', false, 'CLOSED')).toThrow(
+        BusinessRuleViolationError,
+      );
     });
   });
 

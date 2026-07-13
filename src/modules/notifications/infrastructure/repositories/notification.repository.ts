@@ -90,7 +90,9 @@ export class NotificationRepository {
   }
 
   countUnread(personId: string) {
-    return this.prisma.notification.count({ where: { recipientId: personId, readAt: null, archivedAt: null } });
+    return this.prisma.notification.count({
+      where: { recipientId: personId, readAt: null, archivedAt: null },
+    });
   }
 
   markRead(id: string) {

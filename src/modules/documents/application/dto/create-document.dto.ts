@@ -1,5 +1,13 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsArray, IsDateString, IsIn, IsInt, IsOptional, IsPositive, IsString } from 'class-validator';
+import {
+  IsArray,
+  IsDateString,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsPositive,
+  IsString,
+} from 'class-validator';
 
 const DOCUMENT_CATEGORIES = ['GOVERNANCE', 'FINANCIAL', 'LEGAL', 'MAINTENANCE', 'GENERAL'] as const;
 const DOCUMENT_VISIBILITIES = ['PUBLIC', 'MEMBERS_ONLY', 'MANAGEMENT_ONLY'] as const;
@@ -36,7 +44,9 @@ export class CreateDocumentDto {
   @IsIn(DOCUMENT_VISIBILITIES)
   visibility?: (typeof DOCUMENT_VISIBILITIES)[number];
 
-  @ApiProperty({ description: 'Location of the already-uploaded file (pre-signed URL / storage key).' })
+  @ApiProperty({
+    description: 'Location of the already-uploaded file (pre-signed URL / storage key).',
+  })
   @IsString()
   fileUrl!: string;
 
@@ -53,7 +63,11 @@ export class CreateDocumentDto {
   @IsPositive()
   fileSize!: number;
 
-  @ApiProperty({ required: false, description: '08.09 Rule 016 — this version\'s expiration date, if the underlying file has one (e.g. an insurance policy or permit). Metadata only — nothing auto-archives on this date.' })
+  @ApiProperty({
+    required: false,
+    description:
+      "08.09 Rule 016 — this version's expiration date, if the underlying file has one (e.g. an insurance policy or permit). Metadata only — nothing auto-archives on this date.",
+  })
   @IsOptional()
   @IsDateString()
   expiresAt?: string;

@@ -56,19 +56,27 @@ describe('PaymentPolicy', () => {
     });
 
     it('rejects a non-APPROVED payment', () => {
-      expect(() => policy.assertRefundable('PENDING_APPROVAL', 500, 1_000, false)).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertRefundable('PENDING_APPROVAL', 500, 1_000, false)).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('rejects a payment already refunded', () => {
-      expect(() => policy.assertRefundable('APPROVED', 500, 1_000, true)).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertRefundable('APPROVED', 500, 1_000, true)).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('rejects a zero or negative refund amount', () => {
-      expect(() => policy.assertRefundable('APPROVED', 0, 1_000, false)).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertRefundable('APPROVED', 0, 1_000, false)).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('rejects a refund amount exceeding the original payment', () => {
-      expect(() => policy.assertRefundable('APPROVED', 1_001, 1_000, false)).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertRefundable('APPROVED', 1_001, 1_000, false)).toThrow(
+        BusinessRuleViolationError,
+      );
     });
   });
 });

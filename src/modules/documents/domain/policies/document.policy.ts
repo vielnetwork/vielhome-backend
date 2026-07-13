@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { AuthorizationError, BusinessRuleViolationError, ValidationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+  ValidationError,
+} from '../../../../common/errors/app-error';
 
 /** 06.08 Rule 013: MVP-supported file types only. */
 const SUPPORTED_FILE_TYPES = ['PDF', 'JPG', 'JPEG', 'PNG'] as const;
@@ -22,7 +26,11 @@ const PRIVILEGED_CATEGORIES = ['GOVERNANCE', 'FINANCIAL', 'LEGAL'] as const;
 @Injectable()
 export class DocumentPolicy {
   assertFileTypeSupported(fileType: string): void {
-    if (!SUPPORTED_FILE_TYPES.includes(fileType.toUpperCase() as (typeof SUPPORTED_FILE_TYPES)[number])) {
+    if (
+      !SUPPORTED_FILE_TYPES.includes(
+        fileType.toUpperCase() as (typeof SUPPORTED_FILE_TYPES)[number],
+      )
+    ) {
       throw new ValidationError(
         `Unsupported file type "${fileType}". Supported types: ${SUPPORTED_FILE_TYPES.join(', ')}.`,
       );
@@ -31,7 +39,10 @@ export class DocumentPolicy {
 
   /** Gates create/version-upload/archive on a document's category. */
   assertCategoryManageable(category: string, isPrivileged: boolean): void {
-    if (PRIVILEGED_CATEGORIES.includes(category as (typeof PRIVILEGED_CATEGORIES)[number]) && !isPrivileged) {
+    if (
+      PRIVILEGED_CATEGORIES.includes(category as (typeof PRIVILEGED_CATEGORIES)[number]) &&
+      !isPrivileged
+    ) {
       throw new AuthorizationError(
         `Only a privileged role (MANAGER/BOARD_MEMBER/ACCOUNTANT) may manage ${category} documents.`,
       );

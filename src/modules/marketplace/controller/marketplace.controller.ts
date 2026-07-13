@@ -20,7 +20,11 @@ export class MarketplaceController {
   constructor(private readonly marketplace: MarketplaceService) {}
 
   @Post()
-  submit(@CurrentUser() user: JwtPayload, @Body() dto: SubmitServiceProviderDto, @RequestId() requestId: string) {
+  submit(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: SubmitServiceProviderDto,
+    @RequestId() requestId: string,
+  ) {
     return this.marketplace.submit(user.sub, dto, requestId);
   }
 

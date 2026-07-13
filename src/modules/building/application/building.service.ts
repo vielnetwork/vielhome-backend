@@ -209,9 +209,7 @@ export class BuildingService {
     });
 
     // eslint-disable-next-line no-console
-    console.log(
-      `[MembershipRequest] person=${personId} building=${buildingId} role=${dto.role}`,
-    );
+    console.log(`[MembershipRequest] person=${personId} building=${buildingId} role=${dto.role}`);
 
     await this.audit.record({
       actorId: personId,
@@ -334,7 +332,12 @@ export class BuildingService {
 
     this.events.emit(
       'ManagerChanged',
-      new ManagerChangedEvent(buildingId, newManagerPersonId, current?.personId ?? null, actorPersonId),
+      new ManagerChangedEvent(
+        buildingId,
+        newManagerPersonId,
+        current?.personId ?? null,
+        actorPersonId,
+      ),
     );
 
     return created;
@@ -381,7 +384,13 @@ export class BuildingService {
    * via the already-shipped `linkOwnerToUnit` auto-link path — see
    * `BuildingRepository.transferOwnership`'s own comment.
    */
-  async transferOwnership(buildingId: string, unitId: string, newOwnerPhone: string, actorPersonId: string, requestId: string) {
+  async transferOwnership(
+    buildingId: string,
+    unitId: string,
+    newOwnerPhone: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     await this.getOwnUnit(buildingId, unitId);
 
     const isOwner = await this.buildings.isCurrentOwnerOfUnit(unitId, actorPersonId);
@@ -419,7 +428,13 @@ export class BuildingService {
     return this.buildings.listTenanciesForUnit(unitId);
   }
 
-  private async assertManagesUnit(buildingId: string, unitId: string, actorPersonId: string, requireOwnerOrManagerOnly: boolean, tenantPersonId?: string) {
+  private async assertManagesUnit(
+    buildingId: string,
+    unitId: string,
+    actorPersonId: string,
+    requireOwnerOrManagerOnly: boolean,
+    tenantPersonId?: string,
+  ) {
     const [isOwner, roles] = await Promise.all([
       this.buildings.isCurrentOwnerOfUnit(unitId, actorPersonId),
       this.buildings.getRoles(actorPersonId, buildingId),
@@ -434,14 +449,24 @@ export class BuildingService {
   }
 
   /** Rule 003 — only one active tenancy per unit; only the unit's owner or the building's manager may register one (04.02 Rule 27/29). */
-  async createTenancy(buildingId: string, unitId: string, tenantPersonId: string, actorPersonId: string, requestId: string) {
+  async createTenancy(
+    buildingId: string,
+    unitId: string,
+    tenantPersonId: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     await this.getOwnUnit(buildingId, unitId);
     await this.assertManagesUnit(buildingId, unitId, actorPersonId, true);
 
     const existing = await this.buildings.findCurrentTenancyForUnit(unitId);
     this.tenancyPolicy.assertUnitAvailableForTenancy(existing);
 
-    const tenancy = await this.buildings.createTenancy({ unitId, buildingId, personId: tenantPersonId });
+    const tenancy = await this.buildings.createTenancy({
+      unitId,
+      buildingId,
+      personId: tenantPersonId,
+    });
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -453,7 +478,10 @@ export class BuildingService {
       metadata: { unitId, tenantPersonId },
     });
 
-    this.events.emit('TenancyCreated', new TenancyCreatedEvent(tenancy.id, unitId, buildingId, tenantPersonId));
+    this.events.emit(
+      'TenancyCreated',
+      new TenancyCreatedEvent(tenancy.id, unitId, buildingId, tenantPersonId),
+    );
 
     return tenancy;
   }
@@ -465,9 +493,20 @@ export class BuildingService {
     return tenancy;
   }
 
-  async giveTenancyNotice(buildingId: string, tenancyId: string, actorPersonId: string, requestId: string) {
+  async giveTenancyNotice(
+    buildingId: string,
+    tenancyId: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const tenancy = await this.getOwnTenancy(buildingId, tenancyId);
-    await this.assertManagesUnit(buildingId, tenancy.unitId, actorPersonId, false, tenancy.personId);
+    await this.assertManagesUnit(
+      buildingId,
+      tenancy.unitId,
+      actorPersonId,
+      false,
+      tenancy.personId,
+    );
     this.tenancyPolicy.assertCanGiveNotice(tenancy.status);
 
     const updated = await this.buildings.giveTenancyNotice(tenancyId);
@@ -484,9 +523,21 @@ export class BuildingService {
     return updated;
   }
 
-  async endTenancy(buildingId: string, tenancyId: string, terminationReason: string | undefined, actorPersonId: string, requestId: string) {
+  async endTenancy(
+    buildingId: string,
+    tenancyId: string,
+    terminationReason: string | undefined,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const tenancy = await this.getOwnTenancy(buildingId, tenancyId);
-    await this.assertManagesUnit(buildingId, tenancy.unitId, actorPersonId, false, tenancy.personId);
+    await this.assertManagesUnit(
+      buildingId,
+      tenancy.unitId,
+      actorPersonId,
+      false,
+      tenancy.personId,
+    );
     this.tenancyPolicy.assertCanEnd(tenancy.status);
 
     const updated = await this.buildings.endTenancy({
@@ -506,7 +557,10 @@ export class BuildingService {
       reason: terminationReason,
     });
 
-    this.events.emit('TenancyEnded', new TenancyEndedEvent(tenancyId, tenancy.unitId, buildingId, tenancy.personId));
+    this.events.emit(
+      'TenancyEnded',
+      new TenancyEndedEvent(tenancyId, tenancy.unitId, buildingId, tenancy.personId),
+    );
 
     return updated;
   }

@@ -86,7 +86,8 @@ export class BuildingSetupService {
       createdById: personId,
       role: payload.role as 'OWNER' | 'MANAGER',
       name: payload.name ? String(payload.name) : undefined,
-      buildingType: (payload.buildingType as 'RESIDENTIAL' | 'COMMERCIAL' | 'MIXED') ?? 'RESIDENTIAL',
+      buildingType:
+        (payload.buildingType as 'RESIDENTIAL' | 'COMMERCIAL' | 'MIXED') ?? 'RESIDENTIAL',
       description: payload.description ? String(payload.description) : undefined,
       country: String(payload.country),
       province: payload.province ? String(payload.province) : undefined,

@@ -91,7 +91,12 @@ export class GamificationRepository {
     delta: number,
     reason: string,
     sourceEvent?: string,
-  ): Promise<{ score: number; previousTier: LeagueTier; newTier: LeagueTier; tierChanged: boolean }> {
+  ): Promise<{
+    score: number;
+    previousTier: LeagueTier;
+    newTier: LeagueTier;
+    tierChanged: boolean;
+  }> {
     return this.prisma.$transaction(async (tx) => {
       await tx.buildingScore.upsert({
         where: { buildingId },

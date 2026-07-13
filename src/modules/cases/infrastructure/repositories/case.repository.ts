@@ -1,5 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { CasePriority, CaseResolutionCode, CaseStatus, CaseType, CaseVisibility } from '@prisma/client';
+import {
+  CasePriority,
+  CaseResolutionCode,
+  CaseStatus,
+  CaseType,
+  CaseVisibility,
+} from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 
 @Injectable()
@@ -42,7 +48,12 @@ export class CaseRepository {
 
   updateCaseFields(
     id: string,
-    data: { title?: string; description?: string; priority?: CasePriority; visibility?: CaseVisibility },
+    data: {
+      title?: string;
+      description?: string;
+      priority?: CasePriority;
+      visibility?: CaseVisibility;
+    },
   ) {
     return this.prisma.case.update({ where: { id }, data });
   }
@@ -53,7 +64,12 @@ export class CaseRepository {
    * "current assignee" pointer for fast reads; `CaseAssignment` rows are
    * the real history.
    */
-  assignCase(params: { caseId: string; assignedToId: string; assignedById: string; note?: string }) {
+  assignCase(params: {
+    caseId: string;
+    assignedToId: string;
+    assignedById: string;
+    note?: string;
+  }) {
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.case.update({
         where: { id: params.caseId },
@@ -72,10 +88,18 @@ export class CaseRepository {
   }
 
   listAssignments(caseId: string) {
-    return this.prisma.caseAssignment.findMany({ where: { caseId }, orderBy: { assignedAt: 'desc' } });
+    return this.prisma.caseAssignment.findMany({
+      where: { caseId },
+      orderBy: { assignedAt: 'desc' },
+    });
   }
 
-  createMessage(params: { caseId: string; senderId: string; message: string; isInternal: boolean }) {
+  createMessage(params: {
+    caseId: string;
+    senderId: string;
+    message: string;
+    isInternal: boolean;
+  }) {
     return this.prisma.caseMessage.create({ data: params });
   }
 

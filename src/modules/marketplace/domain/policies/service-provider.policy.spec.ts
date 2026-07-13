@@ -1,5 +1,8 @@
 import { ServiceProviderPolicy } from './service-provider.policy';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 describe('ServiceProviderPolicy', () => {
   const policy = new ServiceProviderPolicy();
@@ -9,9 +12,12 @@ describe('ServiceProviderPolicy', () => {
       expect(() => policy.assertReviewable('PENDING')).not.toThrow();
     });
 
-    it.each(['APPROVED', 'REJECTED'] as const)('refuses reviewing an already-decided %s listing', (status) => {
-      expect(() => policy.assertReviewable(status)).toThrow(BusinessRuleViolationError);
-    });
+    it.each(['APPROVED', 'REJECTED'] as const)(
+      'refuses reviewing an already-decided %s listing',
+      (status) => {
+        expect(() => policy.assertReviewable(status)).toThrow(BusinessRuleViolationError);
+      },
+    );
   });
 
   describe('assertVisibleToNonStaff', () => {
@@ -20,7 +26,9 @@ describe('ServiceProviderPolicy', () => {
     });
 
     it('refuses a different caller', () => {
-      expect(() => policy.assertVisibleToNonStaff('person-1', 'person-2')).toThrow(AuthorizationError);
+      expect(() => policy.assertVisibleToNonStaff('person-1', 'person-2')).toThrow(
+        AuthorizationError,
+      );
     });
   });
 });

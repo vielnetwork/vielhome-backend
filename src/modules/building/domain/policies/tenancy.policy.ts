@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import type { TenancyStatus } from '@prisma/client';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 const OPEN_STATUSES: TenancyStatus[] = ['ACTIVE', 'NOTICE_GIVEN'];
 
@@ -24,7 +27,9 @@ export class TenancyPolicy {
    */
   assertCanCreate(isCallerCurrentOwnerOfUnit: boolean, callerIsManager: boolean): void {
     if (!isCallerCurrentOwnerOfUnit && !callerIsManager) {
-      throw new AuthorizationError('Only the unit\'s current owner or the building manager may register a tenancy.');
+      throw new AuthorizationError(
+        "Only the unit's current owner or the building manager may register a tenancy.",
+      );
     }
   }
 
@@ -33,16 +38,24 @@ export class TenancyPolicy {
    * pair as creating one, plus the tenant themselves — a tenant should be
    * able to end their own tenancy, unlike registering a new one.
    */
-  assertCanManage(isCallerCurrentOwnerOfUnit: boolean, callerIsManager: boolean, isCallerTheTenant: boolean): void {
+  assertCanManage(
+    isCallerCurrentOwnerOfUnit: boolean,
+    callerIsManager: boolean,
+    isCallerTheTenant: boolean,
+  ): void {
     if (!isCallerCurrentOwnerOfUnit && !callerIsManager && !isCallerTheTenant) {
-      throw new AuthorizationError('Only the unit\'s current owner, the building manager, or the tenant themselves may manage this tenancy.');
+      throw new AuthorizationError(
+        "Only the unit's current owner, the building manager, or the tenant themselves may manage this tenancy.",
+      );
     }
   }
 
   /** A notice can only be given on a still-ACTIVE tenancy. */
   assertCanGiveNotice(status: TenancyStatus): void {
     if (status !== 'ACTIVE') {
-      throw new BusinessRuleViolationError(`Notice can only be given on an ACTIVE tenancy (current status: ${status}).`);
+      throw new BusinessRuleViolationError(
+        `Notice can only be given on an ACTIVE tenancy (current status: ${status}).`,
+      );
     }
   }
 

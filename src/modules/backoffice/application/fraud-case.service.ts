@@ -63,7 +63,10 @@ export class FraudCaseService {
       entityType: 'FraudCase',
       entityId: kase.id,
       requestId,
-      metadata: { targetPersonId: params.targetPersonId, targetBuildingId: params.targetBuildingId },
+      metadata: {
+        targetPersonId: params.targetPersonId,
+        targetBuildingId: params.targetBuildingId,
+      },
     });
 
     return kase;
@@ -140,7 +143,12 @@ export class FraudCaseService {
   }
 
   /** 07.03 Rule 005 — Evidence Aggregation notes, appended during investigation. */
-  async addEvidence(caseId: string, evidenceNotes: string, actorPersonId: string, requestId: string) {
+  async addEvidence(
+    caseId: string,
+    evidenceNotes: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
     const kase = await this.getCase(caseId);
     this.policy.assertInvestigable(kase.status);
 
@@ -169,7 +177,12 @@ export class FraudCaseService {
     this.policy.assertInvestigable(kase.status);
 
     const status = decision === 'CONFIRM' ? 'CONFIRMED' : 'DISMISSED';
-    const updated = await this.backOffice.decideFraudCase({ id: caseId, status, reviewedById: reviewerPersonId, reason });
+    const updated = await this.backOffice.decideFraudCase({
+      id: caseId,
+      status,
+      reviewedById: reviewerPersonId,
+      reason,
+    });
 
     await this.audit.record({
       actorId: reviewerPersonId,
@@ -181,7 +194,10 @@ export class FraudCaseService {
       metadata: { decision },
     });
 
-    this.events.emit('FraudCaseDecided', new FraudCaseDecidedEvent(caseId, status, kase.reportedById ?? null));
+    this.events.emit(
+      'FraudCaseDecided',
+      new FraudCaseDecidedEvent(caseId, status, kase.reportedById ?? null),
+    );
 
     return updated;
   }
@@ -240,7 +256,9 @@ export class FraudCaseService {
   ) {
     const kase = await this.getCase(caseId);
     if (kase.status !== 'CONFIRMED') {
-      throw new BusinessRuleViolationError('Enforcement actions may only be issued against a CONFIRMED fraud case.');
+      throw new BusinessRuleViolationError(
+        'Enforcement actions may only be issued against a CONFIRMED fraud case.',
+      );
     }
     this.assertTargetMatchesType(params);
 
@@ -302,8 +320,13 @@ export class FraudCaseService {
     if (params.targetType === 'BUILDING' && !params.targetBuildingId) {
       throw new ValidationError('targetBuildingId is required when targetType is BUILDING.');
     }
-    if (params.targetType === 'MANAGER_CLAIM' && (!params.targetMembershipId || !params.targetBuildingId)) {
-      throw new ValidationError('targetMembershipId and targetBuildingId are both required when targetType is MANAGER_CLAIM.');
+    if (
+      params.targetType === 'MANAGER_CLAIM' &&
+      (!params.targetMembershipId || !params.targetBuildingId)
+    ) {
+      throw new ValidationError(
+        'targetMembershipId and targetBuildingId are both required when targetType is MANAGER_CLAIM.',
+      );
     }
   }
 
@@ -314,15 +337,28 @@ export class FraudCaseService {
     targetBuildingId?: string;
     targetMembershipId?: string;
   }): Promise<void> {
-    if (params.type === 'ACCOUNT_SUSPENSION' && params.targetType === 'PERSON' && params.targetPersonId) {
+    if (
+      params.type === 'ACCOUNT_SUSPENSION' &&
+      params.targetType === 'PERSON' &&
+      params.targetPersonId
+    ) {
       await this.backOffice.suspendPerson(params.targetPersonId);
       return;
     }
-    if (params.type === 'VERIFICATION_REVOCATION' && params.targetType === 'BUILDING' && params.targetBuildingId) {
+    if (
+      params.type === 'VERIFICATION_REVOCATION' &&
+      params.targetType === 'BUILDING' &&
+      params.targetBuildingId
+    ) {
       await this.buildings.updateBuildingStatus(params.targetBuildingId, 'REJECTED');
       return;
     }
-    if (params.type === 'VERIFICATION_REVOCATION' && params.targetType === 'MANAGER_CLAIM' && params.targetMembershipId && params.targetBuildingId) {
+    if (
+      params.type === 'VERIFICATION_REVOCATION' &&
+      params.targetType === 'MANAGER_CLAIM' &&
+      params.targetMembershipId &&
+      params.targetBuildingId
+    ) {
       await this.buildings.suspendManagement(params.targetMembershipId);
       await this.buildings.setRecoveryMode(params.targetBuildingId, true);
       return;
@@ -331,11 +367,20 @@ export class FraudCaseService {
   }
 
   /** 07.03 Rule 019 — the target Person appeals an enforcement action. */
-  async appealEnforcement(actionId: string, callerPersonId: string, reason: string | undefined, requestId: string) {
+  async appealEnforcement(
+    actionId: string,
+    callerPersonId: string,
+    reason: string | undefined,
+    requestId: string,
+  ) {
     const action = await this.backOffice.findEnforcementActionById(actionId);
     if (!action) throw new NotFoundAppError('Enforcement action not found.');
 
-    this.policy.assertCanAppealEnforcement(action.appealStatus, action.targetPersonId, callerPersonId);
+    this.policy.assertCanAppealEnforcement(
+      action.appealStatus,
+      action.targetPersonId,
+      callerPersonId,
+    );
 
     const updated = await this.backOffice.requestEnforcementAppeal(actionId, reason);
 
@@ -365,7 +410,11 @@ export class FraudCaseService {
     this.policy.assertAppealDecidable(action.appealStatus);
 
     const appealStatus = decision === 'UPHOLD' ? 'UPHELD' : 'OVERTURNED';
-    const updated = await this.backOffice.decideEnforcementAppeal({ id: actionId, appealStatus, appealDecidedById: deciderPersonId });
+    const updated = await this.backOffice.decideEnforcementAppeal({
+      id: actionId,
+      appealStatus,
+      appealDecidedById: deciderPersonId,
+    });
 
     if (decision === 'OVERTURN') {
       await this.reverseEnforcementEffect(action);
@@ -395,11 +444,20 @@ export class FraudCaseService {
       await this.backOffice.reinstatePerson(action.targetPersonId);
       return;
     }
-    if (action.type === 'VERIFICATION_REVOCATION' && action.targetType === 'BUILDING' && action.targetBuildingId) {
+    if (
+      action.type === 'VERIFICATION_REVOCATION' &&
+      action.targetType === 'BUILDING' &&
+      action.targetBuildingId
+    ) {
       await this.buildings.updateBuildingStatus(action.targetBuildingId, 'VERIFIED');
       return;
     }
-    if (action.type === 'VERIFICATION_REVOCATION' && action.targetType === 'MANAGER_CLAIM' && action.targetMembershipId && action.targetBuildingId) {
+    if (
+      action.type === 'VERIFICATION_REVOCATION' &&
+      action.targetType === 'MANAGER_CLAIM' &&
+      action.targetMembershipId &&
+      action.targetBuildingId
+    ) {
       await this.buildings.verifyManagerMembership(action.targetMembershipId);
       await this.buildings.setRecoveryMode(action.targetBuildingId, false);
       return;

@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import type { BuildingStatus } from '@prisma/client';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 export interface BuildingRiskResult {
   score: number;
@@ -47,7 +50,7 @@ export class BuildingVerificationPolicy {
       throw new BusinessRuleViolationError('Only a rejected building may be appealed.');
     }
     if (callerPersonId !== creatorId) {
-      throw new AuthorizationError('Only the building\'s creator may submit an appeal.');
+      throw new AuthorizationError("Only the building's creator may submit an appeal.");
     }
   }
 }

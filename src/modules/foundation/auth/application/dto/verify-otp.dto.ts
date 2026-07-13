@@ -17,7 +17,10 @@ export class VerifyOtpDto {
   @IsIn(['LOGIN', 'REGISTER', 'VERIFY_PHONE'])
   purpose: OtpPurpose = 'LOGIN';
 
-  @ApiProperty({ example: 'device-abc-123', description: 'Stable per-install device token (Remember Device).' })
+  @ApiProperty({
+    example: 'device-abc-123',
+    description: 'Stable per-install device token (Remember Device).',
+  })
   @IsString()
   @IsNotEmpty()
   deviceToken!: string;

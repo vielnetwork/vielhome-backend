@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import type { CaseStatus, VerificationPriority } from '@prisma/client';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 const CLOSED_STATUSES: CaseStatus[] = ['RESOLVED', 'CLOSED'];
 const PRIORITY_ORDER: VerificationPriority[] = ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'];
@@ -29,7 +32,9 @@ export class SupportCasePolicy {
   /** 07.05 Rule 011 — reopen only makes sense on a RESOLVED or CLOSED ticket. */
   assertCanReopen(status: CaseStatus): void {
     if (!CLOSED_STATUSES.includes(status)) {
-      throw new BusinessRuleViolationError('Only a resolved or closed support case may be reopened.');
+      throw new BusinessRuleViolationError(
+        'Only a resolved or closed support case may be reopened.',
+      );
     }
   }
 

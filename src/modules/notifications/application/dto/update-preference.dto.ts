@@ -23,7 +23,10 @@ export class UpdatePreferenceDto {
   @IsBoolean()
   smsEnabled?: boolean;
 
-  @ApiProperty({ required: false, description: '13_Notification_Architecture: Marketing is opt-in only.' })
+  @ApiProperty({
+    required: false,
+    description: '13_Notification_Architecture: Marketing is opt-in only.',
+  })
   @IsOptional()
   @IsBoolean()
   marketingEnabled?: boolean;

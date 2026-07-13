@@ -49,7 +49,9 @@ export class BackOfficeEventListener {
     if (event.role === 'MANAGER') {
       const membership = await this.buildings.getCurrentManagerMembership(event.buildingId);
       if (!membership) {
-        this.logger.warn(`BuildingCreated with role=MANAGER but no current manager membership found for ${event.buildingId}`);
+        this.logger.warn(
+          `BuildingCreated with role=MANAGER but no current manager membership found for ${event.buildingId}`,
+        );
         return;
       }
       await this.managerVerification.initiateForProvisionalManager({

@@ -10,11 +10,15 @@ describe('ChargePolicy', () => {
 
   describe('assertValidCalculationInputs', () => {
     it('accepts a valid FIXED input', () => {
-      expect(() => policy.assertValidCalculationInputs('FIXED', { amountPerUnit: 100_000 })).not.toThrow();
+      expect(() =>
+        policy.assertValidCalculationInputs('FIXED', { amountPerUnit: 100_000 }),
+      ).not.toThrow();
     });
 
     it('rejects FIXED with no amountPerUnit', () => {
-      expect(() => policy.assertValidCalculationInputs('FIXED', {})).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertValidCalculationInputs('FIXED', {})).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('rejects FIXED with a zero amountPerUnit', () => {
@@ -24,11 +28,15 @@ describe('ChargePolicy', () => {
     });
 
     it('accepts a valid AREA_BASED input', () => {
-      expect(() => policy.assertValidCalculationInputs('AREA_BASED', { ratePerSqm: 5_000 })).not.toThrow();
+      expect(() =>
+        policy.assertValidCalculationInputs('AREA_BASED', { ratePerSqm: 5_000 }),
+      ).not.toThrow();
     });
 
     it('rejects AREA_BASED with no ratePerSqm', () => {
-      expect(() => policy.assertValidCalculationInputs('AREA_BASED', {})).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertValidCalculationInputs('AREA_BASED', {})).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('accepts a valid MIXED input', () => {
@@ -78,7 +86,9 @@ describe('ChargePolicy', () => {
     });
 
     it('rejects cancelling an already CANCELLED batch', () => {
-      expect(() => policy.assertCancellable('CANCELLED', false)).toThrow(BusinessRuleViolationError);
+      expect(() => policy.assertCancellable('CANCELLED', false)).toThrow(
+        BusinessRuleViolationError,
+      );
     });
 
     it('rejects cancelling a batch with payments already applied', () => {

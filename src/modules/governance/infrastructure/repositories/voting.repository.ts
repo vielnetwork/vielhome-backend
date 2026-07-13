@@ -1,5 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { UnitType, VoteCategory, VoteResultStatus, VoteScopeType, VoteStatus } from '@prisma/client';
+import {
+  UnitType,
+  VoteCategory,
+  VoteResultStatus,
+  VoteScopeType,
+  VoteStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 
 @Injectable()
@@ -66,7 +72,11 @@ export class VotingRepository {
 
   listVotes(buildingId: string, filter?: { category?: VoteCategory; status?: VoteStatus }) {
     return this.prisma.vote.findMany({
-      where: { buildingId, ...(filter?.category ? { category: filter.category } : {}), ...(filter?.status ? { status: filter.status } : {}) },
+      where: {
+        buildingId,
+        ...(filter?.category ? { category: filter.category } : {}),
+        ...(filter?.status ? { status: filter.status } : {}),
+      },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -134,14 +144,21 @@ export class VotingRepository {
   }
 
   findEligibilitySnapshotForUnit(voteId: string, unitId: string) {
-    return this.prisma.voteEligibilitySnapshot.findUnique({ where: { voteId_unitId: { voteId, unitId } } });
+    return this.prisma.voteEligibilitySnapshot.findUnique({
+      where: { voteId_unitId: { voteId, unitId } },
+    });
   }
 
   findBallotForUnit(voteId: string, unitId: string) {
     return this.prisma.ballot.findUnique({ where: { voteId_unitId: { voteId, unitId } } });
   }
 
-  createBallot(params: { voteId: string; unitId: string; voterPersonId: string; selectedOptionId: string }) {
+  createBallot(params: {
+    voteId: string;
+    unitId: string;
+    voterPersonId: string;
+    selectedOptionId: string;
+  }) {
     return this.prisma.ballot.create({ data: params });
   }
 

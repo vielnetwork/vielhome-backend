@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import type { ServiceProviderStatus } from '@prisma/client';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 /**
  * Marketplace Foundation (21_ADRs > ADR-030). Pure business-rule

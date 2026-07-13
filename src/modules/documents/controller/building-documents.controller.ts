@@ -1,6 +1,11 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import type { DocumentCategory, DocumentReferenceEntityType, DocumentStatus, DocumentVisibility } from '@prisma/client';
+import type {
+  DocumentCategory,
+  DocumentReferenceEntityType,
+  DocumentStatus,
+  DocumentVisibility,
+} from '@prisma/client';
 import { DocumentsService } from '../application/documents.service';
 import { CreateDocumentDto } from '../application/dto/create-document.dto';
 import { BulkCreateDocumentDto } from '../application/dto/bulk-create-document.dto';

@@ -24,7 +24,11 @@ export class FraudReportController {
   constructor(private readonly service: FraudCaseService) {}
 
   @Post()
-  report(@Body() dto: ReportFraudDto, @CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
+  report(
+    @Body() dto: ReportFraudDto,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
     return this.service.report(dto, user.sub, requestId);
   }
 

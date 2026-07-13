@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { FeatureGrantType, SubscriptionFeatureKey, SubscriptionPlan, SubscriptionStatus } from '@prisma/client';
+import type {
+  FeatureGrantType,
+  SubscriptionFeatureKey,
+  SubscriptionPlan,
+  SubscriptionStatus,
+} from '@prisma/client';
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import { SubscriptionPolicy } from '../domain/policies/subscription.policy';
 import { AuditService } from '../../../common/audit/audit.service';
@@ -25,7 +30,9 @@ export class SubscriptionService {
 
   /** 04.04 Rule 7 — called by `BackOfficeEventListener` on every new building; auto-starts the one-time 14-day trial. */
   async initiateForNewBuilding(buildingId: string) {
-    const trialEndsAt = new Date(Date.now() + this.policy.defaultTrialDurationDays() * 24 * 60 * 60 * 1000);
+    const trialEndsAt = new Date(
+      Date.now() + this.policy.defaultTrialDurationDays() * 24 * 60 * 60 * 1000,
+    );
     const subscription = await this.backOffice.createSubscription({ buildingId, trialEndsAt });
 
     await this.backOffice.createSubscriptionChangeLog({
@@ -45,7 +52,13 @@ export class SubscriptionService {
   }
 
   /** 07.04 Rule 011/014 — authorized staff may change a building's plan at any time (upgrade or downgrade); Rule 015 — downgrading never deletes data. */
-  async changePlan(buildingId: string, newPlan: SubscriptionPlan, actorPersonId: string, reason: string | undefined, requestId: string) {
+  async changePlan(
+    buildingId: string,
+    newPlan: SubscriptionPlan,
+    actorPersonId: string,
+    reason: string | undefined,
+    requestId: string,
+  ) {
     const subscription = await this.getForBuilding(buildingId);
 
     const updated = await this.backOffice.updateSubscriptionPlan(subscription.id, newPlan);
@@ -79,11 +92,19 @@ export class SubscriptionService {
    * staff actor, without inventing a fake Person row to satisfy the
    * `changedById`/`actorId` foreign keys.
    */
-  async changeStatus(buildingId: string, newStatus: SubscriptionStatus, actorPersonId: string | undefined, reason: string | undefined, requestId: string) {
+  async changeStatus(
+    buildingId: string,
+    newStatus: SubscriptionStatus,
+    actorPersonId: string | undefined,
+    reason: string | undefined,
+    requestId: string,
+  ) {
     const subscription = await this.getForBuilding(buildingId);
 
     const gracePeriodEndsAt =
-      newStatus === 'EXPIRED' ? new Date(Date.now() + subscription.gracePeriodDays * 24 * 60 * 60 * 1000) : null;
+      newStatus === 'EXPIRED'
+        ? new Date(Date.now() + subscription.gracePeriodDays * 24 * 60 * 60 * 1000)
+        : null;
 
     const updated = await this.backOffice.updateSubscriptionStatus({
       id: subscription.id,
@@ -134,9 +155,17 @@ export class SubscriptionService {
     const subscription = await this.getForBuilding(buildingId);
     const now = new Date();
 
-    if (subscription.status === 'TRIAL' && subscription.trialEndsAt && subscription.trialEndsAt <= now) {
+    if (
+      subscription.status === 'TRIAL' &&
+      subscription.trialEndsAt &&
+      subscription.trialEndsAt <= now
+    ) {
       await this.backOffice.updateSubscriptionPlan(subscription.id, 'FREE');
-      const updated = await this.backOffice.updateSubscriptionStatus({ id: subscription.id, status: 'ACTIVE', gracePeriodEndsAt: null });
+      const updated = await this.backOffice.updateSubscriptionStatus({
+        id: subscription.id,
+        status: 'ACTIVE',
+        gracePeriodEndsAt: null,
+      });
       await this.backOffice.createSubscriptionChangeLog({
         subscriptionId: subscription.id,
         fromPlan: subscription.plan,
@@ -157,13 +186,31 @@ export class SubscriptionService {
       return updated;
     }
 
-    if (subscription.status === 'ACTIVE' && subscription.currentPeriodEndsAt && subscription.currentPeriodEndsAt <= now) {
-      return this.changeStatus(buildingId, 'EXPIRED', actorPersonId, 'Paid period ended — Grace Period started.', requestId);
+    if (
+      subscription.status === 'ACTIVE' &&
+      subscription.currentPeriodEndsAt &&
+      subscription.currentPeriodEndsAt <= now
+    ) {
+      return this.changeStatus(
+        buildingId,
+        'EXPIRED',
+        actorPersonId,
+        'Paid period ended — Grace Period started.',
+        requestId,
+      );
     }
 
-    if (subscription.status === 'EXPIRED' && subscription.gracePeriodEndsAt && subscription.gracePeriodEndsAt <= now) {
+    if (
+      subscription.status === 'EXPIRED' &&
+      subscription.gracePeriodEndsAt &&
+      subscription.gracePeriodEndsAt <= now
+    ) {
       await this.backOffice.updateSubscriptionPlan(subscription.id, 'FREE');
-      const updated = await this.backOffice.updateSubscriptionStatus({ id: subscription.id, status: 'ACTIVE', gracePeriodEndsAt: null });
+      const updated = await this.backOffice.updateSubscriptionStatus({
+        id: subscription.id,
+        status: 'ACTIVE',
+        gracePeriodEndsAt: null,
+      });
       await this.backOffice.createSubscriptionChangeLog({
         subscriptionId: subscription.id,
         fromPlan: subscription.plan,
@@ -202,7 +249,10 @@ export class SubscriptionService {
         await this.evaluateExpiry(s.buildingId, undefined, requestId);
         results.push({ buildingId: s.buildingId, ok: true });
       } catch (err) {
-        this.logger.error(`Auto-evaluate-expiry failed for building=${s.buildingId}`, (err as Error)?.stack);
+        this.logger.error(
+          `Auto-evaluate-expiry failed for building=${s.buildingId}`,
+          (err as Error)?.stack,
+        );
         results.push({ buildingId: s.buildingId, ok: false, error: (err as Error)?.message });
       }
     }
@@ -212,7 +262,12 @@ export class SubscriptionService {
   /** 07.04 Rule 008/009/017 — grants a feature outside the plan, optionally time-boxed. */
   async createGrant(
     buildingId: string,
-    params: { featureKey: SubscriptionFeatureKey; grantType: FeatureGrantType; reason?: string; expiresAt?: Date },
+    params: {
+      featureKey: SubscriptionFeatureKey;
+      grantType: FeatureGrantType;
+      reason?: string;
+      expiresAt?: Date;
+    },
     actorPersonId: string,
     requestId: string,
   ) {

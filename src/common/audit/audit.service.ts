@@ -125,7 +125,17 @@ export class AuditService {
       skip: filters.skip ?? 0,
     });
 
-    const header = ['id', 'createdAt', 'actorId', 'buildingId', 'action', 'entityType', 'entityId', 'reason', 'requestId'];
+    const header = [
+      'id',
+      'createdAt',
+      'actorId',
+      'buildingId',
+      'action',
+      'entityType',
+      'entityId',
+      'reason',
+      'requestId',
+    ];
     const escape = (value: unknown): string => {
       if (value === null || value === undefined) return '';
       const str = String(value);
@@ -134,7 +144,17 @@ export class AuditService {
     const lines = [header.join(',')];
     for (const row of rows) {
       lines.push(
-        [row.id, row.createdAt.toISOString(), row.actorId, row.buildingId, row.action, row.entityType, row.entityId, row.reason, row.requestId]
+        [
+          row.id,
+          row.createdAt.toISOString(),
+          row.actorId,
+          row.buildingId,
+          row.action,
+          row.entityType,
+          row.entityId,
+          row.reason,
+          row.requestId,
+        ]
           .map(escape)
           .join(','),
       );
@@ -153,8 +173,7 @@ export class AuditService {
    * Fund/ChargeBatch/Payment, etc.) without inventing a new column.
    */
   async getMetrics(fromDate?: Date, toDate?: Date) {
-    const where =
-      fromDate || toDate ? { createdAt: { gte: fromDate, lte: toDate } } : undefined;
+    const where = fromDate || toDate ? { createdAt: { gte: fromDate, lte: toDate } } : undefined;
     const grouped = await this.prisma.auditLog.groupBy({
       by: ['entityType'],
       where,

@@ -40,7 +40,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   async validate(payload: JwtPayload): Promise<JwtPayload> {
     const person = await this.auth.findPersonById(payload.sub);
     if (!person || person.isSuspended) {
-      throw new AuthorizationError('Your account has been suspended. Contact support for assistance.');
+      throw new AuthorizationError(
+        'Your account has been suspended. Contact support for assistance.',
+      );
     }
     return payload;
   }
