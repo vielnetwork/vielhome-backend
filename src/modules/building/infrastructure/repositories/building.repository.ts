@@ -226,10 +226,17 @@ export class BuildingRepository {
     return this.prisma.membershipRequest.create({ data: params });
   }
 
+  // 21_ADRs > ADR-069 — includes the requester's `person` relation
+  // (fullName/phone), the same shape `listOwnershipHistoryForUnit`/
+  // `listTenanciesForUnit` already use below. Without it, the new mobile
+  // review screen would only have a raw `personId` to show a manager
+  // deciding whether to approve — not a real, usable review UI. A
+  // one-line, isolated addition; no other method or route changes.
   listMembershipRequests(buildingId: string) {
     return this.prisma.membershipRequest.findMany({
       where: { buildingId },
       orderBy: { createdAt: 'desc' },
+      include: { person: { select: { id: true, fullName: true, phone: true } } },
     });
   }
 
