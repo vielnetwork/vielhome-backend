@@ -2,24 +2,31 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-// 21_ADRs > ADR-064 — `import x = require(...)` deliberately, not
-// `import helmet from 'helmet'`: this project's tsconfig has
-// `allowSyntheticDefaultImports` but not `esModuleInterop`, and helmet's
-// own README documents `const helmet = require('helmet')` as the correct
-// CJS usage. `import = require` compiles to that exact call with no
-// interop-shim ambiguity, regardless of esModuleInterop. The lint rule
-// below (`@typescript-eslint/no-require-imports`, part of this project's
-// `plugin:@typescript-eslint/recommended` set) doesn't distinguish this
-// deliberate, correctness-motivated `import = require` from a stray
-// `require()` call — disabled for this one line only, not project-wide.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const helmet = require('helmet');
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { JsonLoggerService } from './common/logging/json-logger.service';
 import type { AppConfig } from './config/configuration';
+
+// 21_ADRs > ADR-064 — `import helmet = require('helmet')` (TS's
+// import-equals form) does NOT work for this package: helmet 8.x's
+// shipped types declare an ES-module-style `export default function
+// helmet(...)`, not the CJS `export =` shape import-equals requires, so
+// `import = require` resolves to the whole module *namespace* object, not
+// the callable function — `tsc` correctly refused to compile
+// `helmet(...)` as a call (`TS2349: This expression is not callable`),
+// caught by the user's real local `npm run build`. Enabling
+// `esModuleInterop` project-wide was considered and rejected: three other
+// default/namespace imports (`ioredis` in health.controller.ts,
+// `configuration` in app.module.ts, `supertest` in the e2e test) already
+// compile and run correctly under the current (no-interop) config, and
+// flipping that flag globally is a change this sandbox cannot verify
+// won't silently break one of them. A plain, untyped `require('helmet')`
+// — exactly what helmet's own README documents as correct CJS usage —
+// sidesteps the mismatched .d.ts entirely, since `require()`'s return
+// type is `any` and skips call-signature checking.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const helmet = require('helmet');
 
 async function bootstrap() {
   // 21_ADRs > ADR-061 — CORS is no longer unconditionally open. `NestFactory.create`
