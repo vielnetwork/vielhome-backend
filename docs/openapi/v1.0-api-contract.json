@@ -1,0 +1,7622 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "operationId": "HealthController_check_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/v1/health/live": {
+      "get": {
+        "operationId": "HealthController_live_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/v1/health/ready": {
+      "get": {
+        "operationId": "HealthController_ready_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/v1/auth/otp/request": {
+      "post": {
+        "operationId": "AuthController_requestOtp_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestOtpDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/otp/verify": {
+      "post": {
+        "operationId": "AuthController_verifyOtp_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyOtpDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/token/refresh": {
+      "post": {
+        "operationId": "AuthController_refresh_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshTokenDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/buildings/setup/draft": {
+      "post": {
+        "operationId": "BuildingController_saveDraft_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveDraftDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      },
+      "get": {
+        "operationId": "BuildingController_resumeDraft_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/setup/submit": {
+      "post": {
+        "operationId": "BuildingController_submit_v1",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/lookup": {
+      "get": {
+        "operationId": "BuildingController_lookupPostalCode_v1",
+        "parameters": [
+          {
+            "name": "postalCode",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings": {
+      "get": {
+        "operationId": "BuildingController_listMine_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}": {
+      "get": {
+        "operationId": "BuildingController_getOne_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units": {
+      "get": {
+        "operationId": "BuildingController_listUnits_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      },
+      "post": {
+        "operationId": "BuildingController_addUnit_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUnitDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units/{unitId}": {
+      "get": {
+        "operationId": "BuildingController_getUnit_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      },
+      "patch": {
+        "operationId": "BuildingController_updateUnit_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUnitDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units/{unitId}/invite-owner": {
+      "post": {
+        "operationId": "BuildingController_inviteOwner_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InviteOwnerDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/membership-requests": {
+      "post": {
+        "operationId": "BuildingController_requestMembership_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMembershipRequestDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      },
+      "get": {
+        "operationId": "BuildingController_listMembershipRequests_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/membership-requests/{requestId}": {
+      "patch": {
+        "operationId": "BuildingController_resolveMembershipRequest_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "requestId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveMembershipRequestDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/manager": {
+      "get": {
+        "operationId": "BuildingController_getCurrentManager_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      },
+      "patch": {
+        "operationId": "BuildingController_changeManager_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeManagerDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/manager/history": {
+      "get": {
+        "operationId": "BuildingController_getManagementHistory_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/manager/end": {
+      "post": {
+        "operationId": "BuildingController_endManagement_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units/{unitId}/ownership/history": {
+      "get": {
+        "operationId": "BuildingController_getOwnershipHistory_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units/{unitId}/ownership/transfer": {
+      "post": {
+        "operationId": "BuildingController_transferOwnership_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferOwnershipDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units/{unitId}/tenancy": {
+      "get": {
+        "operationId": "BuildingController_getCurrentTenancy_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      },
+      "post": {
+        "operationId": "BuildingController_createTenancy_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTenancyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units/{unitId}/tenancy/history": {
+      "get": {
+        "operationId": "BuildingController_getTenancyHistory_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/tenancies/{tenancyId}/notice": {
+      "post": {
+        "operationId": "BuildingController_giveTenancyNotice_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tenancyId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/tenancies/{tenancyId}/end": {
+      "post": {
+        "operationId": "BuildingController_endTenancy_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tenancyId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EndTenancyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "building"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/funds": {
+      "post": {
+        "operationId": "FinanceController_createFund_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateFundDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      },
+      "get": {
+        "operationId": "FinanceController_listFunds_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/charges": {
+      "post": {
+        "operationId": "FinanceController_createChargeBatch_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateChargeBatchDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      },
+      "get": {
+        "operationId": "FinanceController_listChargeBatches_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/charges/{chargeBatchId}": {
+      "get": {
+        "operationId": "FinanceController_getChargeBatch_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chargeBatchId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/charges/{chargeBatchId}/issue": {
+      "patch": {
+        "operationId": "FinanceController_issueChargeBatch_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chargeBatchId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/charges/{chargeBatchId}/cancel": {
+      "patch": {
+        "operationId": "FinanceController_cancelChargeBatch_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chargeBatchId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units/{unitId}/charge-items": {
+      "get": {
+        "operationId": "FinanceController_listUnitChargeItems_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units/{unitId}/payments": {
+      "get": {
+        "operationId": "FinanceController_listUnitPayments_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      },
+      "post": {
+        "operationId": "FinanceController_createPayment_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePaymentDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units/{unitId}/debt": {
+      "get": {
+        "operationId": "FinanceController_getUnitDebt_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/units/{unitId}/adjustments": {
+      "get": {
+        "operationId": "FinanceController_listUnitAdjustments_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      },
+      "post": {
+        "operationId": "FinanceController_createAdjustment_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAdjustmentDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/payments": {
+      "get": {
+        "operationId": "FinanceController_listPayments_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/payments/{paymentId}/approve": {
+      "patch": {
+        "operationId": "FinanceController_approvePayment_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "paymentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/payments/{paymentId}/reject": {
+      "patch": {
+        "operationId": "FinanceController_rejectPayment_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "paymentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectPaymentDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/payments/{paymentId}/reverse": {
+      "post": {
+        "operationId": "FinanceController_reversePayment_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "paymentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReversePaymentDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/payments/{paymentId}/refund": {
+      "post": {
+        "operationId": "FinanceController_refundPayment_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "paymentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefundPaymentDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/payments/{paymentId}/refunds": {
+      "get": {
+        "operationId": "FinanceController_listPaymentRefunds_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "paymentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/financial-summary": {
+      "get": {
+        "operationId": "FinanceController_getFinancialSummary_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/ledger": {
+      "get": {
+        "operationId": "FinanceController_listLedger_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fundId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/collection-rate": {
+      "get": {
+        "operationId": "FinanceController_getCollectionRate_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fromDate",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "toDate",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/payment-registration-rate": {
+      "get": {
+        "operationId": "FinanceController_getPaymentRegistrationRate_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fromDate",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "toDate",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/votes": {
+      "post": {
+        "operationId": "VotingController_createVote_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVoteDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      },
+      "get": {
+        "operationId": "VotingController_listVotes_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/votes/{voteId}": {
+      "get": {
+        "operationId": "VotingController_getVote_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "voteId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/votes/{voteId}/publish": {
+      "patch": {
+        "operationId": "VotingController_publishVote_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "voteId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/votes/{voteId}/ballots": {
+      "post": {
+        "operationId": "VotingController_castBallot_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "voteId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CastBallotDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/votes/{voteId}/close": {
+      "patch": {
+        "operationId": "VotingController_closeVote_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "voteId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/votes/{voteId}/cancel": {
+      "patch": {
+        "operationId": "VotingController_cancelVote_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "voteId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelVoteDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/votes/{voteId}/results": {
+      "get": {
+        "operationId": "VotingController_getResult_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "voteId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/meetings": {
+      "post": {
+        "operationId": "MeetingController_createMeeting_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMeetingDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      },
+      "get": {
+        "operationId": "MeetingController_listMeetings_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/meetings/{meetingId}": {
+      "get": {
+        "operationId": "MeetingController_getMeeting_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "meetingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      },
+      "patch": {
+        "operationId": "MeetingController_updateMeeting_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "meetingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMeetingDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/meetings/{meetingId}/archive": {
+      "patch": {
+        "operationId": "MeetingController_archiveMeeting_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "meetingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/meetings/{meetingId}/attendance": {
+      "post": {
+        "operationId": "MeetingController_recordAttendance_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "meetingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordAttendanceDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      },
+      "get": {
+        "operationId": "MeetingController_listAttendance_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "meetingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/cases": {
+      "post": {
+        "operationId": "CasesController_createCase_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      },
+      "get": {
+        "operationId": "CasesController_listCases_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "priority",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "assigneeId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/cases/{caseId}": {
+      "get": {
+        "operationId": "CasesController_getCase_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      },
+      "patch": {
+        "operationId": "CasesController_updateCase_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/cases/{caseId}/assign": {
+      "post": {
+        "operationId": "CasesController_assignCase_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/cases/{caseId}/assignments": {
+      "get": {
+        "operationId": "CasesController_listAssignments_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/cases/{caseId}/messages": {
+      "post": {
+        "operationId": "CasesController_addMessage_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddMessageDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      },
+      "get": {
+        "operationId": "CasesController_listMessages_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/cases/{caseId}/resolve": {
+      "post": {
+        "operationId": "CasesController_resolveCase_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/cases/{caseId}/close": {
+      "post": {
+        "operationId": "CasesController_closeCase_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/cases/{caseId}/reopen": {
+      "post": {
+        "operationId": "CasesController_reopenCase_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReopenCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/cases/{caseId}/merge": {
+      "post": {
+        "operationId": "CasesController_mergeCase_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "cases"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/documents": {
+      "post": {
+        "operationId": "BuildingDocumentsController_createDocument_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDocumentDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "documents"
+        ]
+      },
+      "get": {
+        "operationId": "BuildingDocumentsController_listDocuments_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "visibility",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/documents/bulk": {
+      "post": {
+        "operationId": "BuildingDocumentsController_bulkCreateDocuments_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkCreateDocumentDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/document-references": {
+      "get": {
+        "operationId": "BuildingDocumentsController_listReferencesForEntity_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entityType",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entityId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/search": {
+      "get": {
+        "operationId": "DocumentsController_searchDocuments_v1",
+        "parameters": [
+          {
+            "name": "buildingId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "title",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tags",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/{documentId}": {
+      "get": {
+        "operationId": "DocumentsController_getDocument_v1",
+        "parameters": [
+          {
+            "name": "documentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/{documentId}/versions": {
+      "post": {
+        "operationId": "DocumentsController_uploadVersion_v1",
+        "parameters": [
+          {
+            "name": "documentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadVersionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/{documentId}/archive": {
+      "post": {
+        "operationId": "DocumentsController_archiveDocument_v1",
+        "parameters": [
+          {
+            "name": "documentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchiveDocumentDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/{documentId}/references": {
+      "post": {
+        "operationId": "DocumentsController_createReference_v1",
+        "parameters": [
+          {
+            "name": "documentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateReferenceDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/document-versions/{versionId}/download": {
+      "get": {
+        "operationId": "DocumentVersionsController_downloadVersion_v1",
+        "parameters": [
+          {
+            "name": "versionId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/notifications/unread-count": {
+      "get": {
+        "operationId": "NotificationsController_getUnreadCount_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/notifications/search": {
+      "get": {
+        "operationId": "NotificationsController_search_v1",
+        "parameters": [
+          {
+            "name": "title",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/notifications/read-all": {
+      "post": {
+        "operationId": "NotificationsController_markAllAsRead_v1",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/notifications": {
+      "get": {
+        "operationId": "NotificationsController_list_v1",
+        "parameters": [
+          {
+            "name": "category",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unreadOnly",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "includeArchived",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/notifications/{notificationId}": {
+      "get": {
+        "operationId": "NotificationsController_get_v1",
+        "parameters": [
+          {
+            "name": "notificationId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/notifications/{notificationId}/read": {
+      "post": {
+        "operationId": "NotificationsController_markAsRead_v1",
+        "parameters": [
+          {
+            "name": "notificationId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/notifications/{notificationId}/archive": {
+      "post": {
+        "operationId": "NotificationsController_archive_v1",
+        "parameters": [
+          {
+            "name": "notificationId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/notification-preferences": {
+      "get": {
+        "operationId": "NotificationPreferencesController_getPreferences_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      },
+      "patch": {
+        "operationId": "NotificationPreferencesController_updatePreferences_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePreferenceDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/backoffice/notification-templates": {
+      "get": {
+        "operationId": "NotificationTemplateController_list_v1",
+        "parameters": [
+          {
+            "name": "isActive",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      },
+      "post": {
+        "operationId": "NotificationTemplateController_create_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateNotificationTemplateDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/backoffice/notification-templates/{id}": {
+      "get": {
+        "operationId": "NotificationTemplateController_get_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      },
+      "patch": {
+        "operationId": "NotificationTemplateController_update_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateNotificationTemplateDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/backoffice/building-verifications": {
+      "get": {
+        "operationId": "BuildingVerificationController_list_v1",
+        "parameters": [
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "priority",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "assignedToId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/building-verifications/{caseId}": {
+      "get": {
+        "operationId": "BuildingVerificationController_getCase_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/building-verifications/{caseId}/assign": {
+      "post": {
+        "operationId": "BuildingVerificationController_assign_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignVerificationCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/building-verifications/{caseId}/decide": {
+      "post": {
+        "operationId": "BuildingVerificationController_decide_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideBuildingVerificationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/verification/appeal": {
+      "post": {
+        "operationId": "BuildingVerificationAppealController_appeal_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppealVerificationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/manager-verifications": {
+      "get": {
+        "operationId": "ManagerVerificationController_list_v1",
+        "parameters": [
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "priority",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/manager-verifications/{caseId}": {
+      "get": {
+        "operationId": "ManagerVerificationController_getCase_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/manager-verifications/{caseId}/decide": {
+      "post": {
+        "operationId": "ManagerVerificationController_decide_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideManagerVerificationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/manager-verifications/{caseId}/restore": {
+      "post": {
+        "operationId": "ManagerVerificationController_restore_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreManagerVerificationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/manager-verification/approve": {
+      "post": {
+        "operationId": "ManagerVerificationOwnerController_approve_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/manager-verification/appeal": {
+      "post": {
+        "operationId": "ManagerVerificationOwnerController_appeal_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/audit-logs": {
+      "get": {
+        "operationId": "AuditController_search_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/audit-logs/timeline": {
+      "get": {
+        "operationId": "AuditController_timeline_v1",
+        "parameters": [
+          {
+            "name": "entityType",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entityId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/audit-logs/export": {
+      "get": {
+        "operationId": "AuditController_export_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/audit-logs/metrics": {
+      "get": {
+        "operationId": "AuditController_metrics_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/fraud-cases": {
+      "post": {
+        "operationId": "FraudCaseController_open_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenFraudCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      },
+      "get": {
+        "operationId": "FraudCaseController_list_v1",
+        "parameters": [
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "priority",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "assignedToId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/fraud-cases/metrics": {
+      "get": {
+        "operationId": "FraudCaseController_getMetrics_v1",
+        "parameters": [
+          {
+            "name": "fromDate",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "toDate",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/fraud-cases/{caseId}": {
+      "get": {
+        "operationId": "FraudCaseController_getCase_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/fraud-cases/{caseId}/assign": {
+      "post": {
+        "operationId": "FraudCaseController_assign_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignVerificationCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/fraud-cases/{caseId}/evidence": {
+      "post": {
+        "operationId": "FraudCaseController_addEvidence_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddFraudEvidenceDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/fraud-cases/{caseId}/decide": {
+      "post": {
+        "operationId": "FraudCaseController_decide_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideFraudCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/fraud-cases/{caseId}/reopen": {
+      "post": {
+        "operationId": "FraudCaseController_reopen_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReopenFraudCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/fraud-cases/{caseId}/enforce": {
+      "post": {
+        "operationId": "FraudCaseController_enforce_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnforceFraudCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/fraud-cases/enforcement-actions/{actionId}/appeal-decision": {
+      "post": {
+        "operationId": "FraudCaseController_decideAppeal_v1",
+        "parameters": [
+          {
+            "name": "actionId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideEnforcementAppealDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/fraud-reports": {
+      "post": {
+        "operationId": "FraudReportController_report_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportFraudDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/fraud-reports/enforcement-actions/{actionId}/appeal": {
+      "post": {
+        "operationId": "FraudReportController_appealEnforcement_v1",
+        "parameters": [
+          {
+            "name": "actionId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppealEnforcementDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/support-cases": {
+      "post": {
+        "operationId": "SupportCaseController_open_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenSupportCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      },
+      "get": {
+        "operationId": "SupportCaseController_list_v1",
+        "parameters": [
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "priority",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "assignedToId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/support-cases/metrics": {
+      "get": {
+        "operationId": "SupportCaseController_getMetrics_v1",
+        "parameters": [
+          {
+            "name": "fromDate",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "toDate",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/support-cases/{caseId}": {
+      "get": {
+        "operationId": "SupportCaseController_getCase_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/support-cases/{caseId}/assign": {
+      "post": {
+        "operationId": "SupportCaseController_assign_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignVerificationCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/support-cases/{caseId}/messages": {
+      "post": {
+        "operationId": "SupportCaseController_addMessage_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddSupportCaseMessageDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/support-cases/{caseId}/resolve": {
+      "post": {
+        "operationId": "SupportCaseController_resolve_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveSupportCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/support-cases/{caseId}/close": {
+      "post": {
+        "operationId": "SupportCaseController_close_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/support-cases/{caseId}/escalate": {
+      "post": {
+        "operationId": "SupportCaseController_escalate_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/support-cases/{caseId}/merge": {
+      "post": {
+        "operationId": "SupportCaseController_merge_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeSupportCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/support-cases": {
+      "post": {
+        "operationId": "SupportReportController_open_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenSupportCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/support-cases/me": {
+      "get": {
+        "operationId": "SupportReportController_listMine_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/support-cases/{caseId}": {
+      "get": {
+        "operationId": "SupportReportController_getCase_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/support-cases/{caseId}/messages": {
+      "post": {
+        "operationId": "SupportReportController_reply_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddSupportCaseMessageDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/support-cases/{caseId}/reopen": {
+      "post": {
+        "operationId": "SupportReportController_reopen_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReopenSupportCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/buildings/{buildingId}/subscription": {
+      "get": {
+        "operationId": "SubscriptionController_get_v1",
+        "parameters": [
+          {
+            "name": "buildingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/buildings/{buildingId}/subscription/effective-features": {
+      "get": {
+        "operationId": "SubscriptionController_effectiveFeatures_v1",
+        "parameters": [
+          {
+            "name": "buildingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/buildings/{buildingId}/subscription/history": {
+      "get": {
+        "operationId": "SubscriptionController_history_v1",
+        "parameters": [
+          {
+            "name": "buildingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/buildings/{buildingId}/subscription/plan": {
+      "post": {
+        "operationId": "SubscriptionController_changePlan_v1",
+        "parameters": [
+          {
+            "name": "buildingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeSubscriptionPlanDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/buildings/{buildingId}/subscription/status": {
+      "post": {
+        "operationId": "SubscriptionController_changeStatus_v1",
+        "parameters": [
+          {
+            "name": "buildingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeSubscriptionStatusDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/buildings/{buildingId}/subscription/evaluate-expiry": {
+      "post": {
+        "operationId": "SubscriptionController_evaluateExpiry_v1",
+        "parameters": [
+          {
+            "name": "buildingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/buildings/{buildingId}/subscription/grants": {
+      "post": {
+        "operationId": "SubscriptionController_createGrant_v1",
+        "parameters": [
+          {
+            "name": "buildingId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateFeatureGrantDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/buildings/{buildingId}/subscription/grants/{grantId}/revoke": {
+      "post": {
+        "operationId": "SubscriptionController_revokeGrant_v1",
+        "parameters": [
+          {
+            "name": "grantId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/subscription": {
+      "get": {
+        "operationId": "SubscriptionReportController_get_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/subscription/effective-features": {
+      "get": {
+        "operationId": "SubscriptionReportController_effectiveFeatures_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/compliance-cases": {
+      "post": {
+        "operationId": "ComplianceCaseController_open_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenComplianceCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      },
+      "get": {
+        "operationId": "ComplianceCaseController_list_v1",
+        "parameters": [
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "priority",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "assignedToId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subjectActorId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/compliance-cases/{caseId}": {
+      "get": {
+        "operationId": "ComplianceCaseController_getCase_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/compliance-cases/{caseId}/assign": {
+      "post": {
+        "operationId": "ComplianceCaseController_assign_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignComplianceCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/compliance-cases/{caseId}/decide": {
+      "post": {
+        "operationId": "ComplianceCaseController_decide_v1",
+        "parameters": [
+          {
+            "name": "caseId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideComplianceCaseDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/compliance-cases/detect": {
+      "post": {
+        "operationId": "ComplianceCaseController_detect_v1",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/legal-holds": {
+      "post": {
+        "operationId": "LegalHoldController_place_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaceLegalHoldDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      },
+      "get": {
+        "operationId": "LegalHoldController_list_v1",
+        "parameters": [
+          {
+            "name": "entityType",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entityId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "isActive",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/backoffice/legal-holds/{holdId}/release": {
+      "post": {
+        "operationId": "LegalHoldController_release_v1",
+        "parameters": [
+          {
+            "name": "holdId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    },
+    "/api/v1/gamification/me": {
+      "get": {
+        "operationId": "GamificationController_getMyProgress_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "gamification"
+        ]
+      }
+    },
+    "/api/v1/gamification/me/xp-history": {
+      "get": {
+        "operationId": "GamificationController_getMyXpHistory_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "gamification"
+        ]
+      }
+    },
+    "/api/v1/gamification/leaderboard": {
+      "get": {
+        "operationId": "GamificationController_getLeaderboard_v1",
+        "parameters": [
+          {
+            "name": "tier",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "gamification"
+        ]
+      }
+    },
+    "/api/v1/gamification/analytics": {
+      "get": {
+        "operationId": "GamificationController_getAnalytics_v1",
+        "parameters": [
+          {
+            "name": "fromDate",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "toDate",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "gamification"
+        ]
+      }
+    },
+    "/api/v1/buildings/{id}/gamification/score": {
+      "get": {
+        "operationId": "BuildingGamificationController_getBuildingScore_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "gamification"
+        ]
+      }
+    },
+    "/api/v1/marketplace/providers": {
+      "post": {
+        "operationId": "MarketplaceController_submit_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitServiceProviderDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "marketplace"
+        ]
+      },
+      "get": {
+        "operationId": "MarketplaceController_listApproved_v1",
+        "parameters": [
+          {
+            "name": "category",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "city",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/marketplace/providers/me": {
+      "get": {
+        "operationId": "MarketplaceController_listMine_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/marketplace/providers/{id}": {
+      "get": {
+        "operationId": "MarketplaceController_getProvider_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/backoffice/marketplace-providers": {
+      "get": {
+        "operationId": "MarketplaceModerationController_list_v1",
+        "parameters": [
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/backoffice/marketplace-providers/{id}": {
+      "get": {
+        "operationId": "MarketplaceModerationController_getCase_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/backoffice/marketplace-providers/{id}/decide": {
+      "post": {
+        "operationId": "MarketplaceModerationController_decide_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideServiceProviderDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/backoffice/marketplace-providers/{id}/deactivate": {
+      "post": {
+        "operationId": "MarketplaceModerationController_deactivate_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/backoffice/scheduler/trigger": {
+      "post": {
+        "operationId": "SchedulerController_trigger_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriggerScheduledJobDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "backoffice"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "VielHome API",
+    "description": "REST API for VielHome — see AIHandoff V2 for architecture and business rules.",
+    "version": "1.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      }
+    },
+    "schemas": {
+      "RequestOtpDto": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "example": "+989121234567"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "LOGIN",
+              "REGISTER",
+              "VERIFY_PHONE"
+            ],
+            "default": "LOGIN"
+          }
+        },
+        "required": [
+          "phone",
+          "purpose"
+        ]
+      },
+      "VerifyOtpDto": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "example": "+989121234567"
+          },
+          "code": {
+            "type": "string",
+            "example": "12345"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "LOGIN",
+              "REGISTER",
+              "VERIFY_PHONE"
+            ],
+            "default": "LOGIN"
+          },
+          "deviceToken": {
+            "type": "string",
+            "example": "device-abc-123",
+            "description": "Stable per-install device token (Remember Device)."
+          },
+          "platform": {
+            "type": "string",
+            "enum": [
+              "ios",
+              "android",
+              "web"
+            ]
+          }
+        },
+        "required": [
+          "phone",
+          "code",
+          "purpose",
+          "deviceToken",
+          "platform"
+        ]
+      },
+      "RefreshTokenDto": {
+        "type": "object",
+        "properties": {
+          "refreshToken": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "refreshToken"
+        ]
+      },
+      "SaveDraftDto": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "role_selection",
+              "building_info",
+              "address",
+              "review"
+            ]
+          },
+          "payload": {
+            "type": "object"
+          },
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "payload"
+        ]
+      },
+      "CreateUnitDto": {
+        "type": "object",
+        "properties": {
+          "unitNumber": {
+            "type": "string"
+          },
+          "blockId": {
+            "type": "string"
+          },
+          "floorId": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "RESIDENTIAL",
+              "COMMERCIAL",
+              "PARKING",
+              "STORAGE"
+            ]
+          },
+          "areaSqm": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "unitNumber"
+        ]
+      },
+      "UpdateUnitDto": {
+        "type": "object",
+        "properties": {
+          "floorNumber": {
+            "type": "number"
+          },
+          "areaSqm": {
+            "type": "number"
+          },
+          "parkingCount": {
+            "type": "number"
+          },
+          "storageCount": {
+            "type": "number"
+          },
+          "occupancyStatus": {
+            "type": "string",
+            "enum": [
+              "VACANT",
+              "OWNER_OCCUPIED",
+              "TENANT_OCCUPIED"
+            ]
+          },
+          "ownerFullName": {
+            "type": "string"
+          },
+          "ownerPhone": {
+            "type": "string",
+            "example": "+989121234567"
+          }
+        }
+      },
+      "InviteOwnerDto": {
+        "type": "object",
+        "properties": {
+          "ownerFullName": {
+            "type": "string"
+          },
+          "ownerPhone": {
+            "type": "string",
+            "example": "+989121234567"
+          }
+        },
+        "required": [
+          "ownerFullName",
+          "ownerPhone"
+        ]
+      },
+      "CreateMembershipRequestDto": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "OWNER",
+              "MANAGER"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role"
+        ]
+      },
+      "ResolveMembershipRequestDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "APPROVED",
+              "REJECTED"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "ChangeManagerDto": {
+        "type": "object",
+        "properties": {
+          "newManagerPersonId": {
+            "type": "string"
+          },
+          "assignmentType": {
+            "type": "string",
+            "enum": [
+              "PROVISIONAL",
+              "ELECTED",
+              "APPOINTED",
+              "BACKOFFICE_ASSIGNED"
+            ]
+          }
+        },
+        "required": [
+          "newManagerPersonId",
+          "assignmentType"
+        ]
+      },
+      "TransferOwnershipDto": {
+        "type": "object",
+        "properties": {
+          "newOwnerPhone": {
+            "type": "string",
+            "example": "+989121234567"
+          }
+        },
+        "required": [
+          "newOwnerPhone"
+        ]
+      },
+      "CreateTenancyDto": {
+        "type": "object",
+        "properties": {
+          "tenantPersonId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenantPersonId"
+        ]
+      },
+      "EndTenancyDto": {
+        "type": "object",
+        "properties": {
+          "terminationReason": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateFundDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "CURRENT",
+              "RESERVE",
+              "EMERGENCY",
+              "RENOVATION",
+              "INSURANCE",
+              "CUSTOM"
+            ]
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ]
+      },
+      "ChargeBatchItemDto": {
+        "type": "object",
+        "properties": {
+          "unitId": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "unitId",
+          "amount"
+        ]
+      },
+      "CreateChargeBatchDto": {
+        "type": "object",
+        "properties": {
+          "fundId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "calculationMethod": {
+            "type": "string",
+            "enum": [
+              "FIXED",
+              "AREA_BASED",
+              "MIXED"
+            ]
+          },
+          "amountPerUnit": {
+            "type": "number"
+          },
+          "ratePerSqm": {
+            "type": "number"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChargeBatchItemDto"
+            }
+          },
+          "periodStart": {
+            "type": "string"
+          },
+          "periodEnd": {
+            "type": "string"
+          },
+          "dueDate": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "calculationMethod"
+        ]
+      },
+      "CreatePaymentDto": {
+        "type": "object",
+        "properties": {
+          "fundId": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "number"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "CASH",
+              "BANK_TRANSFER"
+            ]
+          },
+          "reference": {
+            "type": "string",
+            "description": "Bank reference number / receipt number, if any."
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount",
+          "method"
+        ]
+      },
+      "CreateAdjustmentDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "number",
+            "description": "Negative waives debt, positive adds debt. Cannot be zero."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "fundId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount",
+          "reason"
+        ]
+      },
+      "RejectPaymentDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "ReversePaymentDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "RefundPaymentDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "number",
+            "description": "Defaults to the full original payment amount."
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      },
+      "VoteOptionInputDto": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ]
+      },
+      "CreateVoteDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "MANAGEMENT",
+              "FINANCIAL",
+              "LEGAL",
+              "MAINTENANCE",
+              "COMMUNITY"
+            ]
+          },
+          "isManagerElection": {
+            "type": "boolean",
+            "default": false
+          },
+          "quorumPercent": {
+            "type": "number",
+            "description": "Percentage (0-100) of eligible units that must vote for quorum."
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VoteOptionInputDto"
+            }
+          },
+          "startAt": {
+            "type": "string"
+          },
+          "endAt": {
+            "type": "string"
+          },
+          "meetingId": {
+            "type": "string"
+          },
+          "scopeType": {
+            "type": "string",
+            "enum": [
+              "ENTIRE_BUILDING",
+              "BLOCK",
+              "PROPERTY_TYPE",
+              "SELECTED_UNITS"
+            ],
+            "default": "ENTIRE_BUILDING"
+          },
+          "scopeBlockId": {
+            "type": "string"
+          },
+          "scopeUnitType": {
+            "type": "string",
+            "enum": [
+              "RESIDENTIAL",
+              "COMMERCIAL",
+              "PARKING",
+              "STORAGE"
+            ]
+          },
+          "scopeUnitIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "title",
+          "category",
+          "startAt",
+          "endAt"
+        ]
+      },
+      "CastBallotDto": {
+        "type": "object",
+        "properties": {
+          "unitId": {
+            "type": "string"
+          },
+          "selectedOptionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "unitId",
+          "selectedOptionId"
+        ]
+      },
+      "CancelVoteDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateMeetingDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "scheduledAt": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "scheduledAt"
+        ]
+      },
+      "UpdateMeetingDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "scheduledAt": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "minutes": {
+            "type": "string"
+          }
+        }
+      },
+      "RecordAttendanceDto": {
+        "type": "object",
+        "properties": {
+          "personIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "personIds"
+        ]
+      },
+      "CreateCaseDto": {
+        "type": "object",
+        "properties": {
+          "unitId": {
+            "type": "string",
+            "description": "The unit this case concerns, if any (06.07 Step 3: scope may be Property/Block/Building)."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "MAINTENANCE",
+              "COMPLAINT",
+              "SUGGESTION",
+              "GENERAL"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "LOW",
+              "NORMAL",
+              "HIGH",
+              "URGENT"
+            ],
+            "default": "NORMAL"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "PUBLIC",
+              "PRIVATE"
+            ],
+            "default": "PRIVATE"
+          },
+          "isAgainstManager": {
+            "type": "boolean",
+            "default": false,
+            "description": "06.07 Rule 017: marks this as a complaint about the current manager — blocks it from ever being assigned to whoever holds the MANAGER role."
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "description"
+        ]
+      },
+      "UpdateCaseDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "LOW",
+              "NORMAL",
+              "HIGH",
+              "URGENT"
+            ]
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "PUBLIC",
+              "PRIVATE"
+            ]
+          }
+        }
+      },
+      "AssignCaseDto": {
+        "type": "object",
+        "properties": {
+          "assignedToId": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assignedToId"
+        ]
+      },
+      "AddMessageDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "isInternal": {
+            "type": "boolean",
+            "default": false,
+            "description": "Only a privileged role (MANAGER/BOARD_MEMBER/ACCOUNTANT) may set this."
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "ResolveCaseDto": {
+        "type": "object",
+        "properties": {
+          "resolutionCode": {
+            "type": "string",
+            "enum": [
+              "COMPLETED",
+              "REJECTED",
+              "DUPLICATE",
+              "INVALID",
+              "EXTERNAL_RESOLUTION",
+              "OTHER"
+            ]
+          }
+        },
+        "required": [
+          "resolutionCode"
+        ]
+      },
+      "ReopenCaseDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      },
+      "MergeCaseDto": {
+        "type": "object",
+        "properties": {
+          "intoCaseId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "intoCaseId"
+        ]
+      },
+      "CreateDocumentDto": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "GOVERNANCE",
+              "FINANCIAL",
+              "LEGAL",
+              "MAINTENANCE",
+              "GENERAL"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "PUBLIC",
+              "MEMBERS_ONLY",
+              "MANAGEMENT_ONLY"
+            ],
+            "default": "MEMBERS_ONLY"
+          },
+          "fileUrl": {
+            "type": "string",
+            "description": "Location of the already-uploaded file (pre-signed URL / storage key)."
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "fileType": {
+            "type": "string",
+            "description": "06.08 Rule 013: PDF, JPG, JPEG, or PNG."
+          },
+          "fileSize": {
+            "type": "number"
+          },
+          "expiresAt": {
+            "type": "string",
+            "description": "08.09 Rule 016 — this version's expiration date, if the underlying file has one (e.g. an insurance policy or permit). Metadata only — nothing auto-archives on this date."
+          }
+        },
+        "required": [
+          "category",
+          "title",
+          "fileUrl",
+          "fileName",
+          "fileType",
+          "fileSize"
+        ]
+      },
+      "BulkCreateDocumentDto": {
+        "type": "object",
+        "properties": {
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreateDocumentDto"
+            }
+          }
+        },
+        "required": [
+          "documents"
+        ]
+      },
+      "UploadVersionDto": {
+        "type": "object",
+        "properties": {
+          "fileUrl": {
+            "type": "string",
+            "description": "Location of the already-uploaded file (pre-signed URL / storage key)."
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "fileType": {
+            "type": "string",
+            "description": "06.08 Rule 013: PDF, JPG, JPEG, or PNG."
+          },
+          "fileSize": {
+            "type": "number"
+          },
+          "expiresAt": {
+            "type": "string",
+            "description": "08.09 Rule 016 — this version's expiration date, if the underlying file has one. Metadata only — nothing auto-archives on this date."
+          }
+        },
+        "required": [
+          "fileUrl",
+          "fileName",
+          "fileType",
+          "fileSize"
+        ]
+      },
+      "ArchiveDocumentDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateReferenceDto": {
+        "type": "object",
+        "properties": {
+          "entityType": {
+            "type": "string",
+            "enum": [
+              "BUILDING",
+              "UNIT",
+              "VOTE",
+              "CHARGE_BATCH",
+              "PAYMENT",
+              "CASE",
+              "SERVICE_PROVIDER",
+              "SUPPORT_CASE"
+            ]
+          },
+          "entityId": {
+            "type": "string"
+          },
+          "versionId": {
+            "type": "string",
+            "description": "Defaults to the document's current version if omitted."
+          }
+        },
+        "required": [
+          "entityType",
+          "entityId"
+        ]
+      },
+      "UpdatePreferenceDto": {
+        "type": "object",
+        "properties": {
+          "inAppEnabled": {
+            "type": "boolean"
+          },
+          "pushEnabled": {
+            "type": "boolean"
+          },
+          "emailEnabled": {
+            "type": "boolean"
+          },
+          "smsEnabled": {
+            "type": "boolean"
+          },
+          "marketingEnabled": {
+            "type": "boolean",
+            "description": "13_Notification_Architecture: Marketing is opt-in only."
+          }
+        }
+      },
+      "CreateNotificationTemplateDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "titleTemplate": {
+            "type": "string"
+          },
+          "bodyTemplate": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "code",
+          "titleTemplate",
+          "bodyTemplate"
+        ]
+      },
+      "UpdateNotificationTemplateDto": {
+        "type": "object",
+        "properties": {
+          "titleTemplate": {
+            "type": "string"
+          },
+          "bodyTemplate": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AssignVerificationCaseDto": {
+        "type": "object",
+        "properties": {
+          "assigneeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assigneeId"
+        ]
+      },
+      "DecideBuildingVerificationDto": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "REJECT",
+              "REQUEST_INFORMATION"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "AppealVerificationDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "DecideManagerVerificationDto": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "REJECT",
+              "SUSPEND"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "RestoreManagerVerificationDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "OpenFraudCaseDto": {
+        "type": "object",
+        "properties": {
+          "signalType": {
+            "type": "string",
+            "enum": [
+              "MULTIPLE_MANAGER_CLAIMS",
+              "MASS_REGISTRATIONS",
+              "SUSPICIOUS_BUILDING_CREATION",
+              "EXCESSIVE_APPEALS",
+              "ABNORMAL_ACTIVITY",
+              "OTHER"
+            ]
+          },
+          "targetPersonId": {
+            "type": "string"
+          },
+          "targetBuildingId": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "LOW",
+              "NORMAL",
+              "HIGH",
+              "CRITICAL"
+            ]
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "signalType"
+        ]
+      },
+      "AddFraudEvidenceDto": {
+        "type": "object",
+        "properties": {
+          "evidenceNotes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidenceNotes"
+        ]
+      },
+      "DecideFraudCaseDto": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "CONFIRM",
+              "DISMISS"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "ReopenFraudCaseDto": {
+        "type": "object",
+        "properties": {
+          "newEvidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "newEvidence"
+        ]
+      },
+      "EnforceFraudCaseDto": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "WARNING",
+              "TEMPORARY_RESTRICTION",
+              "VERIFICATION_REVOCATION",
+              "ACCOUNT_SUSPENSION"
+            ]
+          },
+          "targetType": {
+            "type": "string",
+            "enum": [
+              "PERSON",
+              "BUILDING",
+              "MANAGER_CLAIM"
+            ]
+          },
+          "targetPersonId": {
+            "type": "string"
+          },
+          "targetBuildingId": {
+            "type": "string"
+          },
+          "targetMembershipId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "targetType"
+        ]
+      },
+      "DecideEnforcementAppealDto": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "UPHOLD",
+              "OVERTURN"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "ReportFraudDto": {
+        "type": "object",
+        "properties": {
+          "targetPersonId": {
+            "type": "string"
+          },
+          "targetBuildingId": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description"
+        ]
+      },
+      "AppealEnforcementDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "OpenSupportCaseDto": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "TECHNICAL",
+              "BILLING",
+              "VERIFICATION",
+              "FRAUD",
+              "GOVERNANCE",
+              "OTHER"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "LOW",
+              "NORMAL",
+              "HIGH",
+              "CRITICAL"
+            ]
+          },
+          "linkedEntityType": {
+            "type": "string"
+          },
+          "linkedEntityId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "subject",
+          "description"
+        ]
+      },
+      "AddSupportCaseMessageDto": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "isInternal": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
+      "ResolveSupportCaseDto": {
+        "type": "object",
+        "properties": {
+          "resolutionCode": {
+            "type": "string",
+            "enum": [
+              "USER_ERROR",
+              "CONFIGURATION_ISSUE",
+              "BUG_FIXED",
+              "DUPLICATE_REQUEST",
+              "NOT_REPRODUCIBLE",
+              "OTHER"
+            ]
+          },
+          "resolution": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "resolutionCode"
+        ]
+      },
+      "MergeSupportCaseDto": {
+        "type": "object",
+        "properties": {
+          "intoCaseId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "intoCaseId"
+        ]
+      },
+      "ReopenSupportCaseDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      },
+      "ChangeSubscriptionPlanDto": {
+        "type": "object",
+        "properties": {
+          "plan": {
+            "type": "string",
+            "enum": [
+              "FREE",
+              "PRO",
+              "ENTERPRISE"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan"
+        ]
+      },
+      "ChangeSubscriptionStatusDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "TRIAL",
+              "ACTIVE",
+              "EXPIRED",
+              "CANCELLED"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "CreateFeatureGrantDto": {
+        "type": "object",
+        "properties": {
+          "featureKey": {
+            "type": "string",
+            "enum": [
+              "BUILDING_REGISTRATION",
+              "PROPERTIES",
+              "OWNERS",
+              "TENANTS",
+              "BASIC_CHARGES",
+              "BASIC_PAYMENTS",
+              "DEBT_VIEW",
+              "IN_APP_NOTIFICATIONS",
+              "ONLINE_PAYMENT",
+              "DOCUMENTS",
+              "VOTING",
+              "MEETINGS",
+              "REQUESTS",
+              "REPORTS",
+              "FUNDS",
+              "ADVANCED_ACCOUNTING",
+              "SMS",
+              "EMAIL",
+              "PUSH_NOTIFICATIONS",
+              "AUTOMATION"
+            ]
+          },
+          "grantType": {
+            "type": "string",
+            "enum": [
+              "PROMOTION",
+              "SUPPORT",
+              "PARTNERSHIP",
+              "TRIAL_EXTENSION",
+              "BETA_TESTING",
+              "OTHER"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string",
+            "description": "ISO date string; omit for a permanent grant"
+          }
+        },
+        "required": [
+          "featureKey",
+          "grantType"
+        ]
+      },
+      "OpenComplianceCaseDto": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "REPEATED_FRAUD",
+              "REPEATED_SUSPENSION",
+              "FINANCIAL_ANOMALY",
+              "OTHER"
+            ]
+          },
+          "subjectActorId": {
+            "type": "string"
+          },
+          "linkedEntityType": {
+            "type": "string"
+          },
+          "linkedEntityId": {
+            "type": "string"
+          },
+          "sourceAuditLogIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "LOW",
+              "NORMAL",
+              "HIGH",
+              "CRITICAL"
+            ]
+          }
+        },
+        "required": [
+          "category",
+          "description"
+        ]
+      },
+      "AssignComplianceCaseDto": {
+        "type": "object",
+        "properties": {
+          "assignedToId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assignedToId"
+        ]
+      },
+      "DecideComplianceCaseDto": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "CONFIRM",
+              "DISMISS"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "PlaceLegalHoldDto": {
+        "type": "object",
+        "properties": {
+          "entityType": {
+            "type": "string"
+          },
+          "entityId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entityType",
+          "entityId",
+          "reason"
+        ]
+      },
+      "SubmitServiceProviderDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "MAINTENANCE",
+              "PROFESSIONAL_MANAGEMENT",
+              "INSURANCE",
+              "OTHER"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "contactPhone": {
+            "type": "string"
+          },
+          "contactEmail": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "category"
+        ]
+      },
+      "DecideServiceProviderDto": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "REJECT"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "TriggerScheduledJobDto": {
+        "type": "object",
+        "properties": {
+          "jobName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobName"
+        ]
+      }
+    }
+  }
+}
