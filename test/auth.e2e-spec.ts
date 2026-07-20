@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import * as request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
@@ -82,27 +83,48 @@ async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: Pris
   return { app, prisma: app.get(PrismaService) };
 }
 
-async function cleanupPhones(prisma: PrismaService, phones: string[]): Promise<void> {
-  if (phones.length === 0) return;
-  // 21_ADRs > ADR-070 — real toolchain run found registration triggers real
-  // Notification/NotificationDelivery/NotificationPreference rows (the
-  // "welcome" SYSTEM notification and gamification's registration XP
-  // bonus, both wired since ADR-027/028) with no onDelete cascade to
-  // Person in the schema — clean these up first or person.deleteMany()
-  // fails on the notifications_recipientId_fkey foreign key constraint.
+// 21_ADRs > ADR-070 — real toolchain rounds 1 and 3 found registration's
+// full domain-event chain (PersonAuthenticated -> XpAwarded ->
+// AchievementUnlocked) writes real rows across five tables with no
+// onDelete cascade to Person: the "welcome" notification, the
+// registration XP-bonus notification, a real XpTransaction, and — since
+// PROFILE_CREATED is a first-occurrence reason with an achievementCode
+// (FIRST_STEPS) — a real PersonAchievement plus a third "achievement
+// unlocked" notification. None of this chain is awaited by the
+// request/response cycle (`EventEmitter2.emit()`, not `emitAsync()`), so
+// it can still be mid-flight when a test's `afterAll` runs — cleanup
+// retries the full delete sequence rather than assuming one pass is
+// enough.
+async function deleteOncePerPhoneBatch(prisma: PrismaService, phones: string[]): Promise<void> {
   await prisma.notificationDelivery.deleteMany({
     where: { notification: { recipient: { phone: { in: phones } } } },
   });
-  await prisma.notification.deleteMany({
-    where: { recipient: { phone: { in: phones } } },
-  });
+  await prisma.notification.deleteMany({ where: { recipient: { phone: { in: phones } } } });
   await prisma.notificationPreference.deleteMany({
     where: { person: { phone: { in: phones } } },
   });
+  await prisma.personAchievement.deleteMany({ where: { person: { phone: { in: phones } } } });
+  await prisma.xpTransaction.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
   await prisma.person.deleteMany({ where: { phone: { in: phones } } });
+}
+
+async function cleanupPhones(prisma: PrismaService, phones: string[]): Promise<void> {
+  if (phones.length === 0) return;
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await deleteOncePerPhoneBatch(prisma, phones);
+      return;
+    } catch (error) {
+      const isForeignKeyError =
+        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
+      if (!isForeignKeyError || attempt === maxAttempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+    }
+  }
 }
 
 async function requestOtpAndCaptureCode(
