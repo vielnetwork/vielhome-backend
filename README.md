@@ -10,22 +10,24 @@ Business Rules, Architecture, Engineering Constitution).
 
 **Status: V1.0 API contract frozen** (tag `v1.0-api-contract`, `21_ADRs >
 ADR-062`; see `25_API_v1_Database_Freeze_Manifest_v1.0` for the exact,
-enumerated route/schema snapshot). 73 ADRs shipped across every domain named
+enumerated route/schema snapshot). 74 ADRs shipped across every domain named
 in the original vision docs, including real e2e test coverage for Auth
-(`ADR-070`, Testing Phase 1) and Building (`ADR-073`, Testing Phase 2a —
-Setup Wizard, Membership Requests, Ownership Transfer, Tenancy), plus
+(`ADR-070`, Testing Phase 1), Building (`ADR-073`, Testing Phase 2a —
+Setup Wizard, Membership Requests, Ownership Transfer, Tenancy), and Finance
+(`ADR-074`, Testing Phase 2b — Funds/Charge Batches, Payment lifecycle +
+allocation, Adjustments, Reversal/Refund with XP clawback, Reporting), plus
 `08_API_Architecture`'s own frozen Page/Limit pagination, implemented for
 the first time across every platform-wide unbounded listing (`ADR-072`). A
 formal Security Review and Performance Review have both been completed
 (`26_Security_Review_v1.0`, `27_Performance_Review_v1.0` — Project docs, not
-ADRs). Remaining before overall MVP release readiness: Finance e2e coverage
-(Testing Phase 2b), committing a versioned Swagger/OpenAPI snapshot
-(mechanism ready, `ADR-071`), and the smaller named follow-ups inside each
-review's own Priority Order (e.g. a real `npm audit` run, measuring the
-frozen numeric Performance Targets) — see "Release readiness" below. Every
-sprint has been confirmed working end-to-end by the user's own real local
-toolchain runs; nothing in this repository has ever executed inside the
-sandboxed environment it was written in (see "Toolchain status").
+ADRs). Remaining before overall MVP release readiness: committing a
+versioned Swagger/OpenAPI snapshot (mechanism ready, `ADR-071`), and the
+smaller named follow-ups inside each review's own Priority Order (e.g. a
+real `npm audit` run, measuring the frozen numeric Performance Targets) —
+see "Release readiness" below. Every sprint has been confirmed working
+end-to-end by the user's own real local toolchain runs; nothing in this
+repository has ever executed inside the sandboxed environment it was
+written in (see "Toolchain status").
 
 ## What's implemented so far
 
@@ -60,7 +62,8 @@ this section is a map, not a replacement for those.
   Funds, Adjustments/Refunds (`ADR-037`) with allocation against outstanding
   positive Adjustments (`ADR-053`), Collection Rate and Payment Registration
   Rate reports (`ADR-055`/`ADR-057`) — the two MVP Financial success metrics
-  named in `02_MVP_Scope_v2.0`.
+  named in `02_MVP_Scope_v2.0`. Full e2e coverage — `ADR-074`, Testing Phase
+  2b.
 - **Governance** (`src/modules/governance`): Votes (create/publish/close/
   cancel, ballot casting, results), multi-scope vote targeting (building/
   block/property-type/selected-units — `ADR-058`), Meetings as their own
@@ -273,14 +276,17 @@ rules live in `domain/`, orchestration in `application/`, persistence in
   a live `DATABASE_URL`/`REDIS_HOST` to run (same as `npm run test:e2e`) —
   run it once against the `v1.0-api-contract` tag and commit the result to
   actually close `24_Release_Readiness_Audit_v1.0` §3.5.
-- **Test coverage is policy-layer + Auth e2e only**: 23 unit spec files cover
-  the `domain/` policy layer across every module, plus `pagination.util.
-  spec.ts` (`ADR-072`); e2e coverage exists for `test/health.e2e-spec.ts` and
-  `test/auth.e2e-spec.ts` (`ADR-070`, Testing Phase 1). No controller-level
-  or full-flow e2e coverage exists yet for Finance/Governance/Cases/
-  Documents/Notifications/Gamification/BackOffice/Marketplace — a real gap
-  for a formal QA pass, named explicitly in `24_Release_Readiness_Audit_v1.0`
-  §3.4 (Testing Phase 2+).
+- **Test coverage is policy-layer + Auth/Building/Finance e2e only**: 23 unit
+  spec files cover the `domain/` policy layer across every module, plus
+  `pagination.util.spec.ts` (`ADR-072`); e2e coverage exists for
+  `test/health.e2e-spec.ts`, `test/auth.e2e-spec.ts` (`ADR-070`, Testing
+  Phase 1), `test/building.e2e-spec.ts` (`ADR-073`, Testing Phase 2a), and
+  `test/finance.e2e-spec.ts` (`ADR-074`, Testing Phase 2b). No controller-
+  level or full-flow e2e coverage exists yet for Governance/Cases/Documents/
+  Notifications/Gamification/BackOffice/Marketplace — a real gap for a
+  formal QA pass, named explicitly in `24_Release_Readiness_Audit_v1.0`
+  §3.4 (Testing Phase 2+, Building and Finance now done — see `19_Current_
+  Sprint`'s own Testing Phase numbering for what's still open beyond them).
 - **Formal Performance Review complete (`27_Performance_Review_v1.0`)** —
   static, source-grounded review (this sandbox has never had live traffic to
   load-test). Headline finding — `08_API_Architecture`'s own frozen Page/
@@ -326,37 +332,38 @@ end-to-end via the user's real local toolchain. The API + Database contract
 is frozen and tagged (`ADR-062`, `v1.0-api-contract`). Both Sprint 24-named
 release blockers (Git repository, migration history) are resolved (`ADR-063`)
 and confirmed clean, along with the `package-lock.json` gap discovered while
-building CI (`ADR-064`). Auth and Building flow e2e coverage now exist and
-are confirmed working end-to-end (`ADR-070`, Testing Phase 1; `ADR-073`,
-Testing Phase 2a). All four originally-named Release Readiness categories —
-Testing, Documentation, Performance, Security — have now been picked up at
-least once (`ADR-070`/`ADR-073`; `ADR-071`; `27_Performance_Review_v1.0`;
+building CI (`ADR-064`). Auth, Building, and Finance flow e2e coverage now
+all exist and are confirmed working end-to-end (`ADR-070`, Testing Phase 1;
+`ADR-073`, Testing Phase 2a; `ADR-074`, Testing Phase 2b). All four
+originally-named Release Readiness categories — Testing, Documentation,
+Performance, Security — have now been picked up at least once
+(`ADR-070`/`ADR-073`/`ADR-074`; `ADR-071`; `27_Performance_Review_v1.0`;
 `26_Security_Review_v1.0`), and the Performance Review's own headline
 finding (frozen Page/Limit pagination never implemented) is now closed by
-`ADR-072`. **Remaining before overall MVP release readiness: Testing Phase
-2b (Finance e2e coverage — payment report → approve, ledger correctness)
-and beyond, committing a versioned Swagger/OpenAPI snapshot (mechanism
-ready — `npm run docs:export-openapi`, `ADR-071`), and the smaller named
-follow-ups inside each review's own Priority Order** (a real `npm audit`
-run, measuring the frozen numeric Performance Targets, the
-`detectAnomalies` N+1 fix, and others — see `19_Current_Sprint_v2.0`'s
-Release Readiness section for the live, authoritative status).
+`ADR-072`. **Remaining before overall MVP release readiness: committing a
+versioned Swagger/OpenAPI snapshot (mechanism ready — `npm run docs:export-
+openapi`, `ADR-071`), and the smaller named follow-ups inside each review's
+own Priority Order** (a real `npm audit` run, measuring the frozen numeric
+Performance Targets, the `detectAnomalies` N+1 fix, and others — see
+`19_Current_Sprint_v2.0`'s Release Readiness section for the live,
+authoritative status).
 
 ## Next steps (per `19_Current_Sprint`)
 
-1. Testing Phase 2b — Finance (payment report → approve, ledger correctness)
-   e2e coverage, continuing the pattern `test/auth.e2e-spec.ts` /
-   `test/building.e2e-spec.ts` established.
-2. Run `npm run docs:export-openapi` against the `v1.0-api-contract` tag and
+1. Run `npm run docs:export-openapi` against the `v1.0-api-contract` tag and
    commit `docs/openapi/v1.0-api-contract.json` — the mechanism exists
    (`ADR-071`), only the actual versioned snapshot commit is still open.
-3. Run a real `npm audit` (`26_Security_Review_v1.0`'s own open item — this
+2. Run a real `npm audit` (`26_Security_Review_v1.0`'s own open item — this
    sandbox has no npm registry access) and write a JWT-secret-rotation
    runbook.
-4. Measure `08_API_Architecture`'s frozen numeric Performance Targets
+3. Measure `08_API_Architecture`'s frozen numeric Performance Targets
    (`<300ms` avg, `<150ms` critical) against real traffic, and batch
    `ComplianceCaseService.detectAnomalies()`'s N+1 existence checks
    (`27_Performance_Review_v1.0` §2.1) next time that service is touched.
+4. Testing Phase 2+: Governance/Cases/Documents/Notifications/Gamification/
+   BackOffice/Marketplace e2e coverage remains open beyond Auth/Building/
+   Finance, continuing the pattern `test/auth.e2e-spec.ts`/`test/building.
+   e2e-spec.ts`/`test/finance.e2e-spec.ts` established — not yet scheduled.
 5. Real object storage (S3/MinIO) integration for Documents, and a real
    Push/Email/SMS provider (Firebase Cloud Messaging) for Notifications —
    both need a new npm dependency and a provider decision this sandbox
