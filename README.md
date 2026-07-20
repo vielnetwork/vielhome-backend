@@ -10,13 +10,15 @@ Business Rules, Architecture, Engineering Constitution).
 
 **Status: V1.0 API contract frozen** (tag `v1.0-api-contract`, `21_ADRs >
 ADR-062`; see `25_API_v1_Database_Freeze_Manifest_v1.0` for the exact,
-enumerated route/schema snapshot). 69 ADRs shipped across every domain named
-in the original vision docs. Remaining before overall MVP release readiness:
-Testing coverage expansion, a versioned Swagger/OpenAPI publish, a formal
-Performance Review, and a formal Security Review — see "Release readiness"
-below. Every sprint has been confirmed working end-to-end by the user's own
-real local toolchain runs; nothing in this repository has ever executed
-inside the sandboxed environment it was written in (see "Toolchain status").
+enumerated route/schema snapshot). 71 ADRs shipped across every domain named
+in the original vision docs, including the first real e2e test coverage
+(`ADR-070`, Auth flow). Remaining before overall MVP release readiness:
+broader Testing coverage (Phase 2+), committing a versioned Swagger/OpenAPI
+snapshot (mechanism ready, `ADR-071`), a formal Performance Review, and a
+formal Security Review — see "Release readiness" below. Every sprint has
+been confirmed working end-to-end by the user's own real local toolchain
+runs; nothing in this repository has ever executed inside the sandboxed
+environment it was written in (see "Toolchain status").
 
 ## What's implemented so far
 
@@ -160,8 +162,11 @@ npm run start:dev
 ```
 
 The API listens on `http://localhost:3000/api/v1`.
-Swagger docs: `http://localhost:3000/docs` (not yet published as a versioned
-artifact alongside the API freeze tag — see "Release readiness").
+Swagger docs: `http://localhost:3000/docs` (live/auto-generated). To publish
+a versioned, diffable snapshot alongside a release tag instead (`21_ADRs >
+ADR-071`), run `npm run docs:export-openapi` — writes
+`docs/openapi/v1.0-api-contract.json`, which should then be committed. See
+"Release readiness" below.
 
 ## Trying the auth flow
 
@@ -248,10 +253,13 @@ rules live in `domain/`, orchestration in `application/`, persistence in
   actually `DELIVERED`. Firebase Cloud Messaging is the named planned
   addition (`ADR-027`/`ADR-039`). This is also why OTP codes and owner/
   tenant invites are still console-logged only, not texted.
-- **Swagger/OpenAPI not yet published as a versioned artifact**: the live
-  `/docs` endpoint is auto-generated and current, but `24_Release_Readiness_
-  Audit_v1.0` §3.5 recommends publishing a frozen snapshot alongside the
-  `v1.0-api-contract` tag — not yet done.
+- **Swagger/OpenAPI versioned publish — mechanism ready, snapshot not yet
+  committed**: `21_ADRs > ADR-071` adds `npm run docs:export-openapi`
+  (`scripts/export-openapi.ts`), which writes the exact document `/docs`
+  serves live to `docs/openapi/<tag>.json` for git history to track. Needs
+  a live `DATABASE_URL`/`REDIS_HOST` to run (same as `npm run test:e2e`) —
+  run it once against the `v1.0-api-contract` tag and commit the result to
+  actually close `24_Release_Readiness_Audit_v1.0` §3.5.
 - **Test coverage is policy-layer only**: 23 unit spec files cover the
   `domain/` policy layer across every module; there is exactly one e2e spec
   (`test/health.e2e-spec.ts`). No controller-level or full-flow e2e coverage
@@ -296,18 +304,24 @@ end-to-end via the user's real local toolchain. The API + Database contract
 is frozen and tagged (`ADR-062`, `v1.0-api-contract`). Both Sprint 24-named
 release blockers (Git repository, migration history) are resolved (`ADR-063`)
 and confirmed clean, along with the `package-lock.json` gap discovered while
-building CI (`ADR-064`). **Remaining before overall MVP release readiness:
-Testing (broader e2e/controller-level coverage), a versioned Swagger/OpenAPI
-publish, a formal Performance Review, and a formal Security Review** — none
-of which any sprint has picked up yet. See `19_Current_Sprint_v2.0`'s
-Release Readiness section for the live, authoritative status.
+building CI (`ADR-064`). Auth flow e2e coverage now exists and is confirmed
+working end-to-end (`ADR-070`, Testing Phase 1). **Remaining before overall
+MVP release readiness: Testing Phase 2+ (Building/Finance e2e coverage and
+beyond), committing a versioned Swagger/OpenAPI snapshot (mechanism ready —
+`npm run docs:export-openapi`, `ADR-071`), a formal Performance Review, and a
+formal Security Review** — none of the latter three has any sprint picked up
+yet. See `19_Current_Sprint_v2.0`'s Release Readiness section for the live,
+authoritative status.
 
 ## Next steps (per `19_Current_Sprint`)
 
-1. Testing — expand e2e/controller-level coverage beyond the current
-   policy-layer-only unit specs; run the existing e2e config more broadly.
-2. Publish a versioned Swagger/OpenAPI snapshot alongside the
-   `v1.0-api-contract` tag.
+1. Testing Phase 2 — Building (Setup Wizard, Membership Requests, Ownership
+   Transfer, Tenancy) and Finance (payment report → approve, ledger
+   correctness) e2e coverage, continuing the pattern `test/auth.e2e-spec.ts`
+   established.
+2. Run `npm run docs:export-openapi` against the `v1.0-api-contract` tag and
+   commit `docs/openapi/v1.0-api-contract.json` — the mechanism exists
+   (`ADR-071`), only the actual versioned snapshot commit is still open.
 3. A formal Performance Review (load testing, query profiling, caching
    strategy).
 4. A formal Security Review (penetration testing, dependency vulnerability
