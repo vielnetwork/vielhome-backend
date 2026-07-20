@@ -10,21 +10,22 @@ Business Rules, Architecture, Engineering Constitution).
 
 **Status: V1.0 API contract frozen** (tag `v1.0-api-contract`, `21_ADRs >
 ADR-062`; see `25_API_v1_Database_Freeze_Manifest_v1.0` for the exact,
-enumerated route/schema snapshot). 72 ADRs shipped across every domain named
-in the original vision docs, including the first real e2e test coverage
-(`ADR-070`, Auth flow) and `08_API_Architecture`'s own frozen Page/Limit
-pagination, implemented for the first time across every platform-wide
-unbounded listing (`ADR-072`). A formal Security Review and Performance
-Review have both been completed (`26_Security_Review_v1.0`,
-`27_Performance_Review_v1.0` — Project docs, not ADRs). Remaining before
-overall MVP release readiness: broader Testing coverage (Phase 2+),
-committing a versioned Swagger/OpenAPI snapshot (mechanism ready,
-`ADR-071`), and the smaller named follow-ups inside each review's own
-Priority Order (e.g. a real `npm audit` run, measuring the frozen numeric
-Performance Targets) — see "Release readiness" below. Every sprint has
-been confirmed working end-to-end by the user's own real local toolchain
-runs; nothing in this repository has ever executed inside the sandboxed
-environment it was written in (see "Toolchain status").
+enumerated route/schema snapshot). 73 ADRs shipped across every domain named
+in the original vision docs, including real e2e test coverage for Auth
+(`ADR-070`, Testing Phase 1) and Building (`ADR-073`, Testing Phase 2a —
+Setup Wizard, Membership Requests, Ownership Transfer, Tenancy), plus
+`08_API_Architecture`'s own frozen Page/Limit pagination, implemented for
+the first time across every platform-wide unbounded listing (`ADR-072`). A
+formal Security Review and Performance Review have both been completed
+(`26_Security_Review_v1.0`, `27_Performance_Review_v1.0` — Project docs, not
+ADRs). Remaining before overall MVP release readiness: Finance e2e coverage
+(Testing Phase 2b), committing a versioned Swagger/OpenAPI snapshot
+(mechanism ready, `ADR-071`), and the smaller named follow-ups inside each
+review's own Priority Order (e.g. a real `npm audit` run, measuring the
+frozen numeric Performance Targets) — see "Release readiness" below. Every
+sprint has been confirmed working end-to-end by the user's own real local
+toolchain runs; nothing in this repository has ever executed inside the
+sandboxed environment it was written in (see "Toolchain status").
 
 ## What's implemented so far
 
@@ -52,7 +53,8 @@ this section is a map, not a replacement for those.
   hatch (list/approve/reject, now including the requester's `person` relation
   — `ADR-069`), owner invites with phone-based auto-link on OTP verify,
   Ownership Transfer (self-service, phone-based — `ADR-035`) and Tenancy
-  management (current/history, give notice, end — `ADR-035`).
+  management (current/history, give notice, end — `ADR-035`). Full e2e
+  coverage for all four flows — `ADR-073`, Testing Phase 2a.
 - **Finance** (`src/modules/finance`): immutable per-unit ledger, Charge
   Batches, Payments (report → approve/reject, self-reported by default),
   Funds, Adjustments/Refunds (`ADR-037`) with allocation against outstanding
@@ -324,27 +326,27 @@ end-to-end via the user's real local toolchain. The API + Database contract
 is frozen and tagged (`ADR-062`, `v1.0-api-contract`). Both Sprint 24-named
 release blockers (Git repository, migration history) are resolved (`ADR-063`)
 and confirmed clean, along with the `package-lock.json` gap discovered while
-building CI (`ADR-064`). Auth flow e2e coverage now exists and is confirmed
-working end-to-end (`ADR-070`, Testing Phase 1). All four originally-named
-Release Readiness categories — Testing, Documentation, Performance, Security
-— have now been picked up at least once (`ADR-070`; `ADR-071`;
-`27_Performance_Review_v1.0`; `26_Security_Review_v1.0`), and the
-Performance Review's own headline finding (frozen Page/Limit pagination
-never implemented) is now closed by `ADR-072`. **Remaining before overall
-MVP release readiness: Testing Phase 2+ (Building/Finance e2e coverage and
-beyond), committing a versioned Swagger/OpenAPI snapshot (mechanism ready —
-`npm run docs:export-openapi`, `ADR-071`), and the smaller named follow-ups
-inside each review's own Priority Order** (a real `npm audit` run, measuring
-the frozen numeric Performance Targets, the `detectAnomalies` N+1 fix, and
-others — see `19_Current_Sprint_v2.0`'s Release Readiness section for the
-live, authoritative status).
+building CI (`ADR-064`). Auth and Building flow e2e coverage now exist and
+are confirmed working end-to-end (`ADR-070`, Testing Phase 1; `ADR-073`,
+Testing Phase 2a). All four originally-named Release Readiness categories —
+Testing, Documentation, Performance, Security — have now been picked up at
+least once (`ADR-070`/`ADR-073`; `ADR-071`; `27_Performance_Review_v1.0`;
+`26_Security_Review_v1.0`), and the Performance Review's own headline
+finding (frozen Page/Limit pagination never implemented) is now closed by
+`ADR-072`. **Remaining before overall MVP release readiness: Testing Phase
+2b (Finance e2e coverage — payment report → approve, ledger correctness)
+and beyond, committing a versioned Swagger/OpenAPI snapshot (mechanism
+ready — `npm run docs:export-openapi`, `ADR-071`), and the smaller named
+follow-ups inside each review's own Priority Order** (a real `npm audit`
+run, measuring the frozen numeric Performance Targets, the
+`detectAnomalies` N+1 fix, and others — see `19_Current_Sprint_v2.0`'s
+Release Readiness section for the live, authoritative status).
 
 ## Next steps (per `19_Current_Sprint`)
 
-1. Testing Phase 2 — Building (Setup Wizard, Membership Requests, Ownership
-   Transfer, Tenancy) and Finance (payment report → approve, ledger
-   correctness) e2e coverage, continuing the pattern `test/auth.e2e-spec.ts`
-   established.
+1. Testing Phase 2b — Finance (payment report → approve, ledger correctness)
+   e2e coverage, continuing the pattern `test/auth.e2e-spec.ts` /
+   `test/building.e2e-spec.ts` established.
 2. Run `npm run docs:export-openapi` against the `v1.0-api-contract` tag and
    commit `docs/openapi/v1.0-api-contract.json` — the mechanism exists
    (`ADR-071`), only the actual versioned snapshot commit is still open.
