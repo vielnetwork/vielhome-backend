@@ -44,7 +44,23 @@ import type { AppConfig } from '../src/config/configuration';
 // deliberately deferred to a future "Testing Phase 2b" round, not silently
 // dropped — see ADR-073's own Consequences/Future Review.
 
-const RUN_ID = Date.now().toString().slice(-5);
+// Round-1 real toolchain run found `RUN_ID = Date.now().toString().slice(-5)`
+// (the exact scheme `auth.e2e-spec.ts` uses) collides across FILES, not just
+// within one: Jest runs each *.e2e-spec.ts file as its own OS process, and
+// since this suite now runs alongside `auth.e2e-spec.ts`, both processes
+// start within the same wall-clock second and independently derive the
+// SAME `RUN_ID` from `Date.now()`, then both count phone-call indices from
+// 1 — so e.g. each file's 10th `nextPhone()` call produces the identical
+// phone number, corrupting whichever file's OTP request/verify loses the
+// race on that shared phone (confirmed: this exact collision explained
+// `auth.e2e-spec.ts`'s own "isNewPerson" failure, its cleanup FK failure on
+// `building_setup_drafts` — that Person turned out to be one THIS file
+// registered — and every real-toolchain 422 in the Ownership Transfer
+// describe below). Fixed by mixing in `process.pid`, the one value the OS
+// guarantees differs between any two concurrently-running processes —
+// `auth.e2e-spec.ts` needs the identical fix for the invariant to actually
+// hold in both directions.
+const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 
@@ -124,6 +140,17 @@ async function cleanupPhones(prisma: PrismaService, phones: string[]): Promise<v
  * directives exist anywhere in the schema — required relations default to
  * RESTRICT). MUST run before `cleanupPhones`, since Membership/Ownership/
  * Tenancy/MembershipRequest all carry a required FK to Person.
+ *
+ * Round-1 real toolchain run found this list was incomplete: `Building
+ * Setup Completed` XP (`XP_CATALOG.BUILDING_SETUP_COMPLETED`) also runs
+ * `GamificationService.applyBuildingScoreDelta`, which `upsert`s a real
+ * `BuildingScore` row (`buildingId` unique, required FK) and appends a
+ * `BuildingScoreEvent` (required FK to `BuildingScore.id`) — neither table
+ * existed anywhere in this file's first draft, so every describe's own
+ * `afterAll` failed on `building_scores_buildingId_fkey`. `FeatureGrant`
+ * (required FK to `Subscription`) is added alongside for the same
+ * completeness reason, even though nothing in this suite's own flows
+ * creates one today.
  */
 async function deleteBuildingsOnceBatch(
   prisma: PrismaService,
@@ -137,6 +164,13 @@ async function deleteBuildingsOnceBatch(
   });
   await prisma.buildingVerificationCase.deleteMany({
     where: { buildingId: { in: buildingIds } },
+  });
+  await prisma.buildingScoreEvent.deleteMany({
+    where: { buildingScore: { buildingId: { in: buildingIds } } },
+  });
+  await prisma.buildingScore.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  await prisma.featureGrant.deleteMany({
+    where: { subscription: { buildingId: { in: buildingIds } } },
   });
   await prisma.subscriptionChangeLog.deleteMany({
     where: { subscription: { buildingId: { in: buildingIds } } },

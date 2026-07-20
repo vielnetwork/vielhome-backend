@@ -47,9 +47,6 @@ import type { AppConfig } from '../src/config/configuration';
 // run started within the same second as an interrupted first run (which
 // skipped its own cleanup) still cannot collide.
 
-const RUN_ID = Date.now().toString().slice(-5);
-let phoneCounter = 0;
-
 // 21_ADRs > ADR-070 — round-2 real toolchain run found every `nextPhone()`
 // call rejected with 400 VALIDATION_ERROR. Root cause: `RequestOtpDto.phone`
 // is `@IsPhoneNumber(undefined)` (region-agnostic libphonenumber-js), which
@@ -59,6 +56,24 @@ let phoneCounter = 0;
 // with a real prefix, which round 1 got by luck and round 2 didn't. Fixed
 // by anchoring on "912" (a long-standing real MCI/Hamrah-e Aval prefix),
 // leaving only the trailing 7 digits (RUN_ID + counter) to vary.
+//
+// 21_ADRs > ADR-073 — round-1 real toolchain run (of `building.e2e-spec.ts`,
+// the second e2e file this project ever added) found `RUN_ID =
+// Date.now().toString().slice(-5)` collides ACROSS FILES, not just within
+// one: Jest runs each `*.e2e-spec.ts` file as its own OS process, both
+// start within the same wall-clock second, both independently derive the
+// identical `RUN_ID`, and both count phone-call indices from 1 — so e.g.
+// each file's 10th `nextPhone()` call produced the identical phone number,
+// corrupting whichever file's OTP request/verify lost the resulting race
+// (confirmed: this exact collision caused this file's own "isNewPerson"
+// failure and its cleanup FK failure on `building_setup_drafts` — that
+// Person turned out to belong to `building.e2e-spec.ts`). Fixed by mixing
+// in `process.pid`, the one value the OS guarantees differs between any
+// two concurrently-running processes — `building.e2e-spec.ts` carries the
+// identical fix for the invariant to actually hold in both directions.
+const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+let phoneCounter = 0;
+
 function nextPhone(): string {
   phoneCounter += 1;
   return `+98912${RUN_ID}${phoneCounter.toString().padStart(2, '0')}`;
