@@ -63,6 +63,15 @@ export class AuthService {
     // instead so the flow is testable end-to-end before the SMS adapter
     // lands (11_Backend_Architecture > Infrastructure Layer: "Everything
     // replaceable").
+    //
+    // 21_ADRs > 26_Security_Review_v1.0 §1.1 — this is a necessary interim
+    // behavior (no other OTP delivery mechanism exists yet), but it is a
+    // real security-relevant fact, not just a product gap: in production
+    // this line writes a live, usable login/registration credential into
+    // durable, aggregated logs (ADR-064's JsonLoggerService). Treat
+    // production log access as sensitive-credential-equivalent access
+    // until the real SMS/Push provider replaces this line — do not remove
+    // or silence this comment without also closing that provider gap.
     // eslint-disable-next-line no-console
     console.log(`[OTP] ${dto.phone} (${dto.purpose}): ${code} — expires in ${ttlSeconds}s`);
 
