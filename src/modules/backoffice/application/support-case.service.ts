@@ -9,6 +9,11 @@ import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.
 import { SupportCasePolicy } from '../domain/policies/support-case.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError, ValidationError } from '../../../common/errors/app-error';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 import { SupportCaseResolvedEvent } from '../events/backoffice.events';
 
 /**
@@ -76,18 +81,21 @@ export class SupportCaseService {
     return kase;
   }
 
-  listCases(filters: {
-    status?: string;
-    priority?: string;
-    category?: string;
-    assignedToId?: string;
-  }) {
-    return this.backOffice.listSupportCases({
-      status: filters.status as never,
-      priority: filters.priority as never,
-      category: filters.category as never,
-      assignedToId: filters.assignedToId,
-    });
+  /** 21_ADRs > ADR-072 */
+  async listCases(
+    filters: { status?: string; priority?: string; category?: string; assignedToId?: string },
+    pagination: PaginationParams,
+  ) {
+    const { items, total } = await this.backOffice.listSupportCases(
+      {
+        status: filters.status as never,
+        priority: filters.priority as never,
+        category: filters.category as never,
+        assignedToId: filters.assignedToId,
+      },
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   listMine(createdById: string) {

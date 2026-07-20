@@ -4,6 +4,11 @@ import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.
 import { ComplianceCasePolicy } from '../domain/policies/compliance-case.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 
 // 07.06 Rule 011's examples ("Repeated Fraud," "Repeated Suspensions,"
 // "Financial Anomalies") without stating numeric thresholds — these are
@@ -71,20 +76,28 @@ export class ComplianceCaseService {
     return kase;
   }
 
-  listCases(filters: {
-    status?: string;
-    category?: string;
-    priority?: string;
-    assignedToId?: string;
-    subjectActorId?: string;
-  }) {
-    return this.backOffice.listComplianceCases({
-      status: filters.status as never,
-      category: filters.category as never,
-      priority: filters.priority as never,
-      assignedToId: filters.assignedToId,
-      subjectActorId: filters.subjectActorId,
-    });
+  /** 21_ADRs > ADR-072 */
+  async listCases(
+    filters: {
+      status?: string;
+      category?: string;
+      priority?: string;
+      assignedToId?: string;
+      subjectActorId?: string;
+    },
+    pagination: PaginationParams,
+  ) {
+    const { items, total } = await this.backOffice.listComplianceCases(
+      {
+        status: filters.status as never,
+        category: filters.category as never,
+        priority: filters.priority as never,
+        assignedToId: filters.assignedToId,
+        subjectActorId: filters.subjectActorId,
+      },
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async assign(caseId: string, assignedToId: string, actorPersonId: string, requestId: string) {

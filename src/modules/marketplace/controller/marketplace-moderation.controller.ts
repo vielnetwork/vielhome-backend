@@ -7,6 +7,8 @@ import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard'
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
+import { parsePagination } from '../../../common/pagination/pagination.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
 /**
@@ -21,10 +23,20 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
 export class MarketplaceModerationController {
   constructor(private readonly marketplace: MarketplaceService) {}
 
+  /** 21_ADRs > ADR-072 — `page`/`limit` (08_API_Architecture > Pagination); structurally identical to the six BackOffice staff queues, added alongside them even though it wasn't one of `27_Performance_Review_v1.0`'s own named seven. */
   @Get()
   @PlatformRoles('REVIEWER')
-  list(@Query('status') status?: string, @Query('category') category?: string) {
-    return this.marketplace.listForReview({ status, category });
+  async list(
+    @Query('status') status?: string,
+    @Query('category') category?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.marketplace.listForReview(
+      { status, category },
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Get(':id')

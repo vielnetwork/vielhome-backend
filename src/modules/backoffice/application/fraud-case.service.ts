@@ -16,6 +16,11 @@ import {
   NotFoundAppError,
   ValidationError,
 } from '../../../common/errors/app-error';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 import { EnforcementActionIssuedEvent, FraudCaseDecidedEvent } from '../events/backoffice.events';
 
 /**
@@ -115,12 +120,20 @@ export class FraudCaseService {
     return kase;
   }
 
-  listCases(filters: { status?: string; priority?: string; assignedToId?: string }) {
-    return this.backOffice.listFraudCases({
-      status: filters.status as never,
-      priority: filters.priority as never,
-      assignedToId: filters.assignedToId,
-    });
+  /** 21_ADRs > ADR-072 */
+  async listCases(
+    filters: { status?: string; priority?: string; assignedToId?: string },
+    pagination: PaginationParams,
+  ) {
+    const { items, total } = await this.backOffice.listFraudCases(
+      {
+        status: filters.status as never,
+        priority: filters.priority as never,
+        assignedToId: filters.assignedToId,
+      },
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   /** 07.03 Rule 017 (staff queue) — assigning an investigator moves the case from OPEN to UNDER_INVESTIGATION. */

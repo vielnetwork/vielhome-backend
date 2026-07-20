@@ -80,21 +80,32 @@ export class BackOfficeRepository {
     });
   }
 
-  listBuildingVerificationCases(filters: {
-    status?: BuildingStatus;
-    priority?: VerificationPriority;
-    assignedToId?: string;
-  }) {
-    return this.prisma.buildingVerificationCase.findMany({
-      where: {
-        status: filters.status,
-        priority: filters.priority,
-        assignedToId: filters.assignedToId,
-      },
-      include: { building: { select: { id: true, name: true, addressLine: true, city: true } } },
-      // 07.01 Rule 012: Queue Ordered By Priority Then Age.
-      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-    });
+  /** 21_ADRs > ADR-072 — paginated (08_API_Architecture > Pagination); this is a platform-wide, unbounded queue (`27_Performance_Review_v1.0` §1.3). */
+  async listBuildingVerificationCases(
+    filters: {
+      status?: BuildingStatus;
+      priority?: VerificationPriority;
+      assignedToId?: string;
+    },
+    pagination: { skip: number; take: number },
+  ) {
+    const where = {
+      status: filters.status,
+      priority: filters.priority,
+      assignedToId: filters.assignedToId,
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.buildingVerificationCase.findMany({
+        where,
+        include: { building: { select: { id: true, name: true, addressLine: true, city: true } } },
+        // 07.01 Rule 012: Queue Ordered By Priority Then Age.
+        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.buildingVerificationCase.count({ where }),
+    ]);
+    return { items, total };
   }
 
   assignBuildingVerificationCase(id: string, assignedToId: string) {
@@ -158,6 +169,7 @@ export class BackOfficeRepository {
     });
   }
 
+  /** Unpaginated — kept as-is for `ManagerVerificationService.appealCase`'s internal full-scan lookup. The controller-facing staff queue uses `listManagerVerificationCasesPaged` below instead (21_ADRs > ADR-072). */
   listManagerVerificationCases(filters: {
     status?: ManagerVerificationStatus;
     priority?: VerificationPriority;
@@ -170,6 +182,28 @@ export class BackOfficeRepository {
       },
       orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
     });
+  }
+
+  /** 21_ADRs > ADR-072 — paginated (08_API_Architecture > Pagination); this is a platform-wide, unbounded queue (`27_Performance_Review_v1.0` §1.3). */
+  async listManagerVerificationCasesPaged(
+    filters: { status?: ManagerVerificationStatus; priority?: VerificationPriority },
+    pagination: { skip: number; take: number },
+  ) {
+    const where = { status: filters.status, priority: filters.priority };
+    const [items, total] = await Promise.all([
+      this.prisma.managerVerificationCase.findMany({
+        where,
+        include: {
+          building: { select: { id: true, name: true } },
+          candidate: { select: { id: true, fullName: true, phone: true } },
+        },
+        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.managerVerificationCase.count({ where }),
+    ]);
+    return { items, total };
   }
 
   decideManagerVerificationCase(params: {
@@ -247,25 +281,36 @@ export class BackOfficeRepository {
     });
   }
 
-  listFraudCases(filters: {
-    status?: FraudCaseStatus;
-    priority?: VerificationPriority;
-    assignedToId?: string;
-  }) {
-    return this.prisma.fraudCase.findMany({
-      where: {
-        status: filters.status,
-        priority: filters.priority,
-        assignedToId: filters.assignedToId,
-      },
-      include: {
-        targetPerson: { select: { id: true, fullName: true, phone: true } },
-        targetBuilding: { select: { id: true, name: true } },
-      },
-      // 07.03 Rule 004/009: priority-ordered queue, same convention as
-      // Building/Manager Verification.
-      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-    });
+  /** 21_ADRs > ADR-072 — paginated (08_API_Architecture > Pagination); this is a platform-wide, unbounded queue (`27_Performance_Review_v1.0` §1.3). */
+  async listFraudCases(
+    filters: {
+      status?: FraudCaseStatus;
+      priority?: VerificationPriority;
+      assignedToId?: string;
+    },
+    pagination: { skip: number; take: number },
+  ) {
+    const where = {
+      status: filters.status,
+      priority: filters.priority,
+      assignedToId: filters.assignedToId,
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.fraudCase.findMany({
+        where,
+        include: {
+          targetPerson: { select: { id: true, fullName: true, phone: true } },
+          targetBuilding: { select: { id: true, name: true } },
+        },
+        // 07.03 Rule 004/009: priority-ordered queue, same convention as
+        // Building/Manager Verification.
+        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.fraudCase.count({ where }),
+    ]);
+    return { items, total };
   }
 
   assignFraudCase(id: string, assignedToId: string) {
@@ -451,22 +496,33 @@ export class BackOfficeRepository {
     });
   }
 
-  listSupportCases(filters: {
-    status?: CaseStatus;
-    priority?: VerificationPriority;
-    category?: SupportCaseCategory;
-    assignedToId?: string;
-  }) {
-    return this.prisma.supportCase.findMany({
-      where: {
-        status: filters.status,
-        priority: filters.priority,
-        category: filters.category,
-        assignedToId: filters.assignedToId,
-      },
-      include: { createdBy: { select: { id: true, fullName: true, phone: true } } },
-      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-    });
+  /** 21_ADRs > ADR-072 — paginated (08_API_Architecture > Pagination); this is a platform-wide, unbounded queue (`27_Performance_Review_v1.0` §1.3). */
+  async listSupportCases(
+    filters: {
+      status?: CaseStatus;
+      priority?: VerificationPriority;
+      category?: SupportCaseCategory;
+      assignedToId?: string;
+    },
+    pagination: { skip: number; take: number },
+  ) {
+    const where = {
+      status: filters.status,
+      priority: filters.priority,
+      category: filters.category,
+      assignedToId: filters.assignedToId,
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.supportCase.findMany({
+        where,
+        include: { createdBy: { select: { id: true, fullName: true, phone: true } } },
+        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.supportCase.count({ where }),
+    ]);
+    return { items, total };
   }
 
   listSupportCasesForCreator(createdById: string) {
@@ -783,23 +839,34 @@ export class BackOfficeRepository {
     return this.prisma.complianceCase.findUnique({ where: { id } });
   }
 
-  listComplianceCases(filters: {
-    status?: FraudCaseStatus;
-    category?: ComplianceCaseCategory;
-    priority?: VerificationPriority;
-    assignedToId?: string;
-    subjectActorId?: string;
-  }) {
-    return this.prisma.complianceCase.findMany({
-      where: {
-        status: filters.status,
-        category: filters.category,
-        priority: filters.priority,
-        assignedToId: filters.assignedToId,
-        subjectActorId: filters.subjectActorId,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+  /** 21_ADRs > ADR-072 — paginated (08_API_Architecture > Pagination); this is a platform-wide, unbounded queue (`27_Performance_Review_v1.0` §1.3). */
+  async listComplianceCases(
+    filters: {
+      status?: FraudCaseStatus;
+      category?: ComplianceCaseCategory;
+      priority?: VerificationPriority;
+      assignedToId?: string;
+      subjectActorId?: string;
+    },
+    pagination: { skip: number; take: number },
+  ) {
+    const where = {
+      status: filters.status,
+      category: filters.category,
+      priority: filters.priority,
+      assignedToId: filters.assignedToId,
+      subjectActorId: filters.subjectActorId,
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.complianceCase.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.complianceCase.count({ where }),
+    ]);
+    return { items, total };
   }
 
   /** Used by `detectAnomalies` to avoid opening a duplicate case for the same still-open pattern. */
@@ -887,15 +954,26 @@ export class BackOfficeRepository {
     });
   }
 
-  listLegalHolds(filters: { entityType?: string; entityId?: string; isActive?: boolean }) {
-    return this.prisma.auditLegalHold.findMany({
-      where: {
-        entityType: filters.entityType,
-        entityId: filters.entityId,
-        isActive: filters.isActive,
-      },
-      orderBy: { placedAt: 'desc' },
-    });
+  /** 21_ADRs > ADR-072 — paginated (08_API_Architecture > Pagination); this is a platform-wide, unbounded queue (`27_Performance_Review_v1.0` §1.3). */
+  async listLegalHolds(
+    filters: { entityType?: string; entityId?: string; isActive?: boolean },
+    pagination: { skip: number; take: number },
+  ) {
+    const where = {
+      entityType: filters.entityType,
+      entityId: filters.entityId,
+      isActive: filters.isActive,
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.auditLegalHold.findMany({
+        where,
+        orderBy: { placedAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.auditLegalHold.count({ where }),
+    ]);
+    return { items, total };
   }
 
   releaseLegalHold(id: string, releasedById: string) {

@@ -6,6 +6,11 @@ import { BuildingVerificationPolicy } from '../domain/policies/building-verifica
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 import { BuildingVerificationDecidedEvent } from '../events/backoffice.events';
 
 const DECISION_TO_STATUS: Record<
@@ -99,12 +104,20 @@ export class BuildingVerificationService {
     return kase;
   }
 
-  listCases(filters: { status?: string; priority?: string; assignedToId?: string }) {
-    return this.backOffice.listBuildingVerificationCases({
-      status: filters.status as never,
-      priority: filters.priority as never,
-      assignedToId: filters.assignedToId,
-    });
+  /** 21_ADRs > ADR-072 */
+  async listCases(
+    filters: { status?: string; priority?: string; assignedToId?: string },
+    pagination: PaginationParams,
+  ) {
+    const { items, total } = await this.backOffice.listBuildingVerificationCases(
+      {
+        status: filters.status as never,
+        priority: filters.priority as never,
+        assignedToId: filters.assignedToId,
+      },
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async assignCase(caseId: string, assigneeId: string, actorPersonId: string, requestId: string) {

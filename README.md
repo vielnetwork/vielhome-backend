@@ -10,12 +10,18 @@ Business Rules, Architecture, Engineering Constitution).
 
 **Status: V1.0 API contract frozen** (tag `v1.0-api-contract`, `21_ADRs >
 ADR-062`; see `25_API_v1_Database_Freeze_Manifest_v1.0` for the exact,
-enumerated route/schema snapshot). 71 ADRs shipped across every domain named
+enumerated route/schema snapshot). 72 ADRs shipped across every domain named
 in the original vision docs, including the first real e2e test coverage
-(`ADR-070`, Auth flow). Remaining before overall MVP release readiness:
-broader Testing coverage (Phase 2+), committing a versioned Swagger/OpenAPI
-snapshot (mechanism ready, `ADR-071`), a formal Performance Review, and a
-formal Security Review — see "Release readiness" below. Every sprint has
+(`ADR-070`, Auth flow) and `08_API_Architecture`'s own frozen Page/Limit
+pagination, implemented for the first time across every platform-wide
+unbounded listing (`ADR-072`). A formal Security Review and Performance
+Review have both been completed (`26_Security_Review_v1.0`,
+`27_Performance_Review_v1.0` — Project docs, not ADRs). Remaining before
+overall MVP release readiness: broader Testing coverage (Phase 2+),
+committing a versioned Swagger/OpenAPI snapshot (mechanism ready,
+`ADR-071`), and the smaller named follow-ups inside each review's own
+Priority Order (e.g. a real `npm audit` run, measuring the frozen numeric
+Performance Targets) — see "Release readiness" below. Every sprint has
 been confirmed working end-to-end by the user's own real local toolchain
 runs; nothing in this repository has ever executed inside the sandboxed
 environment it was written in (see "Toolchain status").
@@ -31,7 +37,9 @@ this section is a map, not a replacement for those.
   RequestId propagation, structured audit logging (`AuditLog`, append-only),
   a domain-event pipeline, `helmet` security headers, global `ThrottlerGuard`
   (`ADR-061`), locked-down CORS (`ADR-061`), structured JSON logging in
-  production (`ADR-064`).
+  production (`ADR-064`), a shared `page`/`limit` pagination utility
+  (`src/common/pagination`, `ADR-072`) implementing `08_API_Architecture`'s
+  own frozen Pagination contract.
 - **Foundation / Auth** (`src/modules/foundation/auth`): OTP-based login
   (`request` → `verify`), JWT access + refresh tokens (rotated, single-use),
   device registration ("Remember Device"), `Person.isSuspended` enforced live
@@ -84,12 +92,15 @@ this section is a map, not a replacement for those.
   grace-period/feature-grant state, reports — `ADR-033`), Audit & Compliance
   Center (Compliance Cases, Timeline, CSV Export, Legal Hold, Dashboard
   Metrics — `ADR-034`). Subscription's `evaluateExpiry` and Compliance's
-  `detectAnomalies` both run on a real daily BullMQ cadence (`ADR-036`).
+  `detectAnomalies` both run on a real daily BullMQ cadence (`ADR-036`). All
+  six staff queues now support `page`/`limit` pagination (`ADR-072`).
 - **Marketplace** (`src/modules/marketplace`): a moderated service-provider
   directory (submit/list/detail, staff approve/reject — `ADR-030`), no
   transactional capability (booking/payment/commission) — deliberately
   excluded, confirmed staying in V1.0 as a moderated directory via an
-  explicit Sprint 24 product decision.
+  explicit Sprint 24 product decision. Both the public browse listing and
+  the staff moderation queue now support `page`/`limit` pagination
+  (`ADR-072`).
 - **Scheduler** (`src/modules/scheduler`, `ADR-036`): this codebase's first
   real BullMQ worker — daily Subscription expiry evaluation, daily Compliance
   anomaly detection, 5-minute Voting auto-publish/auto-close — plus a
@@ -260,21 +271,30 @@ rules live in `domain/`, orchestration in `application/`, persistence in
   a live `DATABASE_URL`/`REDIS_HOST` to run (same as `npm run test:e2e`) —
   run it once against the `v1.0-api-contract` tag and commit the result to
   actually close `24_Release_Readiness_Audit_v1.0` §3.5.
-- **Test coverage is policy-layer only**: 23 unit spec files cover the
-  `domain/` policy layer across every module; there is exactly one e2e spec
-  (`test/health.e2e-spec.ts`). No controller-level or full-flow e2e coverage
-  exists yet for Finance/Governance/Cases/Documents/Notifications/
-  Gamification/BackOffice/Marketplace — a real gap for a formal QA pass,
-  named explicitly in `24_Release_Readiness_Audit_v1.0` §3.4.
-- **No formal Performance Review has been run**: no load testing, no query
-  profiling beyond normal development review, no caching strategy beyond
-  Notifications' in-app read path. Named as an explicit open item in
-  `19_Current_Sprint`'s Release Readiness section.
-- **No formal Security Review has been run** beyond the individual,
-  ADR-by-ADR security fixes already shipped (helmet headers, global rate
-  limiting, locked CORS, `Person.isSuspended` enforcement, per-role
-  authorization guards throughout). No penetration testing, no dependency
-  vulnerability scan, no secrets-rotation policy.
+- **Test coverage is policy-layer + Auth e2e only**: 23 unit spec files cover
+  the `domain/` policy layer across every module, plus `pagination.util.
+  spec.ts` (`ADR-072`); e2e coverage exists for `test/health.e2e-spec.ts` and
+  `test/auth.e2e-spec.ts` (`ADR-070`, Testing Phase 1). No controller-level
+  or full-flow e2e coverage exists yet for Finance/Governance/Cases/
+  Documents/Notifications/Gamification/BackOffice/Marketplace — a real gap
+  for a formal QA pass, named explicitly in `24_Release_Readiness_Audit_v1.0`
+  §3.4 (Testing Phase 2+).
+- **Formal Performance Review complete (`27_Performance_Review_v1.0`)** —
+  static, source-grounded review (this sandbox has never had live traffic to
+  load-test). Headline finding — `08_API_Architecture`'s own frozen Page/
+  Limit pagination had never been implemented anywhere — is now closed by
+  `ADR-072` for the review's named unbounded endpoints. Still open: the
+  frozen numeric Performance Targets (`<300ms` avg, `<150ms` critical) have
+  never actually been measured against real traffic; a low-urgency N+1
+  pattern in `ComplianceCaseService.detectAnomalies()`; no application-level
+  caching anywhere; unconfigured BullMQ worker concurrency.
+- **Formal Security Review complete (`26_Security_Review_v1.0`)** — direct
+  source-grounded audit across Authentication/Session Management,
+  Authorization/IDOR, Injection, Data Exposure, and Dependency Posture (Snyk
+  lookups against pinned major packages). One finding mitigated (an explicit
+  warning comment on the OTP `console.log`, since no other OTP-delivery
+  mechanism exists yet). Still open: a real `npm audit` run (this sandbox has
+  no npm registry access), a JWT-secret-rotation runbook.
 - **Reputation, Daily Missions, Seasonal Events (Gamification) — not
   built**: each was researched and found too weakly-sourced (no formula, no
   weights, no thresholds anywhere in the source docs) to build without
@@ -305,13 +325,19 @@ is frozen and tagged (`ADR-062`, `v1.0-api-contract`). Both Sprint 24-named
 release blockers (Git repository, migration history) are resolved (`ADR-063`)
 and confirmed clean, along with the `package-lock.json` gap discovered while
 building CI (`ADR-064`). Auth flow e2e coverage now exists and is confirmed
-working end-to-end (`ADR-070`, Testing Phase 1). **Remaining before overall
+working end-to-end (`ADR-070`, Testing Phase 1). All four originally-named
+Release Readiness categories — Testing, Documentation, Performance, Security
+— have now been picked up at least once (`ADR-070`; `ADR-071`;
+`27_Performance_Review_v1.0`; `26_Security_Review_v1.0`), and the
+Performance Review's own headline finding (frozen Page/Limit pagination
+never implemented) is now closed by `ADR-072`. **Remaining before overall
 MVP release readiness: Testing Phase 2+ (Building/Finance e2e coverage and
 beyond), committing a versioned Swagger/OpenAPI snapshot (mechanism ready —
-`npm run docs:export-openapi`, `ADR-071`), a formal Performance Review, and a
-formal Security Review** — none of the latter three has any sprint picked up
-yet. See `19_Current_Sprint_v2.0`'s Release Readiness section for the live,
-authoritative status.
+`npm run docs:export-openapi`, `ADR-071`), and the smaller named follow-ups
+inside each review's own Priority Order** (a real `npm audit` run, measuring
+the frozen numeric Performance Targets, the `detectAnomalies` N+1 fix, and
+others — see `19_Current_Sprint_v2.0`'s Release Readiness section for the
+live, authoritative status).
 
 ## Next steps (per `19_Current_Sprint`)
 
@@ -322,11 +348,13 @@ authoritative status.
 2. Run `npm run docs:export-openapi` against the `v1.0-api-contract` tag and
    commit `docs/openapi/v1.0-api-contract.json` — the mechanism exists
    (`ADR-071`), only the actual versioned snapshot commit is still open.
-3. A formal Performance Review (load testing, query profiling, caching
-   strategy).
-4. A formal Security Review (penetration testing, dependency vulnerability
-   scan, secrets-rotation policy) beyond the individual security fixes
-   already shipped.
+3. Run a real `npm audit` (`26_Security_Review_v1.0`'s own open item — this
+   sandbox has no npm registry access) and write a JWT-secret-rotation
+   runbook.
+4. Measure `08_API_Architecture`'s frozen numeric Performance Targets
+   (`<300ms` avg, `<150ms` critical) against real traffic, and batch
+   `ComplianceCaseService.detectAnomalies()`'s N+1 existence checks
+   (`27_Performance_Review_v1.0` §2.1) next time that service is touched.
 5. Real object storage (S3/MinIO) integration for Documents, and a real
    Push/Email/SMS provider (Firebase Cloud Messaging) for Notifications —
    both need a new npm dependency and a provider decision this sandbox

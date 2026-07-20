@@ -2,6 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import { LegalHoldPolicy } from '../domain/policies/legal-hold.policy';
 import { AuditService } from '../../../common/audit/audit.service';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 
 /**
  * Legal Hold (07.06_Audit_And_Compliance_Center_v1.0 Rule 015 — see
@@ -45,8 +50,13 @@ export class LegalHoldService {
     return hold;
   }
 
-  list(filters: { entityType?: string; entityId?: string; isActive?: boolean }) {
-    return this.backOffice.listLegalHolds(filters);
+  /** 21_ADRs > ADR-072 */
+  async list(
+    filters: { entityType?: string; entityId?: string; isActive?: boolean },
+    pagination: PaginationParams,
+  ) {
+    const { items, total } = await this.backOffice.listLegalHolds(filters, toSkipTake(pagination));
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async release(holdId: string, staffPersonId: string, requestId: string) {

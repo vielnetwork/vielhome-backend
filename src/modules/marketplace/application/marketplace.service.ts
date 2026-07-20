@@ -5,6 +5,11 @@ import { MarketplaceRepository } from '../infrastructure/repositories/marketplac
 import { ServiceProviderPolicy } from '../domain/policies/service-provider.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 import { SubmitServiceProviderDto } from './dto/submit-service-provider.dto';
 import { ServiceProviderDecidedEvent } from '../events/marketplace.events';
 
@@ -46,8 +51,13 @@ export class MarketplaceService {
     return provider;
   }
 
-  listApproved(filters: { category?: ServiceProviderCategory; city?: string }) {
-    return this.marketplace.listApproved(filters);
+  /** 21_ADRs > ADR-072 */
+  async listApproved(
+    filters: { category?: ServiceProviderCategory; city?: string },
+    pagination: PaginationParams,
+  ) {
+    const { items, total } = await this.marketplace.listApproved(filters, toSkipTake(pagination));
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   listMine(callerPersonId: string) {
@@ -77,11 +87,19 @@ export class MarketplaceService {
     return provider;
   }
 
-  listForReview(filters: { status?: string; category?: string }) {
-    return this.marketplace.listForReview({
-      status: filters.status as never,
-      category: filters.category as never,
-    });
+  /** 21_ADRs > ADR-072 */
+  async listForReview(
+    filters: { status?: string; category?: string },
+    pagination: PaginationParams,
+  ) {
+    const { items, total } = await this.marketplace.listForReview(
+      {
+        status: filters.status as never,
+        category: filters.category as never,
+      },
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async decide(

@@ -5,6 +5,8 @@ import { SubmitServiceProviderDto } from '../application/dto/submit-service-prov
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
+import { parsePagination } from '../../../common/pagination/pagination.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
 /**
@@ -28,9 +30,19 @@ export class MarketplaceController {
     return this.marketplace.submit(user.sub, dto, requestId);
   }
 
+  /** 21_ADRs > ADR-072 — `page`/`limit` (08_API_Architecture > Pagination); this is the review's headline example of a genuinely unbounded, platform-wide listing (`27_Performance_Review_v1.0` §1.3). */
   @Get()
-  listApproved(@Query('category') category?: string, @Query('city') city?: string) {
-    return this.marketplace.listApproved({ category: category as never, city });
+  async listApproved(
+    @Query('category') category?: string,
+    @Query('city') city?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.marketplace.listApproved(
+      { category: category as never, city },
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   // Must stay ABOVE `:id` below, same "literal segment before param" rule

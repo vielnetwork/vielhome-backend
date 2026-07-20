@@ -6,6 +6,11 @@ import { ManagerVerificationPolicy } from '../domain/policies/manager-verificati
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { AuditService } from '../../../common/audit/audit.service';
 import { DuplicateError, NotFoundAppError } from '../../../common/errors/app-error';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 import { ManagerVerificationDecidedEvent } from '../events/backoffice.events';
 
 const REQUIRED_APPROVAL_PERCENT = 30; // 06.03 Rule 002
@@ -75,11 +80,16 @@ export class ManagerVerificationService {
     return kase;
   }
 
-  listCases(filters: { status?: string; priority?: string }) {
-    return this.backOffice.listManagerVerificationCases({
-      status: filters.status as never,
-      priority: filters.priority as never,
-    });
+  /** 21_ADRs > ADR-072 — uses `...CasesPaged`, not the unpaginated `listManagerVerificationCases` `appealCase` below still relies on for its own internal full-scan lookup. */
+  async listCases(filters: { status?: string; priority?: string }, pagination: PaginationParams) {
+    const { items, total } = await this.backOffice.listManagerVerificationCasesPaged(
+      {
+        status: filters.status as never,
+        priority: filters.priority as never,
+      },
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   /**
