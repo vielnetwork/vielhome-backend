@@ -378,6 +378,35 @@ async function reportAndApprovePayment(
   return paymentId;
 }
 
+/**
+ * `FinanceService.approvePayment`/`reversePayment`/`createRefund` all emit
+ * `PaymentApproved`/`PaymentReversed`/`PaymentRefunded` via `EventEmitter2
+ * .emit()` (fire-and-forget, NOT `emitAsync()`), never awaited by the
+ * controller before the HTTP response is sent. `GamificationEventListener`
+ * 's handlers are `async` and do real writes (`XpTransaction`,
+ * `BuildingScoreEvent`) that can still be in-flight when a test's
+ * `await request(...)` call resolves — a genuine async-timing race,
+ * structurally identical to the one ADR-070 already found/fixed (via a
+ * retry loop) for registration's own un-awaited event chain. Every direct
+ * `prisma.xpTransaction.findFirst`/`prisma.buildingScoreEvent.findFirst`
+ * read that immediately follows a triggering HTTP call below is wrapped in
+ * this poll instead of a bare read.
+ */
+async function waitFor<T>(
+  fn: () => Promise<T | null | undefined>,
+  attempts = 10,
+  delayMs = 100,
+): Promise<T | null | undefined> {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const result = await fn();
+    if (result !== null && result !== undefined) return result;
+    if (attempt < attempts) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return undefined;
+}
+
 describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', () => {
   // Budget: 2 calls to POST /auth/otp/request (manager + outsider).
   let app: INestApplication;
@@ -603,15 +632,19 @@ describe('Finance (e2e) — Payment Lifecycle & Allocation (ADR-023/ADR-037/ADR-
     });
     expect(ledgerEntry?.amount).toBe(1_000_000);
 
-    const xp = await prisma.xpTransaction.findFirst({
-      where: { referenceType: 'PAYMENT', referenceId: payment1Id, reason: 'CHARGE_PAID' },
-    });
+    const xp = await waitFor(() =>
+      prisma.xpTransaction.findFirst({
+        where: { referenceType: 'PAYMENT', referenceId: payment1Id, reason: 'CHARGE_PAID' },
+      }),
+    );
     expect(xp?.personId).toBe(outsider.personId);
     expect(xp?.amount).toBe(20);
 
-    const scoreEvent = await prisma.buildingScoreEvent.findFirst({
-      where: { buildingScore: { buildingId }, reason: 'CHARGE_PAID' },
-    });
+    const scoreEvent = await waitFor(() =>
+      prisma.buildingScoreEvent.findFirst({
+        where: { buildingScore: { buildingId }, reason: 'CHARGE_PAID' },
+      }),
+    );
     expect(scoreEvent?.delta).toBe(3);
   });
 
@@ -846,9 +879,11 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
       1_000_000,
     );
 
-    const xp = await prisma.xpTransaction.findFirst({
-      where: { referenceType: 'PAYMENT', referenceId: paymentAId, reason: 'CHARGE_PAID' },
-    });
+    const xp = await waitFor(() =>
+      prisma.xpTransaction.findFirst({
+        where: { referenceType: 'PAYMENT', referenceId: paymentAId, reason: 'CHARGE_PAID' },
+      }),
+    );
     expect(xp?.amount).toBe(20);
   });
 
@@ -886,13 +921,15 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
     });
     expect(reversalEntry?.amount).toBe(1_000_000);
 
-    const clawback = await prisma.xpTransaction.findFirst({
-      where: {
-        referenceType: 'PAYMENT',
-        referenceId: paymentAId,
-        reason: 'CHARGE_PAID_REVERSED',
-      },
-    });
+    const clawback = await waitFor(() =>
+      prisma.xpTransaction.findFirst({
+        where: {
+          referenceType: 'PAYMENT',
+          referenceId: paymentAId,
+          reason: 'CHARGE_PAID_REVERSED',
+        },
+      }),
+    );
     expect(clawback?.amount).toBe(-20);
   });
 
@@ -932,13 +969,15 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
     const fund = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
     expect(fund?.balance).toBe(0);
 
-    const clawback = await prisma.xpTransaction.findFirst({
-      where: {
-        referenceType: 'PAYMENT',
-        referenceId: paymentBId,
-        reason: 'CHARGE_PAID_REVERSED',
-      },
-    });
+    const clawback = await waitFor(() =>
+      prisma.xpTransaction.findFirst({
+        where: {
+          referenceType: 'PAYMENT',
+          referenceId: paymentBId,
+          reason: 'CHARGE_PAID_REVERSED',
+        },
+      }),
+    );
     expect(clawback?.amount).toBe(-20);
   });
 
