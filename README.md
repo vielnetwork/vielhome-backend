@@ -8,43 +8,120 @@ Business Rules, Architecture, Engineering Constitution).
 > This is a from-scratch rebuild of the backend, started fresh from the
 > frozen AIHandoff V2 spec. It is not the old codebase.
 
+**Status: V1.0 API contract frozen** (tag `v1.0-api-contract`, `21_ADRs >
+ADR-062`; see `25_API_v1_Database_Freeze_Manifest_v1.0` for the exact,
+enumerated route/schema snapshot). 69 ADRs shipped across every domain named
+in the original vision docs. Remaining before overall MVP release readiness:
+Testing coverage expansion, a versioned Swagger/OpenAPI publish, a formal
+Performance Review, and a formal Security Review — see "Release readiness"
+below. Every sprint has been confirmed working end-to-end by the user's own
+real local toolchain runs; nothing in this repository has ever executed
+inside the sandboxed environment it was written in (see "Toolchain status").
+
 ## What's implemented so far
+
+Organized by domain, each with its own `21_ADRs` entry for full rationale —
+this section is a map, not a replacement for those.
 
 - **Cross-cutting infrastructure**: standard API response envelope, error
   taxonomy (`ValidationError`, `AuthorizationError`, `NotFound`, `Conflict`,
   `BusinessRuleViolation`, `Duplicate`, `RateLimit`, `UnexpectedError`),
-  RequestId propagation, structured audit logging, domain-event pipeline.
-- **Foundation / Auth**: OTP-based login (`request` → `verify`), JWT access +
-  refresh tokens, device registration ("Remember Device").
-- **Building**: resumable Building Setup Wizard with Draft/Auto-Save/Resume
-  (Zero Data Loss), building creation with founding Owner/Manager membership
-  and automatic skeleton unit generation, Unit management (create/list/update,
-  unique-per-building enforcement), postal-code duplicate-building prevention
-  with a Membership Request escape hatch, owner invites (console-logged, see
-  "Known risk areas"). See `21_ADRs > ADR-021` in the project's AIHandoff docs
-  for the full rationale.
-- **Health**: `GET /health` (legacy, DB-only, kept for backward compatibility),
-  `GET /health/live` (liveness — no dependency checks), `GET /health/ready`
-  (readiness — Postgres + Redis checks in parallel). See `21_ADRs > ADR-064`.
-- **Observability/CI (ADR-064)**: `helmet` security headers (CSP disabled —
-  see `main.ts` comment — to keep Swagger UI at `/docs` working), structured
-  JSON logging in production (`src/common/logging/json-logger.service.ts`,
-  plain console output unchanged in dev), and a GitHub Actions CI pipeline
-  (`.github/workflows/ci.yml`) running lint/test/e2e/build against real
-  Postgres + Redis service containers on every push.
+  RequestId propagation, structured audit logging (`AuditLog`, append-only),
+  a domain-event pipeline, `helmet` security headers, global `ThrottlerGuard`
+  (`ADR-061`), locked-down CORS (`ADR-061`), structured JSON logging in
+  production (`ADR-064`).
+- **Foundation / Auth** (`src/modules/foundation/auth`): OTP-based login
+  (`request` → `verify`), JWT access + refresh tokens (rotated, single-use),
+  device registration ("Remember Device"), `Person.isSuspended` enforced live
+  on every request via `JwtStrategy` (`ADR-043`).
+- **Building** (`src/modules/building`): resumable Building Setup Wizard with
+  Draft/Auto-Save/Resume (Zero Data Loss), building creation with founding
+  Owner/Manager membership and automatic skeleton unit generation, Unit
+  management (create/list/update, unique-per-building enforcement),
+  postal-code duplicate-building prevention with a Membership Request escape
+  hatch (list/approve/reject, now including the requester's `person` relation
+  — `ADR-069`), owner invites with phone-based auto-link on OTP verify,
+  Ownership Transfer (self-service, phone-based — `ADR-035`) and Tenancy
+  management (current/history, give notice, end — `ADR-035`).
+- **Finance** (`src/modules/finance`): immutable per-unit ledger, Charge
+  Batches, Payments (report → approve/reject, self-reported by default),
+  Funds, Adjustments/Refunds (`ADR-037`) with allocation against outstanding
+  positive Adjustments (`ADR-053`), Collection Rate and Payment Registration
+  Rate reports (`ADR-055`/`ADR-057`) — the two MVP Financial success metrics
+  named in `02_MVP_Scope_v2.0`.
+- **Governance** (`src/modules/governance`): Votes (create/publish/close/
+  cancel, ballot casting, results), multi-scope vote targeting (building/
+  block/property-type/selected-units — `ADR-058`), Meetings as their own
+  entity with attendance (`ADR-049`), scheduler-driven auto-publish/
+  auto-close every 5 minutes (`ADR-036`).
+- **Cases** (`src/modules/cases`): submit/list/detail/message-thread/reopen,
+  staff assign/resolve/close, duplicate-case merging (`ADR-045`), a validated
+  `resolutionCode` enum (`ADR-052`).
+- **Documents** (`src/modules/documents`): upload (first version)/list/
+  detail/download, bulk upload (`ADR-051`), expiration metadata (`ADR-046`);
+  `fileUrl` is client-supplied metadata only — no real object storage backend
+  exists yet (see "Known risk areas").
+- **Notifications** (`src/modules/notifications`): a real, independent
+  in-app (`IN_APP`) delivery channel since `ADR-027` — list/unread-count/get/
+  mark-read/mark-all-read/archive/preferences — plus a real BullMQ async
+  dispatch worker for non-IN_APP channels (`ADR-039`) and a staff-managed
+  `NotificationTemplate` library with `{{variable}}` rendering (`ADR-060`).
+  Push/Email/SMS delivery itself is still a `Logger` stub (see "Known risk
+  areas") — Firebase Cloud Messaging is the named planned addition.
+- **Gamification** (`src/modules/gamification`): XP ledger + reasons,
+  Achievements, Building Score + League Tier, a cross-building leaderboard
+  (deliberately the one cross-tenant read in this app), XP clawback on
+  payment reversal/refund (`ADR-041`), staff-only Analytics (XP Distribution,
+  League Progress, Weekly Participation — `ADR-047`).
+- **BackOffice** (`src/modules/backoffice`) — all six named sub-domains
+  shipped: Manager Verification (approve/reject/suspend/restore — `ADR-029`/
+  `ADR-040`), Building Verification + appeals, Fraud & Abuse Center (case
+  review, per-severity-escalated Enforcement Actions — `ADR-031`/`ADR-044`,
+  metrics — `ADR-050`), Support & Operations Center (case review, metrics —
+  `ADR-032`/`ADR-048`), Subscription Management (plan/status/trial/
+  grace-period/feature-grant state, reports — `ADR-033`), Audit & Compliance
+  Center (Compliance Cases, Timeline, CSV Export, Legal Hold, Dashboard
+  Metrics — `ADR-034`). Subscription's `evaluateExpiry` and Compliance's
+  `detectAnomalies` both run on a real daily BullMQ cadence (`ADR-036`).
+- **Marketplace** (`src/modules/marketplace`): a moderated service-provider
+  directory (submit/list/detail, staff approve/reject — `ADR-030`), no
+  transactional capability (booking/payment/commission) — deliberately
+  excluded, confirmed staying in V1.0 as a moderated directory via an
+  explicit Sprint 24 product decision.
+- **Scheduler** (`src/modules/scheduler`, `ADR-036`): this codebase's first
+  real BullMQ worker — daily Subscription expiry evaluation, daily Compliance
+  anomaly detection, 5-minute Voting auto-publish/auto-close — plus a
+  `PLATFORM_ADMIN`-only manual trigger endpoint for ops testing.
+- **Health / Observability / CI** (`ADR-064`): `GET /health` (legacy),
+  `GET /health/live` (liveness), `GET /health/ready` (readiness — Postgres +
+  Redis checks in parallel); a GitHub Actions CI pipeline
+  (`.github/workflows/ci.yml`) running lint/test/e2e/build on every push
+  against real Postgres + Redis service containers.
+- **Git / Migrations** (`ADR-063`): a real Git repository, tagged
+  `v1.0-api-contract`; `prisma/migrations/0_baseline_v1_freeze/` — a real,
+  committed baseline migration (the user's own local run against a real dev
+  database, since this sandbox has never had one).
 
-Everything else in `19_Current_Sprint` (Finance, Notifications, Gamification,
-Marketplace, AI Assistant) is intentionally not started yet — build in that
-order, following `21_ADRs` / `20_Frozen_Decisions` for anything that touches
-an already-frozen decision.
+Everything on `02_MVP_Scope_v2.0`'s "Excluded From MVP" list (AI Assistant
+Foundation, real transactional Marketplace, Enterprise Edition, IoT, Advanced
+AI) is intentionally not built — confirmed clean via direct grep, not
+assumption (`24_Release_Readiness_Audit_v1.0` §1.3).
 
-## Why nothing has been run yet
+## Toolchain status
 
-This backend was scaffolded inside a sandboxed cloud workspace with **no
-access to npm/package registries**, so `npm install` and `npm run start:dev`
-have not been executed or tested here. Everything below is written to be
-correct against NestJS 10 / Prisma 5 APIs, but you should treat the first
-local run as the real first test pass — see "Known risk areas" at the bottom.
+This backend was originally scaffolded inside a sandboxed cloud workspace
+with **no access to npm/package registries or a live database**, so no code
+in this repository has ever executed inside that sandbox itself. Every
+sprint since has instead been verified by the user's own real local
+toolchain (`npm install`/`npm run lint:ci`/`npm test`/`npm run test:e2e`/
+`npm run build`), with results and any fixes fully recorded in `21_ADRs`'s
+per-ADR "Post-Delivery Verification" subsections. As of this writing: Git
+repository real and tagged (`ADR-063`), `prisma/migrations/` real and
+committed (`ADR-063`), `package-lock.json` real and committed (`ADR-064`),
+`npm run lint:ci`/`npm run test:e2e`/`npm run build` all confirmed clean,
+`npm test` passing 23/23 suites (265/265 tests) as of the `ADR-062` freeze
+pass. Treat any *new* delivery's first local run as its own real first test
+pass regardless of this history — see "Known risk areas."
 
 ## Prerequisites
 
@@ -65,13 +142,12 @@ docker-compose up -d
 cp .env.example .env
 # edit .env if you changed any docker-compose ports/credentials
 
-# 4. Create the database schema
-npx prisma migrate dev --name init
-# If you already had a database from before ADR-021 (postal code became
-# required + unique, several Building/Unit columns were added), the plain
-# migrate command above will fail or prompt for defaults because existing
-# rows can't satisfy the new NOT NULL columns. This is pre-launch dev data
-# — the simplest fix is to reset instead:
+# 4. Apply the committed migration history (ADR-063's baseline + everything
+#    since). If this is a genuinely fresh database:
+npx prisma migrate deploy
+# If you're upgrading an existing dev database that predates ADR-063's
+# baseline and gets a drift error, this is pre-launch dev data — the
+# simplest fix is to reset instead:
 #   npx prisma migrate reset
 # (drops the dev database, reapplies all migrations from scratch — do not
 # run this against anything you care about keeping)
@@ -84,7 +160,8 @@ npm run start:dev
 ```
 
 The API listens on `http://localhost:3000/api/v1`.
-Swagger docs: `http://localhost:3000/docs`.
+Swagger docs: `http://localhost:3000/docs` (not yet published as a versioned
+artifact alongside the API freeze tag — see "Release readiness").
 
 ## Trying the auth flow
 
@@ -100,7 +177,7 @@ curl -X POST http://localhost:3000/api/v1/auth/otp/verify \
   -H "Content-Type: application/json" \
   -d '{"phone": "+989120000000", "code": "12345", "deviceToken": "dev-device-1", "platform": "web"}'
 
-# -> returns { data: { accessToken, refreshToken, personId, isNewPerson } }
+# -> returns { data: { accessToken, refreshToken, personId, isNewPerson, hasBuildings } }
 
 # 3. Start the Building Setup Wizard (use accessToken from step 2)
 curl -X POST http://localhost:3000/api/v1/buildings/setup/draft \
@@ -123,17 +200,35 @@ Follows `11_Backend_Architecture` (Domain-Driven Design) and
 ```
 src/
   common/           cross-cutting: prisma, audit, errors, filters,
-                    interceptors, middleware, guards, decorators, events
+                    interceptors, middleware, guards, decorators, events,
+                    logging (ADR-064), queue (shared BullMQ config, ADR-054)
   config/           typed configuration loader
   modules/
     foundation/
       auth/         controller / application / domain / infrastructure / events
-      identity/     (Person — currently just Prisma model + Auth usage)
-    building/       controller / application / domain / infrastructure / events
-    health/
+      identity/     (Person — Prisma model + Auth usage)
+    building/       Setup Wizard, Units, Membership Requests, Ownership
+                    Transfer, Tenancy (ADR-021, ADR-035, ADR-069)
+    finance/        Ledger, Charge Batches, Payments, Funds, Adjustments,
+                    Collection/Payment Registration Rate reports
+    governance/     Votes, Meetings, scoped targeting
+    cases/          Cases, message threads, merging
+    documents/      Documents, versions, bulk upload, expiration metadata
+    notifications/  in-app channel, async dispatch worker, templates,
+                    preferences
+    gamification/   XP, Achievements, Building Score, League, leaderboard,
+                    analytics
+    backoffice/     Manager/Building Verification, Fraud & Abuse, Support &
+                    Operations, Subscription, Audit & Compliance — 6
+                    sub-domains, each own controller/application/domain/
+                    infrastructure
+    marketplace/    moderated service-provider directory
+    scheduler/      BullMQ worker (expiry, anomaly detection, auto-publish/
+                    close) + manual trigger endpoint
+    health/         liveness/readiness
 prisma/
-  schema.prisma     Foundation + Building domains, Zero Data Loss draft store,
-                     append-only AuditLog
+  schema.prisma     60 models, 60 enums — every domain above
+  migrations/       0_baseline_v1_freeze/ (ADR-063) — real, committed history
 ```
 
 Each feature module keeps the same shape: **controllers are thin**, business
@@ -141,73 +236,84 @@ rules live in `domain/`, orchestration in `application/`, persistence in
 `infrastructure/`. Never add business logic to a controller or a repository
 — see `09_Engineering_Constitution.md` in the project's AIHandoff docs.
 
-## Known risk areas (things to double-check on first real run)
+## Known risk areas (things to double-check before/at first production use)
 
-- **`package-lock.json` does not exist yet — CI will fail until this is
-  fixed**: this sandbox has never had npm registry access (unchanged since
-  ADR-022/Sprint 3.9), so `npm install` has never actually been run here,
-  and no lockfile has ever been generated or committed. The new
-  `.github/workflows/ci.yml` (ADR-064) uses `npm ci`, which *requires*
-  `package-lock.json` to exist and fails without one. Run `npm install`
-  locally once (your local runs have already been succeeding, so this may
-  already be effectively done — just confirm the resulting
-  `package-lock.json` is committed to git) before pushing to a remote that
-  runs this workflow. Tracked as a release blocker alongside ADR-063's
-  migration-baseline step — see `25_API_v1_Database_Freeze_Manifest_v1.0`.
-- **Prisma client types**: `npx prisma generate` must run (via `postinstall`
-  triggered by `npm install`, or manually) before `tsc`/`ts-node` will
-  resolve `@prisma/client` types like `MembershipRole`, `UnitType`,
-  `OtpPurpose`.
+- **Real object storage (S3/MinIO) for Documents — still open**:
+  `DocumentVersion.fileUrl` accepts client-supplied metadata only, no actual
+  file transfer happens. Needs a new npm dependency this sandbox has never
+  been able to install/verify, plus a provider-abstraction decision no
+  source doc specifies.
+- **Real Push/Email/SMS provider for Notifications — still open**: every
+  non-IN_APP delivery is a `Logger` stub, always recorded as `SENT`, never
+  actually `DELIVERED`. Firebase Cloud Messaging is the named planned
+  addition (`ADR-027`/`ADR-039`). This is also why OTP codes and owner/
+  tenant invites are still console-logged only, not texted.
+- **Swagger/OpenAPI not yet published as a versioned artifact**: the live
+  `/docs` endpoint is auto-generated and current, but `24_Release_Readiness_
+  Audit_v1.0` §3.5 recommends publishing a frozen snapshot alongside the
+  `v1.0-api-contract` tag — not yet done.
+- **Test coverage is policy-layer only**: 23 unit spec files cover the
+  `domain/` policy layer across every module; there is exactly one e2e spec
+  (`test/health.e2e-spec.ts`). No controller-level or full-flow e2e coverage
+  exists yet for Finance/Governance/Cases/Documents/Notifications/
+  Gamification/BackOffice/Marketplace — a real gap for a formal QA pass,
+  named explicitly in `24_Release_Readiness_Audit_v1.0` §3.4.
+- **No formal Performance Review has been run**: no load testing, no query
+  profiling beyond normal development review, no caching strategy beyond
+  Notifications' in-app read path. Named as an explicit open item in
+  `19_Current_Sprint`'s Release Readiness section.
+- **No formal Security Review has been run** beyond the individual,
+  ADR-by-ADR security fixes already shipped (helmet headers, global rate
+  limiting, locked CORS, `Person.isSuspended` enforcement, per-role
+  authorization guards throughout). No penetration testing, no dependency
+  vulnerability scan, no secrets-rotation policy.
+- **Reputation, Daily Missions, Seasonal Events (Gamification) — not
+  built**: each was researched and found too weakly-sourced (no formula, no
+  weights, no thresholds anywhere in the source docs) to build without
+  inventing product logic — see `21_ADRs` → ADR-028/036/037 Future Review
+  for the full comparison research.
+- **Recovery Mode auto-expiry, Cases/Support SLA breach tracking — not
+  wired**: the scheduler infrastructure exists (`ADR-036`), but neither has
+  a numeric threshold specified anywhere in the source docs — the real
+  blocker is a missing business-rule decision, not missing infrastructure.
 - **`class-validator` phone validation**: `@IsPhoneNumber(undefined)` accepts
   any region — confirm this is permissive enough for your target markets, or
   pin it to specific country codes.
-- **JWT/refresh token durations**: `parseDurationMs` in `auth.service.ts` is a
-  minimal hand-rolled parser (`15m`, `30d`, etc.) — swap for a library like
+- **JWT/refresh token durations**: `parseDurationMs` in `auth.service.ts` is
+  a minimal hand-rolled parser (`15m`, `30d`, etc.) — swap for a library like
   `ms` if you need broader format support.
-- **SMS gateway**: OTP codes are only logged to the console right now
-  (`console.log` in `AuthService.requestOtp`). Wire a real provider into
-  `infrastructure/` before this touches production.
-- **Throttling**: `ThrottlerModule` is registered but no guard is applied
-  globally yet — add `APP_GUARD: ThrottlerGuard` once you're ready to
-  enforce rate limits (important for the OTP endpoints specifically, per
-  `05_Business_Rules > Security Rules`).
-- **Per-building authorization — RESOLVED**: `MembershipGuard`
-  (`src/common/guards/membership.guard.ts`) is now applied at the method
-  level to every `/buildings/:id/...` route that should be member-only:
-  `GET :id`, `GET :id/units`, `GET :id/units/:unitId`, `POST :id/units`,
-  `PATCH :id/units/:unitId`, `POST :id/units/:unitId/invite-owner`,
-  `GET :id/membership-requests`, `PATCH :id/membership-requests/:requestId`.
-  It checks `Membership.personId + buildingId (isCurrent: true)` and throws
-  `AuthorizationError` (403) otherwise, satisfying `05_Business_Rules >
-  Security Rules`. `POST :id/membership-requests` deliberately has NO guard
-  — a non-member requesting to join is the entire point of that endpoint.
-  **RESOLVED (ADR-064)**: `resolveMembershipRequest` previously only checked
-  *membership*, not *role* — any member (not just OWNER/MANAGER) could
-  approve/reject a join request. Now gated `RolesGuard` + `@Roles('OWNER',
-  'MANAGER')`, the same pattern `changeManager` already used.
-- **Membership Request has no review UI**: `POST/GET /buildings/:id/
-  membership-requests` and `PATCH /buildings/:id/membership-requests/
-  :requestId` (approve/reject) exist, but nothing in the mobile app surfaces
-  pending requests to an existing manager/owner yet — resolve them via the
-  API directly (or Prisma Studio) until that screen ships (see ADR-021).
-- **Owner invite auto-linking — RESOLVED**: `AuthService.verifyOtp` now
-  calls `BuildingService.linkOwnerAccountByPhone` on every OTP verify
-  (login and signup), which finds any skeleton units whose `ownerPhone`
-  matches the verifying person's phone and don't already have a current
-  Ownership row, and atomically creates the Ownership + OWNER Membership
-  for them (`BuildingRepository.findUnlinkedOwnerUnitsByPhone` /
-  `linkOwnerToUnit`). The verify response now also returns `hasBuildings`;
-  the mobile app routes on that instead of `isNewPerson`, so a person who
-  was invited by phone lands straight on their dashboard instead of the
-  Building Setup wizard. The SMS delivery itself is still console-logged
-  only (same gap as OTP codes) — the person has to already know their
-  invite exists (told out-of-band) since no real SMS goes out yet.
+- **No idempotency-key convention**: relevant to any future client-side
+  offline-retry work (the mobile app's `SyncOutboxItems` pattern, `21_ADRs >
+  ADR-065`) — a retried POST against a non-naturally-idempotent endpoint can
+  double-apply if it "succeeded" server-side but the response was lost.
+
+## Release readiness
+
+Per `24_Release_Readiness_Audit_v1.0` and `19_Current_Sprint`'s own Release
+Readiness section: every named domain (all Core Product Domains plus all six
+BackOffice sub-domains plus Marketplace) is shipped and confirmed working
+end-to-end via the user's real local toolchain. The API + Database contract
+is frozen and tagged (`ADR-062`, `v1.0-api-contract`). Both Sprint 24-named
+release blockers (Git repository, migration history) are resolved (`ADR-063`)
+and confirmed clean, along with the `package-lock.json` gap discovered while
+building CI (`ADR-064`). **Remaining before overall MVP release readiness:
+Testing (broader e2e/controller-level coverage), a versioned Swagger/OpenAPI
+publish, a formal Performance Review, and a formal Security Review** — none
+of which any sprint has picked up yet. See `19_Current_Sprint_v2.0`'s
+Release Readiness section for the live, authoritative status.
 
 ## Next steps (per `19_Current_Sprint`)
 
-1. Finish Building Unit Management (bulk unit creation / skeleton units per
-   `06_User_Flows > Building Setup Assistant`).
-2. Owner/Tenant Registration + Invitation flow (`Membership Flow`).
-3. Finance MVP (`12_Finance_Architecture`) — immutable ledger, charges,
-   payments, funds.
-4. Notification Engine (`13_Notification_Architecture`).
+1. Testing — expand e2e/controller-level coverage beyond the current
+   policy-layer-only unit specs; run the existing e2e config more broadly.
+2. Publish a versioned Swagger/OpenAPI snapshot alongside the
+   `v1.0-api-contract` tag.
+3. A formal Performance Review (load testing, query profiling, caching
+   strategy).
+4. A formal Security Review (penetration testing, dependency vulnerability
+   scan, secrets-rotation policy) beyond the individual security fixes
+   already shipped.
+5. Real object storage (S3/MinIO) integration for Documents, and a real
+   Push/Email/SMS provider (Firebase Cloud Messaging) for Notifications —
+   both need a new npm dependency and a provider decision this sandbox
+   cannot make unilaterally.
