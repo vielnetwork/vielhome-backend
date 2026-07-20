@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { NotificationCategory, NotificationChannel, NotificationPriority } from '@prisma/client';
+import {
+  NotificationCategory,
+  NotificationChannel,
+  NotificationPriority,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 
 @Injectable()
@@ -110,13 +115,33 @@ export class NotificationRepository {
     return this.prisma.notification.update({ where: { id }, data: { archivedAt: new Date() } });
   }
 
-  /** One row per person, created lazily on first read/write — mirrors the "no signup-time row" laziness already used for Finance's default Fund. */
-  getOrCreatePreference(personId: string) {
-    return this.prisma.notificationPreference.upsert({
-      where: { personId },
-      update: {},
-      create: { personId },
-    });
+  /**
+   * One row per person, created lazily on first read/write — mirrors the
+   * "no signup-time row" laziness already used for Finance's default Fund.
+   *
+   * 21_ADRs > ADR-070 — real toolchain run found this upsert can lose a
+   * race when two domain events fire for the same brand-new person at
+   * effectively the same time (the "welcome" SYSTEM notification from
+   * `onPersonAuthenticated` and the registration XP bonus from
+   * `onXpAwarded`, both gated on `isNewPerson`, both calling `notify()`
+   * for the same `personId`). Not request-blocking — NestJS's own
+   * event-listener wrapper catches and logs the failure — but the losing
+   * caller's notification was silently never created. Catching P2002 and
+   * reading back the winner's row closes that gap.
+   */
+  async getOrCreatePreference(personId: string) {
+    try {
+      return await this.prisma.notificationPreference.upsert({
+        where: { personId },
+        update: {},
+        create: { personId },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        return this.prisma.notificationPreference.findUniqueOrThrow({ where: { personId } });
+      }
+      throw error;
+    }
   }
 
   updatePreference(

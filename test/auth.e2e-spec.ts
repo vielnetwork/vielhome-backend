@@ -75,6 +75,21 @@ async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: Pris
 
 async function cleanupPhones(prisma: PrismaService, phones: string[]): Promise<void> {
   if (phones.length === 0) return;
+  // 21_ADRs > ADR-070 — real toolchain run found registration triggers real
+  // Notification/NotificationDelivery/NotificationPreference rows (the
+  // "welcome" SYSTEM notification and gamification's registration XP
+  // bonus, both wired since ADR-027/028) with no onDelete cascade to
+  // Person in the schema — clean these up first or person.deleteMany()
+  // fails on the notifications_recipientId_fkey foreign key constraint.
+  await prisma.notificationDelivery.deleteMany({
+    where: { notification: { recipient: { phone: { in: phones } } } },
+  });
+  await prisma.notification.deleteMany({
+    where: { recipient: { phone: { in: phones } } },
+  });
+  await prisma.notificationPreference.deleteMany({
+    where: { person: { phone: { in: phones } } },
+  });
   await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
