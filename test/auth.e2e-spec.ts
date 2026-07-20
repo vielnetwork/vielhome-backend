@@ -46,12 +46,21 @@ import type { AppConfig } from '../src/config/configuration';
 // run started within the same second as an interrupted first run (which
 // skipped its own cleanup) still cannot collide.
 
-const RUN_ID = Date.now().toString().slice(-6);
+const RUN_ID = Date.now().toString().slice(-5);
 let phoneCounter = 0;
 
+// 21_ADRs > ADR-070 — round-2 real toolchain run found every `nextPhone()`
+// call rejected with 400 VALIDATION_ERROR. Root cause: `RequestOtpDto.phone`
+// is `@IsPhoneNumber(undefined)` (region-agnostic libphonenumber-js), which
+// validates against real assigned Iranian mobile operator prefixes, not
+// just "10 digits starting with 9" — an arbitrary `+989${RUN_ID}...` string
+// only happens to be valid when RUN_ID's leading digits happen to collide
+// with a real prefix, which round 1 got by luck and round 2 didn't. Fixed
+// by anchoring on "912" (a long-standing real MCI/Hamrah-e Aval prefix),
+// leaving only the trailing 7 digits (RUN_ID + counter) to vary.
 function nextPhone(): string {
   phoneCounter += 1;
-  return `+989${RUN_ID}${phoneCounter.toString().padStart(3, '0')}`;
+  return `+98912${RUN_ID}${phoneCounter.toString().padStart(2, '0')}`;
 }
 
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
