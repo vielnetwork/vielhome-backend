@@ -146,28 +146,48 @@ export class NotificationsService {
 
   /**
    * True for the family of Prisma errors a concurrently-deleted recipient
-   * Person can produce mid-`notify()` — deliberately checked by error
-   * class/code first, falling back to message-content matching for the
-   * two internal-upsert error shapes Prisma doesn't expose a stable code
-   * for (see this method's caller's own doc comment for the full story).
+   * Person can produce mid-`notify()` — checked by error class/code first,
+   * then by message-content matching regardless of class (see this
+   * method's caller's own doc comment for the full story).
+   *
+   * 21_ADRs > ADR-080 round-1 fix — a real toolchain run (a 10th e2e suite,
+   * `manager-verification.e2e-spec.ts`, joining the pack for the first
+   * time) surfaced a THIRD distinct shape of this same standing race: this
+   * time Prisma's own query engine classified the identical "Expected a
+   * valid parent ID to be present for create follow-up for upsert query"
+   * assertion as a `PrismaClientKnownRequestError` with a code other than
+   * `P2003`/`P2025` (unlike `ADR-079` round-1's own occurrence, which saw
+   * it thrown as `PrismaClientUnknownRequestError`) — meaning the
+   * class-then-code check below fell through to `false` and let a real,
+   * still-benign error re-throw and log. Prisma's own error
+   * classification for this particular internal-upsert assertion is
+   * evidently not stable across runs/engine versions, so message-content
+   * matching now applies to EVERY Prisma error class this method sees,
+   * not just the two classes that lack a stable code — the class/code
+   * check stays first purely as a fast path for the common, well-defined
+   * P2003/P2025 cases.
    */
   private isMissingRecipientError(error: unknown): boolean {
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      return error.code === 'P2003' || error.code === 'P2025';
-    }
-    if (
+    const isPrismaError =
+      error instanceof Prisma.PrismaClientKnownRequestError ||
       error instanceof Prisma.PrismaClientUnknownRequestError ||
-      error instanceof Prisma.PrismaClientValidationError
+      error instanceof Prisma.PrismaClientValidationError;
+    if (!isPrismaError) return false;
+
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      (error.code === 'P2003' || error.code === 'P2025')
     ) {
-      const message = error.message ?? '';
-      return (
-        message.includes('found no record') ||
-        message.includes('parent ID to be present') ||
-        message.includes('Record to update not found') ||
-        message.includes('required but not found')
-      );
+      return true;
     }
-    return false;
+
+    const message = error.message ?? '';
+    return (
+      message.includes('found no record') ||
+      message.includes('parent ID to be present') ||
+      message.includes('Record to update not found') ||
+      message.includes('required but not found')
+    );
   }
 
   /** Fan-out helper for building-wide/role-broadcast recipients — each recipient gets their own independent preference check. */

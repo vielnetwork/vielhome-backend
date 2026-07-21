@@ -505,13 +505,21 @@ describe('Manager Verification (e2e) — Owner Approval: blocks & threshold (06.
     expect(membership?.managerState).toBe('VERIFIED');
   });
 
-  it('blocks approving once the case is already decided (assertCaseOpen)', async () => {
+  it('blocks approving once no open case remains — the case is already decided', async () => {
+    // `getOpenManagerVerificationCaseForBuilding` only ever finds a case
+    // with `status: 'PENDING'` (see that repository method's own doc
+    // comment) — once this building's case resolved to VERIFIED above,
+    // there is no PENDING case left to find at all, so `approveByOwner`
+    // 404s from that lookup itself rather than reaching
+    // `ManagerVerificationPolicy.assertCaseOpen`'s own 422 — that guard is
+    // real defensive code, but for THIS call path it can never actually
+    // fire, since the lookup that feeds it is already filtered to PENDING.
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/manager-verification/approve`)
       .set('Authorization', `Bearer ${owners[2].accessToken}`)
-      .expect(422);
+      .expect(404);
 
-    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
   });
 });
 
