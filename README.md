@@ -10,7 +10,7 @@ Business Rules, Architecture, Engineering Constitution).
 
 **Status: V1.0 API contract frozen** (tag `v1.0-api-contract`, `21_ADRs >
 ADR-062`; see `25_API_v1_Database_Freeze_Manifest_v1.0` for the exact,
-enumerated route/schema snapshot). 78 ADRs shipped across every domain named
+enumerated route/schema snapshot). 79 ADRs shipped across every domain named
 in the original vision docs, including real e2e test coverage for Auth
 (`ADR-070`, Testing Phase 1), Building (`ADR-073`, Testing Phase 2a —
 Setup Wizard, Membership Requests, Ownership Transfer, Tenancy), Finance
@@ -22,23 +22,25 @@ Cases (`ADR-076`, Testing Phase 3b — Creation/Listing/Visibility,
 Editing, Assignment, Messaging, Status Lifecycle with `CASE_RESOLVED` XP/
 achievement), Documents (`ADR-077`, Testing Phase 3c — Creation &
 Category Gating, Listing/Search/Visibility, Versioning & Archive Lifecycle,
-Bulk Upload, References & Download), and Notifications (`ADR-078`, Testing
+Bulk Upload, References & Download), Notifications (`ADR-078`, Testing
 Phase 3d — Listing/Filtering/Category Diversity, Search, Unread-Count/Read/
 Archive Lifecycle, Cross-Person Authorization, Preferences, and
-NotificationTemplate Staff CRUD), plus `08_API_Architecture`'s own
-frozen Page/Limit pagination, implemented for the first time across every
-platform-wide unbounded listing (`ADR-072`). A formal Security Review and
-Performance Review have both been completed (`26_Security_Review_v1.0`,
-`27_Performance_Review_v1.0` — Project docs, not ADRs). Remaining before
-overall MVP release readiness: committing a versioned Swagger/OpenAPI
-snapshot (mechanism ready, `ADR-071`), Testing Phase 3+'s remaining domains
-(Gamification/BackOffice/Marketplace), and the smaller named
-follow-ups inside each review's own Priority Order (e.g. a real `npm audit`
-run, measuring the frozen numeric Performance Targets) — see "Release
-readiness" below. Every sprint has been confirmed working end-to-end by the
-user's own real local toolchain runs; nothing in this repository has ever
-executed inside the sandboxed environment it was written in (see "Toolchain
-status").
+NotificationTemplate Staff CRUD), and Gamification (`ADR-079`, Testing
+Phase 3e — My Progress & XP History, Building Score & Cross-Building
+Leaderboard, cross-domain XP via Case Resolution, staff-gated Analytics),
+plus `08_API_Architecture`'s own frozen Page/Limit pagination, implemented
+for the first time across every platform-wide unbounded listing
+(`ADR-072`). A formal Security Review and Performance Review have both
+been completed (`26_Security_Review_v1.0`, `27_Performance_Review_v1.0` —
+Project docs, not ADRs). Remaining before overall MVP release readiness:
+committing a versioned Swagger/OpenAPI snapshot (mechanism ready,
+`ADR-071`), Testing Phase 3's remaining domains (BackOffice/Marketplace),
+and the smaller named follow-ups inside each review's own Priority Order
+(e.g. a real `npm audit` run, measuring the frozen numeric Performance
+Targets) — see "Release readiness" below. Every sprint has been confirmed
+working end-to-end by the user's own real local toolchain runs; nothing in
+this repository has ever executed inside the sandboxed environment it was
+written in (see "Toolchain status").
 
 ## What's implemented so far
 
@@ -103,7 +105,8 @@ this section is a map, not a replacement for those.
   Achievements, Building Score + League Tier, a cross-building leaderboard
   (deliberately the one cross-tenant read in this app), XP clawback on
   payment reversal/refund (`ADR-041`), staff-only Analytics (XP Distribution,
-  League Progress, Weekly Participation — `ADR-047`).
+  League Progress, Weekly Participation — `ADR-047`). Full e2e coverage —
+  `ADR-079`, Testing Phase 3e.
 - **BackOffice** (`src/modules/backoffice`) — all six named sub-domains
   shipped: Manager Verification (approve/reject/suspend/restore — `ADR-029`/
   `ADR-040`), Building Verification + appeals, Fraud & Abuse Center (case
@@ -293,21 +296,23 @@ rules live in `domain/`, orchestration in `application/`, persistence in
   run it once against the `v1.0-api-contract` tag and commit the result to
   actually close `24_Release_Readiness_Audit_v1.0` §3.5.
 - **Test coverage is policy-layer + Auth/Building/Finance/Governance/Cases/
-  Documents/Notifications e2e only**: 23 unit spec files cover the `domain/`
-  policy layer across every module, plus `pagination.util.spec.ts`
-  (`ADR-072`); e2e coverage exists for `test/health.e2e-spec.ts`,
-  `test/auth.e2e-spec.ts` (`ADR-070`, Testing Phase 1),
-  `test/building.e2e-spec.ts` (`ADR-073`, Testing Phase 2a),
+  Documents/Notifications/Gamification e2e only**: 23 unit spec files cover
+  the `domain/` policy layer across every module, plus
+  `pagination.util.spec.ts` (`ADR-072`); e2e coverage exists for
+  `test/health.e2e-spec.ts`, `test/auth.e2e-spec.ts` (`ADR-070`, Testing
+  Phase 1), `test/building.e2e-spec.ts` (`ADR-073`, Testing Phase 2a),
   `test/finance.e2e-spec.ts` (`ADR-074`, Testing Phase 2b),
   `test/governance.e2e-spec.ts` (`ADR-075`, Testing Phase 3a),
   `test/cases.e2e-spec.ts` (`ADR-076`, Testing Phase 3b),
-  `test/documents.e2e-spec.ts` (`ADR-077`, Testing Phase 3c), and
-  `test/notifications.e2e-spec.ts` (`ADR-078`, Testing Phase 3d). No
-  controller-level or full-flow e2e coverage exists yet for Gamification/
-  BackOffice/Marketplace — a real gap for a formal QA pass, named explicitly
-  in `24_Release_Readiness_Audit_v1.0` §3.4 (Testing Phase 2 and Phase
-  3a/3b/3c/3d now done — see `19_Current_Sprint`'s own Testing Phase
-  numbering for what's still open beyond them).
+  `test/documents.e2e-spec.ts` (`ADR-077`, Testing Phase 3c),
+  `test/notifications.e2e-spec.ts` (`ADR-078`, Testing Phase 3d), and
+  `test/gamification.e2e-spec.ts` (`ADR-079`, Testing Phase 3e). No
+  controller-level or full-flow e2e coverage exists yet for BackOffice/
+  Marketplace — a real gap for a formal QA pass, named explicitly in
+  `24_Release_Readiness_Audit_v1.0` §3.4 (Testing Phase 2 and Phase
+  3a/3b/3c/3d/3e now done, closing Testing Phase 3 in full — see
+  `19_Current_Sprint`'s own Testing Phase numbering for what's still open
+  beyond them).
 - **Formal Performance Review complete (`27_Performance_Review_v1.0`)** —
   static, source-grounded review (this sandbox has never had live traffic to
   load-test). Headline finding — `08_API_Architecture`'s own frozen Page/
@@ -353,61 +358,57 @@ end-to-end via the user's real local toolchain. The API + Database contract
 is frozen and tagged (`ADR-062`, `v1.0-api-contract`). Both Sprint 24-named
 release blockers (Git repository, migration history) are resolved (`ADR-063`)
 and confirmed clean, along with the `package-lock.json` gap discovered while
-building CI (`ADR-064`). Auth, Building, Finance, Governance, Cases, and Documents flow
-e2e coverage all exist and are confirmed working end-to-end (`ADR-070`,
-Testing Phase 1; `ADR-073`, Testing Phase 2a; `ADR-074`, Testing Phase 2b;
-`ADR-075`, Testing Phase 3a; `ADR-076`, Testing Phase 3b — confirmed,
-"سبز شد," after two round-1 fixes, closing Testing Phase 3a+3b in full;
-`ADR-077`, Testing Phase 3c — confirmed, "سبز شد," after five real-toolchain
-rounds, zero console errors on the final round).
-Notifications flow e2e coverage (`ADR-078`, Testing Phase 3d) has been built
-and delivered, pending confirmation via the user's real toolchain, same as
-every prior e2e delivery before its own first real run. All four
+building CI (`ADR-064`). Auth, Building, Finance, Governance, Cases,
+Documents, Notifications, and Gamification flow e2e coverage all exist and
+are confirmed working end-to-end (`ADR-070`, Testing Phase 1; `ADR-073`,
+Testing Phase 2a; `ADR-074`, Testing Phase 2b; `ADR-075`, Testing Phase 3a;
+`ADR-076`, Testing Phase 3b — confirmed, "سبز شد," after two round-1 fixes,
+closing Testing Phase 3a+3b in full; `ADR-077`, Testing Phase 3c —
+confirmed, "سبز شد," after five real-toolchain rounds, zero console errors
+on the final round; `ADR-078`, Testing Phase 3d — confirmed, "سبز شد," the
+cleanest first-ever run in this entire Testing-phase series, no fix round
+needed; `ADR-079`, Testing Phase 3e — confirmed, "سبز شد," after one
+round-1 fix for two non-fatal concurrent-deletion races, closing Testing
+Phase 3 — Governance through Gamification, 3a–3e — in full). All four
 originally-named Release Readiness categories — Testing, Documentation,
 Performance, Security — have now been picked up at least once (`ADR-070`/
-`ADR-073`/`ADR-074`/`ADR-075`/`ADR-076`/`ADR-077`/`ADR-078`; `ADR-071`;
-`27_Performance_Review_v1.0`; `26_Security_Review_v1.0`), and the Performance
-Review's own headline finding (frozen Page/Limit pagination never
-implemented) is now closed by `ADR-072`. **Remaining before overall MVP
-release readiness: confirming ADR-078 against the user's real toolchain,
-committing a versioned Swagger/OpenAPI snapshot (mechanism ready — `npm run
-docs:export-openapi`, `ADR-071`), and the smaller named follow-ups inside
-each review's own Priority Order** (a real `npm audit` run, measuring the
-frozen numeric Performance Targets, the `detectAnomalies` N+1 fix, and
-others — see `19_Current_Sprint_v2.0`'s Release Readiness section for the
-live, authoritative status).
+`ADR-073`/`ADR-074`/`ADR-075`/`ADR-076`/`ADR-077`/`ADR-078`/`ADR-079`;
+`ADR-071`; `27_Performance_Review_v1.0`; `26_Security_Review_v1.0`), and the
+Performance Review's own headline finding (frozen Page/Limit pagination
+never implemented) is now closed by `ADR-072`. **Remaining before overall
+MVP release readiness: committing a versioned Swagger/OpenAPI snapshot
+(mechanism ready — `npm run docs:export-openapi`, `ADR-071`), Testing
+Phase 3+'s remaining domains (BackOffice/Marketplace), and the smaller
+named follow-ups inside each review's own Priority Order** (a real
+`npm audit` run, measuring the frozen numeric Performance Targets, the
+`detectAnomalies` N+1 fix, and others — see `19_Current_Sprint_v2.0`'s
+Release Readiness section for the live, authoritative status).
 
 ## Next steps (per `19_Current_Sprint`)
 
-1. Run `npm run test:e2e` for real against `test/notifications.e2e-spec.ts`
-   (`ADR-078`, Testing Phase 3d) — this delivery's genuine first-ever
-   execution, not yet confirmed against the user's real toolchain.
-2. Run `npm run docs:export-openapi` against the `v1.0-api-contract` tag and
+1. Run `npm run docs:export-openapi` against the `v1.0-api-contract` tag and
    commit `docs/openapi/v1.0-api-contract.json` — the mechanism exists
    (`ADR-071`), only the actual versioned snapshot commit is still open.
-3. Run a real `npm audit` (`26_Security_Review_v1.0`'s own open item — this
+2. Run a real `npm audit` (`26_Security_Review_v1.0`'s own open item — this
    sandbox has no npm registry access) and write a JWT-secret-rotation
    runbook.
-4. Measure `08_API_Architecture`'s frozen numeric Performance Targets
+3. Measure `08_API_Architecture`'s frozen numeric Performance Targets
    (`<300ms` avg, `<150ms` critical) against real traffic, and batch
    `ComplianceCaseService.detectAnomalies()`'s N+1 existence checks
    (`27_Performance_Review_v1.0` §2.1) next time that service is touched.
-5. Testing Phase 3+: Gamification/BackOffice/Marketplace e2e coverage
-   remains open beyond Auth/Building/Finance/Governance/Cases/Documents/
-   Notifications, continuing the pattern `test/auth.e2e-spec.ts`/`test/
+4. Testing Phase 3+: BackOffice/Marketplace e2e coverage remains open beyond
+   Auth/Building/Finance/Governance/Cases/Documents/Notifications/
+   Gamification, continuing the pattern `test/auth.e2e-spec.ts`/`test/
    building.e2e-spec.ts`/`test/finance.e2e-spec.ts`/`test/governance.
    e2e-spec.ts`/`test/cases.e2e-spec.ts`/`test/documents.e2e-spec.ts`/
-   `test/notifications.e2e-spec.ts` established — not yet scheduled.
-   Gamification's three member-facing read routes need no new fixture work
-   at all, and its `analytics` route is now known-reachable via the same
-   seeded-PLATFORM_ADMIN pattern `ADR-078` established for
-   `NotificationTemplateController` — the strongest, cheapest next
-   candidate. BackOffice's Manager Verification Owner Approval path
-   (`06.03 Rule 002`) is also fully reachable without new fixture work.
-   BackOffice's remaining staff-only surface and Marketplace's moderation
-   half both need a multi-actor `PlatformStaff` bootstrap solved first (see
-   `21_ADRs > ADR-078`'s own Future Review).
-6. Real object storage (S3/MinIO) integration for Documents, and a real
+   `test/notifications.e2e-spec.ts`/`test/gamification.e2e-spec.ts`
+   established — not yet scheduled. BackOffice's Manager Verification Owner
+   Approval path (`06.03 Rule 002`) is fully reachable without new fixture
+   work — the strongest, cheapest next candidate. BackOffice's remaining
+   staff-only surface and Marketplace's moderation half both need a
+   multi-actor `PlatformStaff` bootstrap solved first (see `21_ADRs >
+   ADR-079`'s own Future Review).
+5. Real object storage (S3/MinIO) integration for Documents, and a real
    Push/Email/SMS provider (Firebase Cloud Messaging) for Notifications —
    both need a new npm dependency and a provider decision this sandbox
    cannot make unilaterally.
