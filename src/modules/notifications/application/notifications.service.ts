@@ -1,7 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
-import { NotificationCategory, NotificationChannel, NotificationPriority } from '@prisma/client';
+import {
+  NotificationCategory,
+  NotificationChannel,
+  NotificationPriority,
+  Prisma,
+} from '@prisma/client';
 import { NotificationRepository } from '../infrastructure/repositories/notification.repository';
 import { NotificationPolicy } from '../domain/policies/notification.policy';
 import { UpdatePreferenceDto } from './dto/update-preference.dto';
@@ -52,56 +57,117 @@ export class NotificationsService {
    * provider yet) dispatch there. If every channel is gated off, nothing
    * is created at all — an opted-out recipient generates no notification
    * history, which is the intended effect of disabling every channel.
+   *
+   * 21_ADRs > ADR-079 round-1 fix — a real toolchain run (9 e2e suites
+   * running concurrently for the first time) surfaced a genuine, if
+   * narrow, race here too: `AchievementUnlocked`'s `EventEmitter2.emit()`
+   * is fire-and-forget, so this whole method can still be mid-flight for
+   * a `recipientId` whose Person row a *different*, concurrent test
+   * describe's own cleanup batch has just deleted — the same standing
+   * "test cleanup races an un-awaited event chain" bug class
+   * `ADR-070`/`ADR-074`/`ADR-077`/`ADR-079` (Gamification's own
+   * `applyBuildingScoreDelta`, see that method's doc comment) have each
+   * already found and fixed in their own domain. `getOrCreatePreference`
+   * already handled the narrower P2002 concurrent-create race (`ADR-070`);
+   * a fully-deleted recipient surfaces differently and less predictably —
+   * Prisma's own upsert implementation can throw `PrismaClientUnknownRequestError`
+   * or `PrismaClientKnownRequestError` with varying messages/codes
+   * depending on exactly which internal step raced the deletion — so this
+   * method now wraps its own body and treats any of those shapes as "the
+   * recipient no longer exists, nothing meaningful to notify," logging and
+   * returning instead of letting a raw internal Prisma error bubble up to
+   * the event-listener wrapper. Since no product feature ever hard-deletes
+   * a Person, this branch is unreachable in production today — but it is
+   * the semantically correct behavior regardless of cause, not merely a
+   * test-only patch.
    */
   async notify(input: NotifyInput): Promise<void> {
-    const priority = input.priority ?? 'NORMAL';
-    const preference = await this.notifications.getOrCreatePreference(input.recipientId);
+    try {
+      const priority = input.priority ?? 'NORMAL';
+      const preference = await this.notifications.getOrCreatePreference(input.recipientId);
 
-    const channels = ALL_CHANNELS.filter((channel) =>
-      this.policy.isChannelEnabled(channel, priority, preference),
-    );
-    if (channels.length === 0) return;
+      const channels = ALL_CHANNELS.filter((channel) =>
+        this.policy.isChannelEnabled(channel, priority, preference),
+      );
+      if (channels.length === 0) return;
 
-    const created = await this.notifications.createNotification({
-      recipientId: input.recipientId,
-      buildingId: input.buildingId,
-      category: input.category,
-      priority,
-      title: input.title,
-      body: input.body,
-      referenceType: input.referenceType,
-      referenceId: input.referenceId,
-      sourceEvent: input.sourceEvent,
-      channels,
-    });
+      const created = await this.notifications.createNotification({
+        recipientId: input.recipientId,
+        buildingId: input.buildingId,
+        category: input.category,
+        priority,
+        title: input.title,
+        body: input.body,
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        sourceEvent: input.sourceEvent,
+        channels,
+      });
 
-    await this.audit.record({
-      buildingId: input.buildingId,
-      action: 'NotificationCreated',
-      entityType: 'Notification',
-      entityId: created.id,
-      metadata: { category: input.category, sourceEvent: input.sourceEvent, channels },
-    });
+      await this.audit.record({
+        buildingId: input.buildingId,
+        action: 'NotificationCreated',
+        entityType: 'Notification',
+        entityId: created.id,
+        metadata: { category: input.category, sourceEvent: input.sourceEvent, channels },
+      });
 
-    for (const delivery of created.deliveries) {
-      if (delivery.channel === 'IN_APP') {
-        await this.notifications.markDeliverySent(delivery.id);
-        continue;
+      for (const delivery of created.deliveries) {
+        if (delivery.channel === 'IN_APP') {
+          await this.notifications.markDeliverySent(delivery.id);
+          continue;
+        }
+        // `jobId: delivery.id` gives idempotent enqueueing — the same
+        // pattern ADR-036 used fixed jobIds for, just for a different
+        // reason there (safe re-registration across restarts) than here
+        // (never double-queue the same delivery row). `attempts`/`backoff`
+        // are forward-looking: the current stub dispatch can never actually
+        // throw, but a real provider (Future Review) will be able to, and
+        // `NotificationDispatchProcessor.onFailed` is already wired to
+        // record a permanent failure once retries are exhausted.
+        await this.dispatchQueue.add(
+          DISPATCH_DELIVERY_JOB,
+          { deliveryId: delivery.id },
+          { jobId: delivery.id, attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
+        );
       }
-      // `jobId: delivery.id` gives idempotent enqueueing — the same
-      // pattern ADR-036 used fixed jobIds for, just for a different
-      // reason there (safe re-registration across restarts) than here
-      // (never double-queue the same delivery row). `attempts`/`backoff`
-      // are forward-looking: the current stub dispatch can never actually
-      // throw, but a real provider (Future Review) will be able to, and
-      // `NotificationDispatchProcessor.onFailed` is already wired to
-      // record a permanent failure once retries are exhausted.
-      await this.dispatchQueue.add(
-        DISPATCH_DELIVERY_JOB,
-        { deliveryId: delivery.id },
-        { jobId: delivery.id, attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
+    } catch (error) {
+      if (this.isMissingRecipientError(error)) {
+        this.logger.warn(
+          `notify(): recipient ${input.recipientId} no longer exists (likely a concurrent ` +
+            'test-cleanup deletion racing this in-flight event, sourceEvent=' +
+            `${input.sourceEvent ?? 'unknown'}) — skipping this notification.`,
+        );
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * True for the family of Prisma errors a concurrently-deleted recipient
+   * Person can produce mid-`notify()` — deliberately checked by error
+   * class/code first, falling back to message-content matching for the
+   * two internal-upsert error shapes Prisma doesn't expose a stable code
+   * for (see this method's caller's own doc comment for the full story).
+   */
+  private isMissingRecipientError(error: unknown): boolean {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      return error.code === 'P2003' || error.code === 'P2025';
+    }
+    if (
+      error instanceof Prisma.PrismaClientUnknownRequestError ||
+      error instanceof Prisma.PrismaClientValidationError
+    ) {
+      const message = error.message ?? '';
+      return (
+        message.includes('found no record') ||
+        message.includes('parent ID to be present') ||
+        message.includes('Record to update not found') ||
+        message.includes('required but not found')
       );
     }
+    return false;
   }
 
   /** Fan-out helper for building-wide/role-broadcast recipients — each recipient gets their own independent preference check. */

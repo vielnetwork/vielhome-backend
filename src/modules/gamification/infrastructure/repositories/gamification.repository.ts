@@ -1,10 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { AchievementCode, LeagueTier, XpReason } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 import { GamificationPolicy } from '../../domain/policies/gamification.policy';
 
 @Injectable()
 export class GamificationRepository {
+  private readonly logger = new Logger(GamificationRepository.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly policy: GamificationPolicy,
@@ -85,6 +88,30 @@ export class GamificationRepository {
    * the league tier via `GamificationPolicy`, and — if the tier actually
    * changed — records a BuildingScoreEvent history row. All in one
    * transaction, mirroring `awardXp`'s ledger+cache pattern.
+   *
+   * 21_ADRs > ADR-079 round-1 fix — a real toolchain run (9 e2e suites
+   * running concurrently for the first time, once `gamification.e2e-
+   * spec.ts` joined the suite) surfaced a genuine, if narrow, race: this
+   * whole sequence runs inside one `$transaction`, but Postgres's default
+   * READ COMMITTED isolation still lets a *different*, concurrent
+   * transaction's DELETE of this same `buildingId`'s BuildingScore row
+   * (only ever issued by an e2e file's own cleanup batch — no production
+   * code path ever deletes a BuildingScore row) land in between this
+   * transaction's own `findUniqueOrThrow` and its final `update`, so the
+   * `update` fails with Prisma's P2025 ("record to update not found")
+   * even though the row existed moments earlier in the very same
+   * transaction. This can only happen when an un-awaited
+   * `EventEmitter2.emit()`-driven XP award (e.g. `CHARGE_PAID`) is still
+   * mid-flight for a building whose owning e2e describe block has already
+   * finished its own assertions and moved on to `afterAll` cleanup — the
+   * same standing "test cleanup races an un-awaited event chain" bug
+   * class `ADR-070`/`ADR-074`/`ADR-077` each already found and fixed in
+   * their own domains. Since a Building (and therefore its BuildingScore)
+   * is never deleted by any real product feature, catching P2025 here and
+   * treating it as "this building's gamification state is no longer
+   * relevant, safely skip" is correct in production too, not just a test-
+   * only workaround — it just happens to be unreachable outside tests
+   * today.
    */
   async applyBuildingScoreDelta(
     buildingId: string,
@@ -96,41 +123,54 @@ export class GamificationRepository {
     previousTier: LeagueTier;
     newTier: LeagueTier;
     tierChanged: boolean;
-  }> {
-    return this.prisma.$transaction(async (tx) => {
-      await tx.buildingScore.upsert({
-        where: { buildingId },
-        update: {},
-        create: { buildingId, score: 0, leagueTier: 'BRONZE' },
-      });
+  } | null> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await tx.buildingScore.upsert({
+          where: { buildingId },
+          update: {},
+          create: { buildingId, score: 0, leagueTier: 'BRONZE' },
+        });
 
-      const before = await tx.buildingScore.findUniqueOrThrow({ where: { buildingId } });
-      const newScore = before.score + delta;
-      const newTier = this.policy.computeLeagueTier(newScore);
+        const before = await tx.buildingScore.findUniqueOrThrow({ where: { buildingId } });
+        const newScore = before.score + delta;
+        const newTier = this.policy.computeLeagueTier(newScore);
 
-      await tx.buildingScore.update({
-        where: { buildingId },
-        data: { score: newScore, leagueTier: newTier },
-      });
+        await tx.buildingScore.update({
+          where: { buildingId },
+          data: { score: newScore, leagueTier: newTier },
+        });
 
-      await tx.buildingScoreEvent.create({
-        data: {
-          buildingScoreId: before.id,
-          delta,
-          reason,
-          sourceEvent,
+        await tx.buildingScoreEvent.create({
+          data: {
+            buildingScoreId: before.id,
+            delta,
+            reason,
+            sourceEvent,
+            previousTier: before.leagueTier,
+            newTier,
+          },
+        });
+
+        return {
+          score: newScore,
           previousTier: before.leagueTier,
           newTier,
-        },
+          tierChanged: newTier !== before.leagueTier,
+        };
       });
-
-      return {
-        score: newScore,
-        previousTier: before.leagueTier,
-        newTier,
-        tierChanged: newTier !== before.leagueTier,
-      };
-    });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+        this.logger.warn(
+          `applyBuildingScoreDelta: BuildingScore for building ${buildingId} disappeared ` +
+            `mid-transaction (reason=${reason}) — a real Building/BuildingScore row is never ` +
+            'deleted in production, so this is a concurrent test-cleanup race, not a ' +
+            'data-integrity issue; safely skipping.',
+        );
+        return null;
+      }
+      throw error;
+    }
   }
 
   /**

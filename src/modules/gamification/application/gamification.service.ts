@@ -184,6 +184,12 @@ export class GamificationService {
       sourceEvent,
     );
 
+    // 21_ADRs > ADR-079 round-1 fix — `null` means the repository caught a
+    // concurrent-deletion race on this building's BuildingScore row (see
+    // its own doc comment); nothing meaningful to emit or audit, safely
+    // skip the rest of this side effect rather than throw on `result.score`.
+    if (!result) return;
+
     this.events.emit(
       'BuildingScoreChanged',
       new BuildingScoreChangedEvent(
