@@ -827,6 +827,23 @@ describe('Finance (e2e) — Adjustments & Unit Debt (21_ADRs > ADR-037/ADR-053)'
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
     expect(debtRes.body.data.totalDebt).toBe(0);
+
+    // ADR-077 round-4 finding: same gap as the "rejects a refund amount
+    // greater than the original payment" fix (round-1, commit `705b941`)
+    // — this is the last `it` in this describe and doesn't assert on
+    // Gamification, so the `reportAndApprovePayment` above had no
+    // `waitFor()` either, leaving the same un-awaited CHARGE_PAID event
+    // chain able to still be in flight when this describe's own
+    // `afterAll` runs. A full pass over every `reportAndApprovePayment`/
+    // approve call in this file (not just the one that had already
+    // surfaced) found this instance too — fixed proactively rather than
+    // waiting for a future round to hit it.
+    const xp = await waitFor(() =>
+      prisma.xpTransaction.findFirst({
+        where: { referenceType: 'PAYMENT', referenceId: paymentId, reason: 'CHARGE_PAID' },
+      }),
+    );
+    expect(xp?.amount).toBe(20);
   });
 });
 
@@ -1072,7 +1089,7 @@ describe('Finance (e2e) — Reporting (21_ADRs > ADR-055 / ADR-057)', () => {
     // unit2 — deliberately leaves one unit's debt outstanding so
     // totalOutstanding/collectionRate below are non-trivial fractions, not
     // 0 or 1.
-    await reportAndApprovePayment(
+    const paymentId = await reportAndApprovePayment(
       app,
       buildingId,
       unit1Id,
@@ -1081,6 +1098,18 @@ describe('Finance (e2e) — Reporting (21_ADRs > ADR-055 / ADR-057)', () => {
       1_000_000,
     );
     await reportPayment(app, buildingId, unit2Id, manager.accessToken, 500_000);
+
+    // ADR-077 round-4 finding: same gap as the "rejects a refund amount
+    // greater than the original payment" fix (round-1, commit `705b941`)
+    // — none of this describe's own `it`s assert on Gamification, so
+    // this `beforeAll`'s own approval had no `waitFor()` either, leaving
+    // the CHARGE_PAID event chain able to still be in flight once every
+    // `it` below finishes and this describe's own `afterAll` runs.
+    await waitFor(() =>
+      prisma.xpTransaction.findFirst({
+        where: { referenceType: 'PAYMENT', referenceId: paymentId, reason: 'CHARGE_PAID' },
+      }),
+    );
   });
 
   afterAll(async () => {
