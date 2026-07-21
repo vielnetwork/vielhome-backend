@@ -993,6 +993,31 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
       200_000,
     );
 
+    // Round-1 finding (ADR-077's own toolchain round, surfaced only once a
+    // 7th e2e file — documents.e2e-spec.ts — joined the suite and shifted
+    // timing): this test never asserts on Gamification, so unlike every
+    // other `reportAndApprovePayment`/approve call in this file it had no
+    // `waitFor()` after it — the un-awaited CHARGE_PAID event chain
+    // (`GamificationEventListener.onPaymentApproved` -> `awardXp` ->
+    // `applyBuildingScoreDelta`) could still be in flight when this
+    // describe's own `afterAll` (`cleanupBuildings`) deletes `buildingId`'s
+    // `BuildingScore` row out from under it, surfacing as a caught-and-
+    // logged (non-test-failing) `tx.buildingScore.update()` "Record to
+    // update not found" error. `BuildingScoreEvent` carries no per-payment
+    // reference to poll on directly (unlike `XpTransaction`'s
+    // `referenceType`/`referenceId`), so this uses the same signal every
+    // clawback assertion elsewhere in this file already relies on as
+    // "the handler ran": `applyBuildingScoreDelta` is the very next
+    // `await` inside `GamificationService.awardXp` after the XpTransaction
+    // write this waits for, so once that row is visible the handler is at
+    // most one quick transaction away from done.
+    const xp = await waitFor(() =>
+      prisma.xpTransaction.findFirst({
+        where: { referenceType: 'PAYMENT', referenceId: paymentCId, reason: 'CHARGE_PAID' },
+      }),
+    );
+    expect(xp?.amount).toBe(20);
+
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/payments/${paymentCId}/refund`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
