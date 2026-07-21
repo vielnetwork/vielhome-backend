@@ -1,10 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import {
-  NotificationCategory,
-  NotificationChannel,
-  NotificationPriority,
-  Prisma,
-} from '@prisma/client';
+import { NotificationCategory, NotificationChannel, NotificationPriority } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 
 @Injectable()
@@ -126,8 +121,25 @@ export class NotificationRepository {
    * `onXpAwarded`, both gated on `isNewPerson`, both calling `notify()`
    * for the same `personId`). Not request-blocking — NestJS's own
    * event-listener wrapper catches and logs the failure — but the losing
-   * caller's notification was silently never created. Catching P2002 and
-   * reading back the winner's row closes that gap.
+   * caller's notification was silently never created.
+   *
+   * 21_ADRs > ADR-077 round-2 — the original fix here caught specifically
+   * `P2002` (a clean unique-constraint violation) and re-read the winner's
+   * row. The user's real toolchain then hit a *second*, differently-shaped
+   * failure mode of this exact same race — once a growing e2e suite count
+   * (this project's now-familiar "more suites, tighter timing" pattern,
+   * already seen in `ADR-073`'s `RUN_ID` collision and `ADR-077`'s own
+   * round-1 `BuildingScore` finding) made two concurrent `upsert()` calls
+   * for the same brand-new `personId` interleave differently — Prisma's
+   * own non-atomic check-then-act upsert plan surfaced a query-engine-
+   * internal error ("Query interpretation error ... Expected a valid
+   * parent ID to be present for create follow-up for upsert query")
+   * instead of the clean `P2002` the first fix assumed was the only
+   * shape this race could take. Both are the same underlying condition —
+   * someone else's concurrent call already created this `personId`'s row
+   * — so this no longer special-cases on Prisma's error code at all: any
+   * failure here re-reads directly, and only re-throws if the row
+   * genuinely still doesn't exist (a real, different error).
    */
   async getOrCreatePreference(personId: string) {
     try {
@@ -137,9 +149,10 @@ export class NotificationRepository {
         create: { personId },
       });
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        return this.prisma.notificationPreference.findUniqueOrThrow({ where: { personId } });
-      }
+      const existing = await this.prisma.notificationPreference.findUnique({
+        where: { personId },
+      });
+      if (existing) return existing;
       throw error;
     }
   }
