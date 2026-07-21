@@ -36,18 +36,44 @@ export class NotificationRepository {
     });
   }
 
-  markDeliverySent(deliveryId: string) {
-    return this.prisma.notificationDelivery.update({
-      where: { id: deliveryId },
-      data: { status: 'SENT', sentAt: new Date() },
+  /**
+   * 21_ADRs > ADR-077 round-3 — the exact same "un-awaited `EventEmitter2
+   * .emit()` chain still in flight when a test's own cleanup deletes the
+   * rows it's about to write to" race already found in `finance.e2e-spec
+   * .ts`'s `BuildingScore` update (round 1) and `getOrCreatePreference`'s
+   * upsert (round 2) also reaches here: `notify()` creates a
+   * `NotificationDelivery` row and immediately marks it `SENT`, but if the
+   * describe that triggered it has already moved on to its own `afterAll`
+   * cleanup by the time this handler resumes, the row can be gone before
+   * this `.update()` runs. Unlike the create-side races above, there's no
+   * "re-read and return the winner's row" recovery here — the record is
+   * gone, on purpose (test cleanup, not a real conflict), so there is
+   * nothing left to mark. Treated as a safe no-op rather than re-thrown.
+   */
+  async markDeliverySent(deliveryId: string): Promise<void> {
+    await this.updateDeliveryIfStillPresent(deliveryId, { status: 'SENT', sentAt: new Date() });
+  }
+
+  async markDeliveryFailed(deliveryId: string, reason: string): Promise<void> {
+    await this.updateDeliveryIfStillPresent(deliveryId, {
+      status: 'FAILED',
+      failureReason: reason,
     });
   }
 
-  markDeliveryFailed(deliveryId: string, reason: string) {
-    return this.prisma.notificationDelivery.update({
-      where: { id: deliveryId },
-      data: { status: 'FAILED', failureReason: reason },
-    });
+  private async updateDeliveryIfStillPresent(
+    deliveryId: string,
+    data: { status: 'SENT' | 'FAILED'; sentAt?: Date; failureReason?: string },
+  ): Promise<void> {
+    try {
+      await this.prisma.notificationDelivery.update({ where: { id: deliveryId }, data });
+    } catch (error) {
+      const stillExists = await this.prisma.notificationDelivery.findUnique({
+        where: { id: deliveryId },
+      });
+      if (!stillExists) return;
+      throw error;
+    }
   }
 
   /** Used by `NotificationDispatchProcessor` (21_ADRs > ADR-039) — a delivery row plus the parent Notification's own recipient/title, everything the stub dispatch needs to log a message and decide whether it's still PENDING. */
@@ -137,9 +163,19 @@ export class NotificationRepository {
    * instead of the clean `P2002` the first fix assumed was the only
    * shape this race could take. Both are the same underlying condition —
    * someone else's concurrent call already created this `personId`'s row
-   * — so this no longer special-cases on Prisma's error code at all: any
-   * failure here re-reads directly, and only re-throws if the row
-   * genuinely still doesn't exist (a real, different error).
+   * — so this no longer special-cases on Prisma's error code at all.
+   *
+   * 21_ADRs > ADR-077 round-3 — a single immediate re-read still wasn't
+   * always enough: with registration now firing three concurrent
+   * `notify()` calls for the same brand-new person (`onPersonAuthenticated`
+   * , `onXpAwarded`, and — once that XP unlocks `FIRST_STEPS` —
+   * `onAchievementUnlocked`), the caller whose own `upsert()` lost the
+   * race can still read a moment *before* whichever of the other two
+   * actually wins commits its row, so `findUnique` can legitimately find
+   * nothing yet even though this is the same benign race. Reused this
+   * file's own `waitFor`-style short-retry idiom (already established in
+   * every Testing-phase e2e file for this exact class of async-timing
+   * gap) instead of a single-shot re-read.
    */
   async getOrCreatePreference(personId: string) {
     try {
@@ -149,10 +185,13 @@ export class NotificationRepository {
         create: { personId },
       });
     } catch (error) {
-      const existing = await this.prisma.notificationPreference.findUnique({
-        where: { personId },
-      });
-      if (existing) return existing;
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        const existing = await this.prisma.notificationPreference.findUnique({
+          where: { personId },
+        });
+        if (existing) return existing;
+        if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       throw error;
     }
   }
