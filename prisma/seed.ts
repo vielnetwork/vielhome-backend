@@ -1,3 +1,10 @@
+// ADR-076 round-1 finding: this script runs standalone via `ts-node
+// prisma/seed.ts` (not through Nest's `ConfigModule.forRoot()`, which is
+// what loads `.env` for `npm run test:e2e`/`npm run start`) — without this
+// explicit load, `PrismaClient` below sees `DATABASE_URL` as undefined and
+// fails immediately. `dotenv` is already an installed transitive
+// dependency (via `@nestjs/config`), so no new dependency is introduced.
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 // Relative import (not the `@modules/*` tsconfig path alias) — this file
 // runs directly via `ts-node prisma/seed.ts` (see package.json's
