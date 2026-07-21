@@ -555,11 +555,12 @@ describe('Governance (e2e) — Voting Lifecycle & Vote Target Scope (ADR-024/041
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
-    ({ founder, owner: owner1, buildingId, unitIds } = await establishVerifiedManagerBuilding(
-      app,
-      prisma,
-      2,
-    ));
+    ({
+      founder,
+      owner: owner1,
+      buildingId,
+      unitIds,
+    } = await establishVerifiedManagerBuilding(app, prisma, 2));
     createdPhones.push(founder.phone, owner1.phone);
     createdBuildingIds.push(buildingId);
 
@@ -782,11 +783,12 @@ describe('Governance (e2e) — Manager Election via Vote (06.06 Rule 015 — ADR
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
-    ({ founder, owner: owner1, buildingId, unitIds } = await establishVerifiedManagerBuilding(
-      app,
-      prisma,
-      3,
-    ));
+    ({
+      founder,
+      owner: owner1,
+      buildingId,
+      unitIds,
+    } = await establishVerifiedManagerBuilding(app, prisma, 3));
     createdPhones.push(founder.phone, owner1.phone);
     createdBuildingIds.push(buildingId);
 

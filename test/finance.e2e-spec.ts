@@ -818,9 +818,9 @@ describe('Finance (e2e) — Adjustments & Unit Debt (21_ADRs > ADR-037/ADR-053)'
     const allocations = await prisma.paymentAllocation.findMany({ where: { paymentId } });
     expect(allocations).toHaveLength(2);
     expect(allocations.some((a) => a.chargeItemId === item?.id && a.amount === 300_000)).toBe(true);
-    expect(
-      allocations.some((a) => a.adjustmentId === adjustment?.id && a.amount === 150_000),
-    ).toBe(true);
+    expect(allocations.some((a) => a.adjustmentId === adjustment?.id && a.amount === 150_000)).toBe(
+      true,
+    );
 
     const debtRes = await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingId}/units/${unitId}/debt`)
