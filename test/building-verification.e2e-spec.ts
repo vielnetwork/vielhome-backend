@@ -358,16 +358,44 @@ async function loginAsSeededStaff(
  * Cleanup for the seeded-staff describe is deliberately narrower than
  * `cleanupPhones` — deletes only this run's own `RefreshToken`/`Device`/
  * `OtpRequest` rows for the two seeded phones, never the `Person`/
- * `PlatformStaff` rows themselves (persistent shared dev fixtures). Copied
- * verbatim from `ADR-078`.
+ * `PlatformStaff` rows themselves (persistent shared dev fixtures).
+ * Originally copied verbatim from `ADR-078`; as of `ADR-085` round 1, wrapped
+ * in the same retry-on-P2003 pattern every sibling cleanup helper below
+ * already uses. At 15 concurrent e2e suites sharing these two fixed seeded
+ * phones, this file's own `RefreshToken`/`Device` deletes can lose a race
+ * against another suite's concurrent `loginAsSeededStaff` call inserting a
+ * fresh `RefreshToken` (referencing a `Device`) for the same phone in the gap
+ * between the two deletes, causing a `refresh_tokens_deviceId_fkey`
+ * violation on the `Device` deleteMany. Same risk category as the
+ * `loginAsSeededStaff` OTP-race `ADR-083` round 1 already fixed — a
+ * different mechanism (cleanup-time, not login-time), first exposed once
+ * suite count grew to 15.
  */
-async function cleanupStaffLoginArtifacts(
+async function deleteStaffLoginArtifactsOnceBatch(
   prisma: PrismaService,
   phones: string[],
 ): Promise<void> {
   await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
+}
+
+async function cleanupStaffLoginArtifacts(
+  prisma: PrismaService,
+  phones: string[],
+): Promise<void> {
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await deleteStaffLoginArtifactsOnceBatch(prisma, phones);
+      return;
+    } catch (error) {
+      const isForeignKeyError =
+        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
+      if (!isForeignKeyError || attempt === maxAttempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
+    }
+  }
 }
 
 function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
