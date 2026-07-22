@@ -7,6 +7,7 @@ import { AppModule } from '../src/app.module';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
+import { AuthService } from '../src/modules/foundation/auth/application/auth.service';
 import type { AppConfig } from '../src/config/configuration';
 
 // 21_ADRs > ADR-083 — Testing Phase 4d: Fraud & Abuse Center (BackOffice,
@@ -347,6 +348,46 @@ async function requestOtpAndCaptureCode(
   return match[1];
 }
 
+/**
+ * ADR-085 round-7 finding/fix — replaces this file's own round-2/round-6
+ * `authApp` (a second `bootstrapTestApp()` instance, meant to give staff
+ * login its own `POST /auth/otp/request` throttle budget separate from
+ * founder registration's/senior-reviewer-elevation's). Round 5/6 (on this
+ * describe's own sibling, `building-verification.e2e-spec.ts`) proved a
+ * SECOND `INestApplication` within the same Jest worker is unsafe
+ * regardless of when it's closed: `EventEmitterModule.forRoot()`'s
+ * `EventEmitter2` instance is not isolated per `Test.createTestingModule()`
+ * compile the way every other provider is, so two simultaneously-open
+ * apps double-fire every `@OnEvent` listener, and closing EITHER app
+ * appears to wipe ALL listeners off that same shared instance.
+ *
+ * The real fix needs no second app: `ThrottlerGuard` only intercepts
+ * requests routed through Nest's HTTP layer — calling
+ * `AuthService.requestOtp` directly via `app.get(AuthService)` runs the
+ * exact same code (same `OtpRequest` row created, same `console.log` line
+ * this helper's own capture logic depends on) without ever passing
+ * through the guard, so it can never compete with founder registration's
+ * budget. Only staff login (whose own retry-on-stale-code loop, ADR-083
+ * round 1, is what actually risks exhausting a shared budget) uses this —
+ * `registerPerson` keeps going through the real HTTP endpoint via
+ * `requestOtpAndCaptureCode` above.
+ */
+async function requestOtpAndCaptureCodeDirect(
+  app: INestApplication,
+  phone: string,
+  purpose: 'LOGIN' | 'REGISTER' | 'VERIFY_PHONE' = 'LOGIN',
+): Promise<string> {
+  const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  await app.get(AuthService).requestOtp({ phone, purpose }, 'test-direct-otp-request');
+
+  const line = logSpy.mock.calls.map((args) => String(args[0])).find((l) => l.includes(phone));
+  logSpy.mockRestore();
+  if (!line) throw new Error(`No OTP log line captured for ${phone}`);
+  const match = line.match(/:\s*(\d+)\s*—/);
+  if (!match) throw new Error(`Could not parse OTP code out of log line: ${line}`);
+  return match[1];
+}
+
 function verifyOtp(app: INestApplication, params: { phone: string; code: string }) {
   return request(app.getHttpServer())
     .post('/api/v1/auth/otp/verify')
@@ -408,7 +449,7 @@ async function loginAsSeededStaff(
 ): Promise<RegisteredPerson> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCode(app, phone);
+    const code = await requestOtpAndCaptureCodeDirect(app, phone);
     const res = await verifyOtp(app, { phone, code });
     if (res.status === 200) {
       return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
@@ -758,21 +799,20 @@ describe('Fraud & Abuse Center (e2e) — Report, Case Lifecycle & Metrics (07.03
  */
 describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, ADR-043/044)', () => {
   // Budget: 3 calls to POST /auth/otp/request on `app` (targetPersonSuspend,
-  // targetPersonWarn, ad-hoc SENIOR_REVIEWER register), plus 2 more on a
-  // SEPARATE `authApp` (REVIEWER login, PLATFORM_ADMIN login) — isolated
-  // onto its own throttle bucket. ADR-085 round-2 finding: this describe
-  // originally shared one app and one exactly-5-zero-slack budget across
-  // both concerns; `loginAsSeededStaff`'s own retry-on-stale-code loop
-  // (ADR-083 round 1) silently spends extra `POST /auth/otp/request` calls
-  // under real cross-file seeded-phone contention — at 15 concurrent
-  // suites, `manager-verification.e2e-spec.ts`'s structurally identical
-  // single-app budget was observed to 429 once contention consumed even
-  // one extra token via a login retry, so this describe (same shape, same
-  // risk, not yet observed to fail) gets the same fix pre-emptively.
-  // Splitting staff login onto its own app gives each concern its own full
-  // 5-request ceiling.
+  // targetPersonWarn, ad-hoc SENIOR_REVIEWER register) — REVIEWER/
+  // PLATFORM_ADMIN login no longer count against this budget at all
+  // (ADR-085 round 7): `loginAsSeededStaff` now requests its OTP codes via
+  // a direct `AuthService.requestOtp` DI call
+  // (`requestOtpAndCaptureCodeDirect`), bypassing `ThrottlerGuard`
+  // entirely rather than competing with this describe's other calls for
+  // the same budget. This replaces ADR-085 round-2/round-6's own
+  // `authApp` (a second `bootstrapTestApp()` instance, including round 6's
+  // own reordering to minimize its overlap window) — see this hook's own
+  // closing comment for why a second app turned out to be unsafe here
+  // regardless of when it's closed, making the reordering moot: with only
+  // one app, staff logins can go back to being interleaved wherever's most
+  // natural again.
   let app: INestApplication;
-  let authApp: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const staffPhones: string[] = [];
@@ -800,27 +840,8 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     createdPhones.push(targetWarn.phone);
     createdPersonIds.push(targetWarn.personId);
 
-    // ADR-085 round-6 finding/fix: `authApp` now bootstraps right here —
-    // immediately before the two logins it exists for — and closes right
-    // after them, rather than being opened at the top of this hook and
-    // left open (as originally structured, interleaved with the
-    // `registerPerson(app)` calls above) until this describe's own
-    // `afterAll`. See this hook's own closing comment (below the fraud
-    // case setup calls) for the full root-cause explanation: while `app`
-    // and `authApp` are BOTH open, every `@OnEvent` listener registered by
-    // EITHER app's own providers fires for events emitted through EITHER
-    // app's HTTP server, so any event fired on `app` — including the
-    // `registerPerson` calls above, had `authApp` already been open at
-    // that point — would double-fire every listener. Reordering so both
-    // logins happen back-to-back, with `authApp` bootstrapped only right
-    // before them and closed immediately after, minimizes that window to
-    // zero `app`-side activity.
-    ({ app: authApp } = await bootstrapTestApp());
-    reviewer = await loginAsSeededStaff(authApp, PLATFORM_REVIEWER_PHONE);
+    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    admin = await loginAsSeededStaff(authApp, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    await authApp.close();
 
     seniorReviewer = await registerPerson(app);
     createdPhones.push(seniorReviewer.phone);
@@ -832,6 +853,9 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     await prisma.platformStaff.create({
       data: { personId: seniorReviewer.personId, role: 'SENIOR_REVIEWER', isActive: true },
     });
+
+    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
+    staffPhones.push(PLATFORM_ADMIN_PHONE);
 
     const caseSuspendRes = await request(app.getHttpServer())
       .post('/api/v1/backoffice/fraud-cases')
@@ -863,25 +887,21 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
       .send({ signalType: 'OTHER', targetPersonId: targetSuspend.personId })
       .expect(201);
     openCaseId = openCaseRes.body.data.id;
-    // ADR-085 round-6 finding — the REAL root cause (confirmed directly
-    // via diagnostic logging in this series' own sibling describe,
-    // `building-verification.e2e-spec.ts`): `EventEmitterModule.forRoot()`'s
-    // `EventEmitter2` instance is not isolated per `Test.createTestingModule()`
-    // compile the way every other provider is — while `app` and `authApp`
-    // (ADR-085 round-2's own throttle-isolation fix) are BOTH open at
-    // once, EVERY `@OnEvent` listener registered by EITHER app's own
-    // providers fires for events emitted through EITHER app's HTTP
-    // server. This describe never observed a visible assertion failure
-    // from it (fraud-case creation doesn't rely on an `orderBy` "latest
-    // row" lookup the way Building Verification's appeal flow does), but
-    // the underlying double-fire (doubled XP/achievement/notification
-    // writes on every `registerPerson` and `loginAsSeededStaff` call
-    // while both apps were open) was silently happening here too — see
-    // this hook's own opening comment for the actual fix (bootstrap
-    // `authApp` immediately before its two logins, close it immediately
-    // after, before any `app`-side activity). The 20000ms timeout below
-    // stays regardless — bootstrapping 2 apps really is genuinely
-    // expensive and worth the headroom on its own merits.
+    // ADR-085 round-3 through round-7 finding, now fully resolved — see
+    // this describe's own sibling, `building-verification.e2e-spec.ts`'s
+    // own beforeAll comment, for the full history. This describe itself
+    // never observed a visible assertion failure from the round 5/6
+    // double-fire/zero-fire mechanism (fraud-case creation doesn't rely
+    // on an `orderBy` "latest row" lookup the way Building Verification's
+    // appeal flow does), but the underlying double-fire (doubled XP/
+    // achievement/notification writes on every `registerPerson` and
+    // `loginAsSeededStaff` call while a second app was open) was silently
+    // happening here too, before round 7 removed the second app entirely
+    // — see `requestOtpAndCaptureCodeDirect`'s own comment above for the
+    // real fix. The 20000ms timeout below stays regardless — this
+    // describe's own beforeAll does enough real work (2 full HTTP round
+    // trips per fraud case × 3 cases, on top of everything else) to be
+    // worth the headroom on its own merits.
   }, 20000);
 
   afterAll(async () => {
@@ -889,8 +909,6 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
     await cleanupPhones(prisma, createdPhones);
     await app.close();
-    // authApp is already closed above, in beforeAll, immediately after the
-    // two logins it exists for (ADR-085 round-6) — not closed again here.
   });
 
   it('rejects enforce with targetType PERSON but no targetPersonId (400)', async () => {

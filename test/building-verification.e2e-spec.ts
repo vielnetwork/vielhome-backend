@@ -7,6 +7,7 @@ import { AppModule } from '../src/app.module';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
+import { AuthService } from '../src/modules/foundation/auth/application/auth.service';
 import type { AppConfig } from '../src/config/configuration';
 
 // 21_ADRs > ADR-081 — Testing Phase 4b: Building Verification (BackOffice,
@@ -276,6 +277,49 @@ async function requestOtpAndCaptureCode(
   return match[1];
 }
 
+/**
+ * ADR-085 round-7 finding/fix — replaces this file's own round-2/round-6
+ * `authApp` (a second `bootstrapTestApp()` instance, meant to give staff
+ * login its own `POST /auth/otp/request` throttle budget separate from
+ * founder registration's). Round 5/6 proved a SECOND `INestApplication`
+ * within the same Jest worker is unsafe here regardless of when it's
+ * closed: `EventEmitterModule.forRoot()`'s `EventEmitter2` instance is
+ * not isolated per `Test.createTestingModule()` compile the way every
+ * other provider is, so two simultaneously-open apps double-fire every
+ * `@OnEvent` listener (round 5's finding), and closing EITHER app appears
+ * to wipe ALL listeners off that same shared instance (round 6's own
+ * fix, re-tested, produced `listenerCount=0` and zero case rows for
+ * every building created afterward — worse than the original bug).
+ *
+ * The real fix doesn't need a second app at all: `ThrottlerGuard` only
+ * intercepts requests routed through Nest's HTTP layer — calling
+ * `AuthService.requestOtp` directly via `app.get(AuthService)` runs the
+ * exact same code (same `OtpRequest` row created, same `console.log` line
+ * this helper's own capture logic depends on) without ever passing
+ * through the guard, so it can never consume — or compete for — the
+ * budget `POST /auth/otp/request`'s hardcoded `@Throttle({limit:5,ttl:
+ * 60_000})` enforces on the HTTP route. Only staff login (whose own
+ * retry-on-stale-code loop, ADR-083 round 1, is what actually risks
+ * exhausting a shared budget) uses this — `registerPerson` keeps going
+ * through the real HTTP endpoint via `requestOtpAndCaptureCode` above,
+ * since a single, non-retried request per founder was never the risk.
+ */
+async function requestOtpAndCaptureCodeDirect(
+  app: INestApplication,
+  phone: string,
+  purpose: 'LOGIN' | 'REGISTER' | 'VERIFY_PHONE' = 'LOGIN',
+): Promise<string> {
+  const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  await app.get(AuthService).requestOtp({ phone, purpose }, 'test-direct-otp-request');
+
+  const line = logSpy.mock.calls.map((args) => String(args[0])).find((l) => l.includes(phone));
+  logSpy.mockRestore();
+  if (!line) throw new Error(`No OTP log line captured for ${phone}`);
+  const match = line.match(/:\s*(\d+)\s*—/);
+  if (!match) throw new Error(`Could not parse OTP code out of log line: ${line}`);
+  return match[1];
+}
+
 function verifyOtp(app: INestApplication, params: { phone: string; code: string }) {
   return request(app.getHttpServer())
     .post('/api/v1/auth/otp/verify')
@@ -338,7 +382,7 @@ async function loginAsSeededStaff(
 ): Promise<RegisteredPerson> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCode(app, phone);
+    const code = await requestOtpAndCaptureCodeDirect(app, phone);
     const res = await verifyOtp(app, { phone, code });
     if (res.status === 200) {
       return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
@@ -543,20 +587,16 @@ describe('Building Verification (e2e) — Auto-Evaluation & Risk-Based Routing (
 
 describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)', () => {
   // Budget: 3 calls to POST /auth/otp/request on `app` (founder1 + founder2
-  // + founder3 registration), plus 2 more on a SEPARATE `authApp` (PLATFORM_
-  // ADMIN login, REVIEWER login) — isolated onto its own throttle bucket.
-  // ADR-085 round-2 finding: this describe originally shared one app and one
-  // exactly-5-zero-slack budget across both concerns; `loginAsSeededStaff`'s
-  // own retry-on-stale-code loop (ADR-083 round 1) silently spends extra
-  // `POST /auth/otp/request` calls under real cross-file seeded-phone
-  // contention — at 15 concurrent suites, `manager-verification.e2e-spec.ts`'s
-  // structurally identical single-app budget was observed to 429 once
-  // contention consumed even one extra token via a login retry, so this
-  // describe (same shape, same risk, not yet observed to fail) gets the
-  // same fix pre-emptively. Splitting staff login onto its own app gives
-  // each concern its own full 5-request ceiling.
+  // + founder3 registration) — PLATFORM_ADMIN/REVIEWER login no longer
+  // count against this budget at all (ADR-085 round 7): `loginAsSeededStaff`
+  // now requests its OTP codes via a direct `AuthService.requestOtp` DI
+  // call (`requestOtpAndCaptureCodeDirect`), bypassing `ThrottlerGuard`
+  // entirely rather than competing with founder registration for the same
+  // budget. This replaces ADR-085 round-2/round-6's own `authApp` (a
+  // second `bootstrapTestApp()` instance) — see this hook's own closing
+  // comment for why a second app turned out to be unsafe here regardless
+  // of when it's closed.
   let app: INestApplication;
-  let authApp: INestApplication;
   let prisma: PrismaService;
   const staffPhones: string[] = [];
   const createdPhones: string[] = [];
@@ -581,17 +621,11 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
-    ({ app: authApp } = await bootstrapTestApp());
 
-    admin = await loginAsSeededStaff(authApp, PLATFORM_ADMIN_PHONE);
+    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
     staffPhones.push(PLATFORM_ADMIN_PHONE);
-    reviewer = await loginAsSeededStaff(authApp, PLATFORM_REVIEWER_PHONE);
+    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    // ADR-085 round-6 finding/fix: closed here, immediately after the two
-    // logins it exists for, rather than left open until this describe's
-    // own `afterAll` — see this describe's own closing comment (below the
-    // `waitForInitialCase` calls) for the full root-cause explanation.
-    await authApp.close();
 
     founder1 = await registerPerson(app);
     createdPhones.push(founder1.phone);
@@ -621,32 +655,33 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     const case3 = await waitForInitialCase(prisma, building3);
     case2Id = case2!.id;
     case3Id = case3!.id;
-    // ADR-085 round-3/4/5/6 finding — the REAL root cause, now confirmed
-    // by direct evidence (round-5 diagnostic logging), superseding both
-    // the round-3 "no code path exists" conclusion and the round-4
-    // "just a beforeAll timeout" theory: `EventEmitterModule.forRoot()`'s
+    // ADR-085 round-3 through round-7 finding, now fully resolved. Rounds
+    // 3/4 misdiagnosed this (a "no code path exists" trace, then a
+    // "beforeAll timeout" theory). Round 5's diagnostic logging then
+    // proved the real cause: `EventEmitterModule.forRoot()`'s
     // `EventEmitter2` instance is not isolated per `Test.createTestingModule()`
-    // compile the way every other provider is — while `app` and `authApp`
-    // (ADR-085 round-2's own throttle-isolation fix) are BOTH open at
-    // once, EVERY `@OnEvent` listener registered by EITHER app's own
-    // providers fires for events emitted through EITHER app's HTTP
-    // server. Round-5 diagnostic logging proved this directly:
-    // `listenerCount('BuildingCreated')` was 3 (one app's worth: Gamification
-    // + Notifications + BackOffice) before `authApp` existed, jumped to 6
-    // the moment this describe's own `authApp` was bootstrapped alongside
-    // `app`, and `BackOfficeEventListener.onBuildingCreated` fired TWICE
-    // per building as a direct result — creating the second, stray
-    // `BuildingVerificationCase` row `getLatestBuildingVerificationCase`
-    // then incorrectly treats as "latest." The same double-fire hit
-    // Gamification's XP/achievement/BuildingScore writes and BackOffice's
-    // own Subscription creation too (all visible as swallowed
-    // `PrismaClientKnownRequestError` "Unique constraint failed" logs from
-    // the second, redundant write racing the first). The real fix is
-    // above: `authApp` is now closed immediately after the two logins it
-    // exists for, before `app` does anything else, closing the window
-    // during which both apps' listeners can coexist — not the 20000ms
-    // timeout below, which stays only because bootstrapping 2 apps really
-    // is genuinely expensive and worth the headroom regardless.
+    // compile the way every other provider is — while `app` and a SECOND
+    // app (round-2's own `authApp`, meant to isolate staff login's own
+    // `POST /auth/otp/request` throttle budget) were BOTH open at once,
+    // every `@OnEvent` listener registered by EITHER app's own providers
+    // fired for events emitted through EITHER app's HTTP server,
+    // `listenerCount('BuildingCreated')` jumping from 3 to 6 the moment
+    // the second app existed and `BackOfficeEventListener.onBuildingCreated`
+    // firing twice per building as a direct result — creating the second,
+    // stray `BuildingVerificationCase` row `getLatestBuildingVerificationCase`
+    // then incorrectly treated as "latest." Round 6 tried closing that
+    // second app immediately after its two logins instead of leaving it
+    // open until `afterAll`; the very next real run instead showed
+    // `listenerCount` dropping to 0 and NO case rows at all for building1/
+    // 2/3 — closing either app apparently clears ALL listeners off the
+    // shared instance, not just that app's own. That proved a second
+    // `INestApplication` is unsafe here regardless of when it's closed.
+    // Round 7's real fix needs no second app at all: see
+    // `requestOtpAndCaptureCodeDirect`'s own comment above —
+    // `loginAsSeededStaff` now requests OTP codes via a direct
+    // `AuthService.requestOtp` DI call, which never passes through
+    // `ThrottlerGuard`, so it can't compete with founder registration's
+    // budget on the one single `app` this describe now uses throughout.
   }, 20000);
 
   afterAll(async () => {
@@ -654,8 +689,6 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     await cleanupPhones(prisma, createdPhones);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
     await app.close();
-    // authApp is already closed above, in beforeAll, immediately after the
-    // two logins it exists for (ADR-085 round-6) — not closed again here.
   });
 
   it('blocks REVIEWER (rank 1, below required SENIOR_REVIEWER) from assigning a case', async () => {
