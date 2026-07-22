@@ -10,6 +10,7 @@ import { CreateUnitDto } from './dto/create-unit.dto';
 import { UpdateUnitDto } from './dto/update-unit.dto';
 import { InviteOwnerDto } from './dto/invite-owner.dto';
 import { CreateMembershipRequestDto } from './dto/create-membership-request.dto';
+import { UpdateBuildingSettingsDto } from './dto/update-building-settings.dto';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
 import { UnitCreatedEvent } from '../events/unit-created.event';
@@ -561,6 +562,49 @@ export class BuildingService {
       'TenancyEnded',
       new TenancyEndedEvent(tenancyId, tenancy.unitId, buildingId, tenancy.personId),
     );
+
+    return updated;
+  }
+
+  // --- Building Settings/Policy domain (21_ADRs > ADR-089) ------------------
+
+  /** Any current member may read a building's settings — the toggle affects how their own vote gets counted. */
+  async getSettings(buildingId: string) {
+    await this.getById(buildingId); // 404s if the building doesn't exist
+    return this.buildings.getBuildingSettings(buildingId);
+  }
+
+  /**
+   * Restricted to OWNER/MANAGER (`RolesGuard` on the controller route) —
+   * the same building-policy-level authority `resolveMembershipRequest`
+   * above already uses, not `VerifiedRolesGuard`: no source rule makes
+   * the "must be a VERIFIED manager" claim for this specific action the
+   * way ADR-038 made it for Governance's own create/publish/close/cancel
+   * routes, and inventing one here would be exactly the kind of
+   * unsupported rule this project's ADR series has consistently declined
+   * to add.
+   */
+  async updateSettings(
+    buildingId: string,
+    dto: UpdateBuildingSettingsDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    await this.getById(buildingId); // 404s if the building doesn't exist
+
+    const updated = await this.buildings.upsertBuildingSettings(buildingId, {
+      allowTenantVoting: dto.allowTenantVoting,
+    });
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      buildingId,
+      action: 'BuildingSettingsUpdated',
+      entityType: 'BuildingSettings',
+      entityId: buildingId,
+      requestId,
+      metadata: { allowTenantVoting: updated.allowTenantVoting },
+    });
 
     return updated;
   }

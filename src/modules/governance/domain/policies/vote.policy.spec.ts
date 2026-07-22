@@ -1,5 +1,5 @@
 import { VotePolicy } from './vote.policy';
-import { BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
 
 describe('VotePolicy', () => {
   let policy: VotePolicy;
@@ -91,6 +91,20 @@ describe('VotePolicy', () => {
       expect(() => policy.assertNotVotingOnOwnCandidacy(true, 'p1', ['p1', 'p2'])).toThrow(
         BusinessRuleViolationError,
       );
+    });
+  });
+
+  describe('assertEligibleToCastBallot', () => {
+    it('allows a direct match', () => {
+      expect(() => policy.assertEligibleToCastBallot(true, false)).not.toThrow();
+    });
+
+    it('allows a proxy match', () => {
+      expect(() => policy.assertEligibleToCastBallot(false, true)).not.toThrow();
+    });
+
+    it('rejects neither a direct nor a proxy match', () => {
+      expect(() => policy.assertEligibleToCastBallot(false, false)).toThrow(AuthorizationError);
     });
   });
 

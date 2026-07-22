@@ -12,6 +12,7 @@ import { ChangeManagerDto } from '../application/dto/change-manager.dto';
 import { TransferOwnershipDto } from '../application/dto/transfer-ownership.dto';
 import { CreateTenancyDto } from '../application/dto/create-tenancy.dto';
 import { EndTenancyDto } from '../application/dto/end-tenancy.dto';
+import { UpdateBuildingSettingsDto } from '../application/dto/update-building-settings.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
@@ -285,5 +286,25 @@ export class BuildingController {
     @RequestId() requestId: string,
   ) {
     return this.buildings.endTenancy(id, tenancyId, dto.terminationReason, user.sub, requestId);
+  }
+
+  // --- Building Settings/Policy domain (21_ADRs > ADR-089) -----------------
+
+  @Get(':id/settings')
+  @UseGuards(MembershipGuard)
+  getSettings(@Param('id') id: string) {
+    return this.buildings.getSettings(id);
+  }
+
+  @Patch(':id/settings')
+  @UseGuards(RolesGuard)
+  @Roles('OWNER', 'MANAGER')
+  updateSettings(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateBuildingSettingsDto,
+    @RequestId() requestId: string,
+  ) {
+    return this.buildings.updateSettings(id, dto, user.sub, requestId);
   }
 }

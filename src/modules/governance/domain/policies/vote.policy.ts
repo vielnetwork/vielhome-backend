@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
 
 /**
  * Business rules for Governance/Voting (04.06_Governance_Rules,
@@ -60,8 +60,25 @@ export class VotePolicy {
   }
 
   /**
+   * 21_ADRs > ADR-089 — the caller casting a ballot for a unit must be
+   * either that unit's own eligible voter (per the vote's eligibility
+   * snapshot), or that person's current standing proxy.
+   */
+  assertEligibleToCastBallot(isDirectMatch: boolean, isProxyMatch: boolean): void {
+    if (!isDirectMatch && !isProxyMatch) {
+      throw new AuthorizationError('You are not the eligible voter for this unit on this vote.');
+    }
+  }
+
+  /**
    * 04.06 Rule 6, generalized to any election: a candidate cannot cast a
-   * ballot in the election they are themselves standing in.
+   * ballot in the election they are themselves standing in. Checked
+   * against the UNIT's own eligible voter (the vote's eligibility
+   * snapshot), not necessarily the physical caller — see 21_ADRs >
+   * ADR-089's `VotingService.castBallot` for why: once standing proxies
+   * exist, checking the physical caller alone would let a candidate
+   * evade this rule simply by appointing a proxy to vote their own
+   * unit's ballot for them.
    */
   assertNotVotingOnOwnCandidacy(
     isManagerElection: boolean,

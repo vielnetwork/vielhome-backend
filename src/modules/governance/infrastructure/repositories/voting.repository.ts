@@ -91,17 +91,28 @@ export class VotingRepository {
 
   /**
    * DRAFT -> ACTIVE, plus captures the eligibility snapshot (one row per
-   * Unit that has EXACTLY ONE current Owner right now — see the MVP
-   * simplification note in `schema.prisma`'s Governance section for units
-   * with zero/multiple current owners). Both happen in one transaction so
-   * a vote is never left ACTIVE without its snapshot, or vice versa.
+   * eligible Unit right now). Both happen in one transaction so a vote is
+   * never left ACTIVE without its snapshot, or vice versa.
    *
    * 21_ADRs > ADR-058 — the candidate unit pool is narrowed by
-   * `Vote.scopeType` (06.06 Rule 003) BEFORE the existing single-owner
-   * eligibility filter runs; `ENTIRE_BUILDING` (the default) reproduces
-   * this method's exact pre-ADR-058 behavior with no query change.
+   * `Vote.scopeType` (06.06 Rule 003) BEFORE the eligibility filter runs;
+   * `ENTIRE_BUILDING` (the default) reproduces this method's exact
+   * pre-ADR-058 behavior with no query change.
+   *
+   * 21_ADRs > ADR-089 — `allowTenantVoting` (resolved by the caller from
+   * `BuildingRepository.getBuildingSettings`, this method never reads it
+   * itself) picks the eligibility rule per unit: when `false` (every
+   * building's state before this ADR, and the default for every building
+   * after it), behavior is byte-for-byte unchanged — a unit is eligible
+   * only if it has EXACTLY ONE current Owner (see the MVP simplification
+   * note in `schema.prisma`'s Governance section for units with
+   * zero/multiple current owners). When `true`, a unit with EXACTLY ONE
+   * current Tenant hands the vote to that tenant instead (`eligibilityType:
+   * 'TENANT'`) — an absentee owner does not also get a ballot for the
+   * same unit; a unit with zero/multiple current tenants falls back to
+   * the owner rule unchanged.
    */
-  publishVote(voteId: string, buildingId: string) {
+  publishVote(voteId: string, buildingId: string, allowTenantVoting: boolean) {
     return this.prisma.$transaction(async (tx) => {
       const vote = await tx.vote.update({
         where: { id: voteId },
@@ -119,18 +130,40 @@ export class VotingRepository {
 
       const units = await tx.unit.findMany({
         where: { buildingId, ...scopeFilter },
-        include: { ownerships: { where: { isCurrent: true }, select: { personId: true } } },
+        include: {
+          ownerships: { where: { isCurrent: true }, select: { personId: true } },
+          tenancies: { where: { isCurrent: true }, select: { personId: true } },
+        },
       });
 
-      const eligible = units.filter((u) => u.ownerships.length === 1);
-
-      if (eligible.length > 0) {
-        await tx.voteEligibilitySnapshot.createMany({
-          data: eligible.map((u) => ({
-            voteId,
+      const eligible: Array<{
+        unitId: string;
+        eligiblePersonId: string;
+        eligibilityType: 'OWNER' | 'TENANT';
+      }> = [];
+      for (const u of units) {
+        if (allowTenantVoting && u.tenancies.length === 1) {
+          eligible.push({
+            unitId: u.id,
+            eligiblePersonId: u.tenancies[0].personId,
+            eligibilityType: 'TENANT',
+          });
+        } else if (u.ownerships.length === 1) {
+          eligible.push({
             unitId: u.id,
             eligiblePersonId: u.ownerships[0].personId,
             eligibilityType: 'OWNER',
+          });
+        }
+      }
+
+      if (eligible.length > 0) {
+        await tx.voteEligibilitySnapshot.createMany({
+          data: eligible.map((e) => ({
+            voteId,
+            unitId: e.unitId,
+            eligiblePersonId: e.eligiblePersonId,
+            eligibilityType: e.eligibilityType,
           })),
         });
       }

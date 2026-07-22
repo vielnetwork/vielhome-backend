@@ -3,6 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import type { VoteCategory, VoteResultStatus, VoteStatus } from '@prisma/client';
 import { VotingRepository } from '../infrastructure/repositories/voting.repository';
 import { MeetingRepository } from '../infrastructure/repositories/meeting.repository';
+import { VoteProxyRepository } from '../infrastructure/repositories/vote-proxy.repository';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { BuildingService } from '../../building/application/building.service';
 import { VotePolicy } from '../domain/policies/vote.policy';
@@ -11,7 +12,6 @@ import { CastBallotDto } from './dto/cast-ballot.dto';
 import { CancelVoteDto } from './dto/cancel-vote.dto';
 import { AuditService } from '../../../common/audit/audit.service';
 import {
-  AuthorizationError,
   BusinessRuleViolationError,
   DuplicateError,
   NotFoundAppError,
@@ -47,6 +47,7 @@ export class VotingService {
   constructor(
     private readonly voting: VotingRepository,
     private readonly meetings: MeetingRepository,
+    private readonly voteProxies: VoteProxyRepository,
     private readonly buildings: BuildingRepository,
     private readonly buildingService: BuildingService,
     private readonly policy: VotePolicy,
@@ -198,7 +199,13 @@ export class VotingService {
     const vote = await this.getVote(buildingId, voteId);
     this.policy.assertPublishable(vote.status, vote.options.length);
 
-    const published = await this.voting.publishVote(voteId, buildingId);
+    // 21_ADRs > ADR-089 — resolved once, here, and passed down rather than
+    // read inside `VotingRepository.publishVote` itself: keeps the
+    // repository's own transaction free of a second cross-domain-flavored
+    // read, and matches how every other per-building policy value already
+    // flows into this service (e.g. `dto.scopeType` above).
+    const { allowTenantVoting } = await this.buildings.getBuildingSettings(buildingId);
+    const published = await this.voting.publishVote(voteId, buildingId, allowTenantVoting);
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -217,7 +224,8 @@ export class VotingService {
   /**
    * Casts a ballot on behalf of `dto.unitId`, not the caller directly
    * (04.06 Rule 1/2: the vote belongs to the Property). The caller must be
-   * that unit's sole eligible owner as of the vote's eligibility snapshot
+   * either that unit's sole eligible voter as of the vote's eligibility
+   * snapshot, or (21_ADRs > ADR-089) that person's current standing proxy
    * — see the MVP simplification note in schema.prisma for why co-owned
    * units simply have no eligible voter rather than a simulated Abstain.
    */
@@ -240,9 +248,16 @@ export class VotingService {
     if (!snapshot) {
       throw new BusinessRuleViolationError('This unit is not eligible to vote on this vote.');
     }
-    if (snapshot.eligiblePersonId !== actorPersonId) {
-      throw new AuthorizationError('You are not the eligible voter for this unit on this vote.');
-    }
+
+    // 21_ADRs > ADR-089 — a live check (not frozen into the snapshot):
+    // proxy status can change after publish, and revoking a proxy stops
+    // it working immediately. See `VoteProxy`'s own schema comment for
+    // the disclosed "self-healing" property this gives.
+    const isDirectMatch = snapshot.eligiblePersonId === actorPersonId;
+    const isProxyMatch =
+      !isDirectMatch &&
+      (await this.voteProxies.isCurrentProxyFor(snapshot.eligiblePersonId, actorPersonId));
+    this.policy.assertEligibleToCastBallot(isDirectMatch, isProxyMatch);
 
     const existing = await this.voting.findBallotForUnit(voteId, dto.unitId);
     if (existing) {
@@ -255,8 +270,21 @@ export class VotingService {
     }
 
     if (vote.isManagerElection) {
+      // 21_ADRs > ADR-089 — checks the UNIT's own eligible voter
+      // (`snapshot.eligiblePersonId`), not the physical caster
+      // (`actorPersonId`). Before proxy voting existed the two were
+      // always identical at this point (the guard above required an
+      // exact match), so this is not a behavior change for direct
+      // voting — but it closes a real evasion path a candidate could
+      // otherwise use: appointing a proxy to cast on their own unit's
+      // behalf would previously have passed this check (the PROXY
+      // wasn't a candidate, even though the UNIT'S vote effectively was
+      // theirs). 04.06 Rule 1 ("Vote Belongs To Property, not Person")
+      // read together with Rule 6 ("a candidate cannot vote in their own
+      // election") means the property's own vote is what's restricted,
+      // regardless of who is physically holding the pen.
       const candidatePersonIds = vote.options.map((o) => o.value);
-      this.policy.assertNotVotingOnOwnCandidacy(true, actorPersonId, candidatePersonIds);
+      this.policy.assertNotVotingOnOwnCandidacy(true, snapshot.eligiblePersonId, candidatePersonIds);
     }
 
     const ballot = await this.voting.createBallot({

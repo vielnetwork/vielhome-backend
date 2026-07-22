@@ -645,4 +645,94 @@ export class BuildingRepository {
       return tenancy;
     });
   }
+
+  // --- Building Settings/Policy domain (21_ADRs > ADR-089) -----------------
+
+  /**
+   * Returns this building's settings, defaulting every field for a
+   * building that has never had a settings row written (see
+   * `BuildingSettings`'s own schema comment — a missing row IS the
+   * default, not an error). Deliberately does NOT upsert-on-read: unlike
+   * `NotificationRepository.getOrCreatePreference` (called once per
+   * notification dispatch, where materializing a row is harmless),
+   * `VotingRepository.publishVote` calls this on every single vote
+   * publish and should not have a write side effect just from checking a
+   * toggle.
+   */
+  async getBuildingSettings(buildingId: string): Promise<{ allowTenantVoting: boolean }> {
+    const settings = await this.prisma.buildingSettings.findUnique({ where: { buildingId } });
+    return { allowTenantVoting: settings?.allowTenantVoting ?? false };
+  }
+
+  /**
+   * Creates or updates this building's settings row. Same
+   * upsert-plus-retry-on-race pattern `NotificationRepository
+   * .getOrCreatePreference` established (21_ADRs > ADR-088) for two
+   * concurrent FIRST-ever writes for the same building — one loses to
+   * the other's `@unique buildingId` constraint. Unlike that method's
+   * own retry (a true get-or-create, where the losing caller's `update:
+   * {}` was always a no-op so returning the winner's row as-is was
+   * correct), this caller's `data` is meaningful — so once the winning
+   * row exists, this still applies THIS caller's update on top of it
+   * rather than silently dropping the requested change.
+   */
+  async upsertBuildingSettings(
+    buildingId: string,
+    data: { allowTenantVoting?: boolean },
+  ): Promise<{ allowTenantVoting: boolean }> {
+    try {
+      return await this.prisma.buildingSettings.upsert({
+        where: { buildingId },
+        update: data,
+        create: { buildingId, ...data },
+      });
+    } catch (error) {
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        const existing = await this.prisma.buildingSettings.findUnique({ where: { buildingId } });
+        if (existing) {
+          return this.prisma.buildingSettings.update({ where: { buildingId }, data });
+        }
+        if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Resolves a unit's LIVE eligible-voter Person id and type right now —
+   * not from any particular vote's snapshot (`VotingRepository
+   * .publishVote` independently reimplements this same preference rule
+   * for its own eligibility-snapshot query, since a snapshot's whole
+   * point is staying stable even if this live answer changes later — see
+   * that method's own comment). Used by `VoteProxyService.grant` to
+   * authorize who may appoint a proxy for a unit. Same 04.06 Rule 4
+   * preference order: the unit's sole current Tenant, if
+   * `allowTenantVoting` is true and exactly one exists; otherwise the
+   * unit's sole current Owner; otherwise nobody (co-owned/zero-owner
+   * units, same MVP simplification used everywhere else in Governance).
+   */
+  async findLiveEligibleVoterForUnit(
+    unitId: string,
+    allowTenantVoting: boolean,
+  ): Promise<{ personId: string; eligibilityType: 'OWNER' | 'TENANT' } | null> {
+    if (allowTenantVoting) {
+      const tenancies = await this.prisma.tenancy.findMany({
+        where: { unitId, isCurrent: true },
+        select: { personId: true },
+      });
+      if (tenancies.length === 1) {
+        return { personId: tenancies[0].personId, eligibilityType: 'TENANT' };
+      }
+    }
+
+    const ownerships = await this.prisma.ownership.findMany({
+      where: { unitId, isCurrent: true },
+      select: { personId: true },
+    });
+    if (ownerships.length === 1) {
+      return { personId: ownerships[0].personId, eligibilityType: 'OWNER' };
+    }
+
+    return null;
+  }
 }

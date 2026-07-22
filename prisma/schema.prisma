@@ -57,6 +57,9 @@ model Person {
   createdVotes      Vote[]                     @relation("VoteCreatedBy")
   voteEligibilities VoteEligibilitySnapshot[]  @relation("VoteEligiblePerson")
   ballotsCast       Ballot[]                   @relation("BallotVoter")
+  // Standing Proxy Voting (08.07 Rule 011/012 — see 21_ADRs > ADR-089)
+  voteProxiesGranted VoteProxy[]                @relation("VoteProxyGranter")
+  voteProxiesHeld     VoteProxy[]                @relation("VoteProxyHolder")
 
   // Governance Meetings (04.06 Rule 11 — see 21_ADRs > ADR-049)
   createdMeetings    Meeting[]           @relation("MeetingCreatedBy")
@@ -293,7 +296,35 @@ model Building {
   // Subscription Management (07.04/04.04 — see 21_ADRs > ADR-033)
   subscription Subscription?
 
+  // Building Settings/Policy domain (21_ADRs > ADR-089)
+  settings BuildingSettings?
+
   @@map("buildings")
+}
+
+// 21_ADRs > ADR-089 — the "Building Settings/Policy domain" every prior
+// Governance ADR (ADR-024, ADR-035) named as a known future gap: a place
+// to hold per-building policy toggles. Starts with exactly one field
+// (`allowTenantVoting`, 04.06 Rule 4: "Tenant voting is optional, per
+// building policy") rather than a generic key/value settings bag — no
+// second toggle exists yet to justify that extra abstraction, and adding
+// one later is just another column on this same model, not a migration
+// of shape. Same lazy-creation-via-upsert pattern
+// `NotificationPreference`/`getOrCreatePreference` already established:
+// a building created before this ADR has no row here yet, and none is
+// required to exist for the DEFAULT (`allowTenantVoting: false`) to
+// apply — `BuildingRepository.getBuildingSettings` returns the default
+// for a missing row rather than materializing one on every read; a row
+// is only ever created the first time someone actually changes a
+// setting (`BuildingRepository.upsertBuildingSettings`).
+model BuildingSettings {
+  id                String   @id @default(cuid())
+  buildingId        String   @unique
+  building          Building @relation(fields: [buildingId], references: [id])
+  allowTenantVoting Boolean  @default(false)
+  updatedAt         DateTime @updatedAt
+
+  @@map("building_settings")
 }
 
 model Block {
@@ -382,6 +413,7 @@ model Unit {
 
   voteEligibilities VoteEligibilitySnapshot[]
   ballots           Ballot[]
+  voteProxies       VoteProxy[]
 
   cases             Case[]
 
@@ -993,12 +1025,18 @@ model Refund {
 //    v1.0 package's own DRAFT/PUBLISHED/ACTIVE/CLOSED/CANCELLED — a "Publish"
 //    action and going "Active" happen as one atomic step here (no separate
 //    scheduling/review gap between them).
-//  - Voting rights are OWNER-only for MVP (`VoteEligibilityType` has just
-//    `OWNER`) — Tenant voting (04.06 Rule 4: "optional, per building
-//    policy") is deferred because no Building Settings/Policy domain
-//    exists yet to hold that per-building toggle. Proxy voting
-//    (08.07 Rule 011/012) is deferred — no proxy-appointment mechanism
-//    exists yet.
+//  - Voting rights are OWNER-only by default; 21_ADRs > ADR-089 added
+//    `VoteEligibilityType.TENANT` plus the `BuildingSettings
+//    .allowTenantVoting` per-building toggle (04.06 Rule 4: "optional, per
+//    building policy") — see `VotingRepository.publishVote`'s eligibility
+//    query. When the toggle is off (the default, and every building's
+//    state before this ADR), behavior is unchanged: a unit's sole current
+//    Owner is its eligible voter. When on, a unit with exactly one current
+//    Tenant hands the vote to that tenant instead (an absentee owner does
+//    not also get a ballot for the same unit); a unit with zero/multiple
+//    current tenants falls back to the owner rule. 21_ADRs > ADR-089 also
+//    added Standing Proxy Voting (08.07 Rule 011/012) — see the
+//    `VoteProxy` model below.
 //  - Co-owner conflict (04.06 Rule 7 / 06.06 Rule 009: unresolved conflict
 //    -> forced ABSTAIN) is simplified to: a Unit is only eligible at all
 //    if it has EXACTLY ONE current Owner at the moment the vote is
@@ -1030,6 +1068,7 @@ enum VoteStatus {
 
 enum VoteEligibilityType {
   OWNER
+  TENANT
 }
 
 enum VoteResultStatus {
@@ -1202,6 +1241,52 @@ model VoteResult {
   publishedAt        DateTime?
 
   @@map("vote_results")
+}
+
+// Standing Proxy Voting (08.07 Rule 011/012 — see 21_ADRs > ADR-089). A
+// unit's current eligible voter (owner, or tenant if the building's
+// `allowTenantVoting` toggle is on — see `BuildingRepository
+// .findLiveEligibleVoterForUnit`) may designate one other current
+// building member as a durable, revocable proxy who can cast ballots on
+// their behalf for ANY vote going forward — a "standing" proxy, not a
+// per-vote power of attorney (no source document describes a per-vote
+// mechanism). Same ended-and-recreated-on-change pattern `Membership`
+// role changes and `BuildingRepository.changeManager` already use
+// (`isCurrent`/`revokedAt`), not an in-place mutation — see
+// `VoteProxyRepository.grant`. No DB-level partial unique index
+// enforcing "at most one current proxy per unit" (Prisma doesn't support
+// partial unique indexes) — enforced transactionally in
+// `VoteProxyRepository.grant` instead (ends any existing current row in
+// the same transaction that creates the new one).
+//
+// `VotingService.castBallot` matches a proxy at cast time by checking
+// whether `proxyPersonId` currently stands in for the vote's
+// `VoteEligibilitySnapshot.eligiblePersonId` — a LIVE check against this
+// table, not something frozen into the snapshot itself. This has a
+// disclosed "self-healing" property: if a unit's ownership/tenancy
+// changes between a vote's publish time and when a ballot is actually
+// cast, the snapshot's `eligiblePersonId` stays fixed (08.07 Rule 021),
+// but which `VoteProxy` rows currently point at that same person is
+// re-evaluated live — so a proxy appointment made before OR after
+// publish still works, and a revoked proxy stops working immediately,
+// without needing any change to the snapshot itself.
+model VoteProxy {
+  id              String    @id @default(cuid())
+  unitId          String
+  unit            Unit      @relation(fields: [unitId], references: [id])
+  buildingId      String
+  building        Building  @relation(fields: [buildingId], references: [id])
+  granterPersonId String
+  granter         Person    @relation("VoteProxyGranter", fields: [granterPersonId], references: [id])
+  proxyPersonId   String
+  proxy           Person    @relation("VoteProxyHolder", fields: [proxyPersonId], references: [id])
+  isCurrent       Boolean   @default(true)
+  grantedAt       DateTime  @default(now())
+  revokedAt       DateTime?
+
+  @@index([unitId, isCurrent])
+  @@index([granterPersonId, isCurrent])
+  @@map("vote_proxies")
 }
 
 // Governance Meetings (04.06 Rule 11 "Meetings Are Separate From Voting" /

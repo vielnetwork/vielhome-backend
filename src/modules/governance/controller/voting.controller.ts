@@ -2,9 +2,11 @@ import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@ne
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { VoteCategory, VoteStatus } from '@prisma/client';
 import { VotingService } from '../application/voting.service';
+import { VoteProxyService } from '../application/vote-proxy.service';
 import { CreateVoteDto } from '../application/dto/create-vote.dto';
 import { CastBallotDto } from '../application/dto/cast-ballot.dto';
 import { CancelVoteDto } from '../application/dto/cancel-vote.dto';
+import { GrantVoteProxyDto } from '../application/dto/grant-vote-proxy.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
 import { VerifiedRolesGuard } from '../../../common/guards/verified-roles.guard';
@@ -35,7 +37,10 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
 @UseGuards(JwtAuthGuard)
 @Controller({ path: 'buildings', version: '1' })
 export class VotingController {
-  constructor(private readonly voting: VotingService) {}
+  constructor(
+    private readonly voting: VotingService,
+    private readonly voteProxies: VoteProxyService,
+  ) {}
 
   @Post(':id/votes')
   @UseGuards(VerifiedRolesGuard)
@@ -118,5 +123,48 @@ export class VotingController {
   @UseGuards(MembershipGuard)
   getResult(@Param('id') id: string, @Param('voteId') voteId: string) {
     return this.voting.getResult(id, voteId);
+  }
+
+  // --- Standing Proxy Voting (08.07 Rule 011/012 — see 21_ADRs > ADR-089) --
+  //
+  // Nested under `:id/units/:unitId`, same route-nesting convention
+  // `BuildingController`'s own Ownership Transfer/Tenancy routes already
+  // use for unit-scoped self-service rights. Lives on THIS controller
+  // (not BuildingController) because appointing/revoking a proxy is a
+  // Governance/Voting concern (08.07's own API section), not a general
+  // membership action — `VoteProxyService` already depends on
+  // `BuildingRepository` the same way `VotingService` itself does.
+  // `MembershipGuard` only: the actual self-service check (only the
+  // unit's live eligible voter may grant; only the granter may revoke)
+  // happens inside `VoteProxyService` itself, same posture as
+  // `BuildingController.transferOwnership`'s own comment.
+
+  @Get(':id/units/:unitId/vote-proxy')
+  @UseGuards(MembershipGuard)
+  getCurrentProxy(@Param('id') id: string, @Param('unitId') unitId: string) {
+    return this.voteProxies.getCurrent(id, unitId);
+  }
+
+  @Post(':id/units/:unitId/vote-proxy')
+  @UseGuards(MembershipGuard)
+  grantProxy(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: GrantVoteProxyDto,
+    @RequestId() requestId: string,
+  ) {
+    return this.voteProxies.grant(id, unitId, dto, user.sub, requestId);
+  }
+
+  @Post(':id/units/:unitId/vote-proxy/revoke')
+  @UseGuards(MembershipGuard)
+  revokeProxy(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.voteProxies.revoke(id, unitId, user.sub, requestId);
   }
 }

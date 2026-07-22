@@ -3,6 +3,9 @@ import { VotingController } from './controller/voting.controller';
 import { VotingService } from './application/voting.service';
 import { VotingRepository } from './infrastructure/repositories/voting.repository';
 import { VotePolicy } from './domain/policies/vote.policy';
+import { VoteProxyService } from './application/vote-proxy.service';
+import { VoteProxyRepository } from './infrastructure/repositories/vote-proxy.repository';
+import { VoteProxyPolicy } from './domain/policies/vote-proxy.policy';
 import { MeetingController } from './controller/meeting.controller';
 import { MeetingService } from './application/meeting.service';
 import { MeetingRepository } from './infrastructure/repositories/meeting.repository';
@@ -31,6 +34,13 @@ import { BuildingModule } from '../building/building.module';
     VotingService,
     VotingRepository,
     VotePolicy,
+    // Standing Proxy Voting (21_ADRs > ADR-089) — same module as Voting
+    // itself (VotingService.castBallot depends on VoteProxyRepository
+    // directly; VotingController exposes both services), not a new
+    // top-level module.
+    VoteProxyService,
+    VoteProxyRepository,
+    VoteProxyPolicy,
     MeetingService,
     MeetingRepository,
     MeetingPolicy,
