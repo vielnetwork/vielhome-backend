@@ -30,6 +30,17 @@ export class BackOfficeEventListener {
 
   @OnEvent('BuildingCreated')
   async onBuildingCreated(event: BuildingCreatedEvent) {
+    // ADR-085 round-5 diagnostic (temporary — NOT a fix): paired with the
+    // `listenerCount` log at the `emit()` call site in
+    // `BuildingSetupService.submit()`. If this ENTER line logs twice per
+    // building for one `emit()` (listenerCount stayed 1 there), the
+    // listener itself is somehow being invoked twice per firing; if
+    // `listenerCount` was already >1, a duplicate registration is the
+    // mechanism instead.
+    console.log(
+      `[DIAGNOSTIC ADR-085] onBuildingCreated ENTER buildingId=${event.buildingId} at=${new Date().toISOString()}`,
+    );
+
     const building = await this.buildings.findById(event.buildingId);
     if (!building) {
       this.logger.warn(`BuildingCreated received for missing building ${event.buildingId}`);

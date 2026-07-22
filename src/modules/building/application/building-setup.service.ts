@@ -115,6 +115,16 @@ export class BuildingSetupService {
       requestId,
     });
 
+    // ADR-085 round-5 diagnostic (temporary — NOT a fix): pins down whether
+    // a duplicate BuildingVerificationCase row (round-4 finding) comes from
+    // `submit()` itself running twice for one building, or from something
+    // downstream of a single `emit()` call. `listenerCount` is logged
+    // BEFORE emitting so a value other than 1 directly proves/disproves a
+    // duplicate-listener-registration mechanism.
+    console.log(
+      `[DIAGNOSTIC ADR-085] submit() emitting BuildingCreated buildingId=${building.id} listenerCount=${this.events.listenerCount('BuildingCreated')} at=${new Date().toISOString()}`,
+    );
+
     this.events.emit(
       'BuildingCreated',
       new BuildingCreatedEvent(building.id, personId, payload.role as 'OWNER' | 'MANAGER'),
