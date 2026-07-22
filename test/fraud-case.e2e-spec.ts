@@ -791,7 +791,6 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
-    ({ app: authApp } = await bootstrapTestApp());
 
     targetSuspend = await registerPerson(app);
     createdPhones.push(targetSuspend.phone);
@@ -801,8 +800,27 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     createdPhones.push(targetWarn.phone);
     createdPersonIds.push(targetWarn.personId);
 
+    // ADR-085 round-6 finding/fix: `authApp` now bootstraps right here —
+    // immediately before the two logins it exists for — and closes right
+    // after them, rather than being opened at the top of this hook and
+    // left open (as originally structured, interleaved with the
+    // `registerPerson(app)` calls above) until this describe's own
+    // `afterAll`. See this hook's own closing comment (below the fraud
+    // case setup calls) for the full root-cause explanation: while `app`
+    // and `authApp` are BOTH open, every `@OnEvent` listener registered by
+    // EITHER app's own providers fires for events emitted through EITHER
+    // app's HTTP server, so any event fired on `app` — including the
+    // `registerPerson` calls above, had `authApp` already been open at
+    // that point — would double-fire every listener. Reordering so both
+    // logins happen back-to-back, with `authApp` bootstrapped only right
+    // before them and closed immediately after, minimizes that window to
+    // zero `app`-side activity.
+    ({ app: authApp } = await bootstrapTestApp());
     reviewer = await loginAsSeededStaff(authApp, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    admin = await loginAsSeededStaff(authApp, PLATFORM_ADMIN_PHONE);
+    staffPhones.push(PLATFORM_ADMIN_PHONE);
+    await authApp.close();
 
     seniorReviewer = await registerPerson(app);
     createdPhones.push(seniorReviewer.phone);
@@ -814,9 +832,6 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     await prisma.platformStaff.create({
       data: { personId: seniorReviewer.personId, role: 'SENIOR_REVIEWER', isActive: true },
     });
-
-    admin = await loginAsSeededStaff(authApp, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
 
     const caseSuspendRes = await request(app.getHttpServer())
       .post('/api/v1/backoffice/fraud-cases')
@@ -848,17 +863,25 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
       .send({ signalType: 'OTHER', targetPersonId: targetSuspend.personId })
       .expect(201);
     openCaseId = openCaseRes.body.data.id;
-    // ADR-085 round-3/4 finding: two full bootstrapTestApp() calls in one
-    // beforeAll (app + authApp, ADR-085 round-2's own throttle-isolation
-    // fix) can push total setup time past Jest's default 5000ms hook
-    // timeout under real concurrent load — observed directly in this
-    // series' own sibling describes as "Exceeded timeout of 5000 ms for a
-    // hook" at the authApp bootstrap line. Each bootstrapTestApp() does a
-    // full Test.createTestingModule().compile() — real Postgres/Redis
-    // connections, every provider initialized — not a cheap operation,
-    // and doing it twice per describe is real added cost. Giving the hook
-    // explicit headroom is simpler and safer than reaching into
-    // ThrottlerStorage internals to avoid the second app.
+    // ADR-085 round-6 finding — the REAL root cause (confirmed directly
+    // via diagnostic logging in this series' own sibling describe,
+    // `building-verification.e2e-spec.ts`): `EventEmitterModule.forRoot()`'s
+    // `EventEmitter2` instance is not isolated per `Test.createTestingModule()`
+    // compile the way every other provider is — while `app` and `authApp`
+    // (ADR-085 round-2's own throttle-isolation fix) are BOTH open at
+    // once, EVERY `@OnEvent` listener registered by EITHER app's own
+    // providers fires for events emitted through EITHER app's HTTP
+    // server. This describe never observed a visible assertion failure
+    // from it (fraud-case creation doesn't rely on an `orderBy` "latest
+    // row" lookup the way Building Verification's appeal flow does), but
+    // the underlying double-fire (doubled XP/achievement/notification
+    // writes on every `registerPerson` and `loginAsSeededStaff` call
+    // while both apps were open) was silently happening here too — see
+    // this hook's own opening comment for the actual fix (bootstrap
+    // `authApp` immediately before its two logins, close it immediately
+    // after, before any `app`-side activity). The 20000ms timeout below
+    // stays regardless — bootstrapping 2 apps really is genuinely
+    // expensive and worth the headroom on its own merits.
   }, 20000);
 
   afterAll(async () => {
@@ -866,7 +889,8 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
     await cleanupPhones(prisma, createdPhones);
     await app.close();
-    await authApp.close();
+    // authApp is already closed above, in beforeAll, immediately after the
+    // two logins it exists for (ADR-085 round-6) — not closed again here.
   });
 
   it('rejects enforce with targetType PERSON but no targetPersonId (400)', async () => {

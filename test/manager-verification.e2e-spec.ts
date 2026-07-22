@@ -622,6 +622,16 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
     staffPhones.push(PLATFORM_ADMIN_PHONE);
     reviewer = await loginAsSeededStaff(authApp, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    // ADR-085 round-6 finding/fix: closed here, immediately after the two
+    // logins it exists for, rather than left open until this describe's
+    // own `afterAll` — see the comment below the `waitForInitialCase`
+    // calls for the full root-cause explanation (a stray, duplicate
+    // ManagerVerificationCase row is the same-shaped risk here as
+    // `building-verification.e2e-spec.ts`'s own confirmed duplicate
+    // BuildingVerificationCase finding — role: 'MANAGER' below drives
+    // `evaluateNewBuilding` AND `initiateForProvisionalManager` from the
+    // exact same double-fired `onBuildingCreated`).
+    await authApp.close();
 
     founder1 = await registerPerson(app);
     createdPhones.push(founder1.phone);
@@ -643,19 +653,22 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
     case1Id = case1!.id;
     case2Id = case2!.id;
     case3Id = case3!.id;
-    // ADR-085 round-3/4 finding: two full bootstrapTestApp() calls in one
-    // beforeAll (app + authApp, ADR-085 round-2's own throttle-isolation
-    // fix) can push total setup time past Jest's default 5000ms hook
-    // timeout under real concurrent load — observed directly as "Exceeded
-    // timeout of 5000 ms for a hook" at the authApp bootstrap line, and
-    // very likely also the cause of round 3's own harder-to-explain
-    // 422/404 mismatches (a slow-but-still-under-5000ms beforeAll shifting
-    // this describe's timing relative to other concurrent suites). Each
-    // bootstrapTestApp() does a full Test.createTestingModule().compile()
-    // — real Postgres/Redis connections, every provider initialized — not
-    // a cheap operation, and doing it twice per describe is real added
-    // cost. Giving the hook explicit headroom is simpler and safer than
-    // reaching into ThrottlerStorage internals to avoid the second app.
+    // ADR-085 round-6 finding — the REAL root cause (this describe's own
+    // sibling, `building-verification.e2e-spec.ts`, confirmed it directly
+    // via diagnostic logging): `EventEmitterModule.forRoot()`'s
+    // `EventEmitter2` instance is not isolated per `Test.createTestingModule()`
+    // compile the way every other provider is — while `app` and `authApp`
+    // (ADR-085 round-2's own throttle-isolation fix) were BOTH open at
+    // once, EVERY `@OnEvent` listener registered by EITHER app's own
+    // providers fired for events emitted through EITHER app's HTTP
+    // server, double-firing `BackOfficeEventListener.onBuildingCreated`
+    // (and Gamification's/Notifications' own `BuildingCreated` listeners)
+    // for every building created below. The real fix is above: `authApp`
+    // is now closed immediately after the two logins it exists for,
+    // before `app` does anything else, closing the window during which
+    // both apps' listeners could coexist — not the 20000ms timeout below,
+    // which stays only because bootstrapping 2 apps really is genuinely
+    // expensive and worth the headroom regardless.
   }, 20000);
 
   afterAll(async () => {
@@ -663,7 +676,8 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
     await cleanupPhones(prisma, createdPhones);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
     await app.close();
-    await authApp.close();
+    // authApp is already closed above, in beforeAll, immediately after the
+    // two logins it exists for (ADR-085 round-6) — not closed again here.
   });
 
   it('blocks REVIEWER (rank 1, below required SENIOR_REVIEWER) from deciding a case', async () => {

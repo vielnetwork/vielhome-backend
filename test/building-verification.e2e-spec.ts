@@ -587,6 +587,11 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     staffPhones.push(PLATFORM_ADMIN_PHONE);
     reviewer = await loginAsSeededStaff(authApp, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    // ADR-085 round-6 finding/fix: closed here, immediately after the two
+    // logins it exists for, rather than left open until this describe's
+    // own `afterAll` — see this describe's own closing comment (below the
+    // `waitForInitialCase` calls) for the full root-cause explanation.
+    await authApp.close();
 
     founder1 = await registerPerson(app);
     createdPhones.push(founder1.phone);
@@ -616,22 +621,32 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     const case3 = await waitForInitialCase(prisma, building3);
     case2Id = case2!.id;
     case3Id = case3!.id;
-    // ADR-085 round-3/4 finding: two full bootstrapTestApp() calls in one
-    // beforeAll (app + authApp, ADR-085 round-2's own throttle-isolation
-    // fix) can push total setup time past Jest's default 5000ms hook
-    // timeout under real concurrent load — round 4 observed exactly this,
-    // "Exceeded timeout of 5000 ms for a hook" at the authApp bootstrap
-    // line, and this is very likely also the true cause of round 3's own
-    // harder-to-explain 422/404 mismatches in THIS describe (a slow-but-
-    // still-under-5000ms beforeAll shifting this describe's timing
-    // relative to other concurrent suites, rather than a duplicate case
-    // row — a full trace of every write path to BuildingVerificationCase
-    // found no code path that could create one). Each bootstrapTestApp()
-    // does a full Test.createTestingModule().compile() — real Postgres/
-    // Redis connections, every provider initialized — not a cheap
-    // operation, and doing it twice per describe is real added cost.
-    // Giving the hook explicit headroom is simpler and safer than
-    // reaching into ThrottlerStorage internals to avoid the second app.
+    // ADR-085 round-3/4/5/6 finding — the REAL root cause, now confirmed
+    // by direct evidence (round-5 diagnostic logging), superseding both
+    // the round-3 "no code path exists" conclusion and the round-4
+    // "just a beforeAll timeout" theory: `EventEmitterModule.forRoot()`'s
+    // `EventEmitter2` instance is not isolated per `Test.createTestingModule()`
+    // compile the way every other provider is — while `app` and `authApp`
+    // (ADR-085 round-2's own throttle-isolation fix) are BOTH open at
+    // once, EVERY `@OnEvent` listener registered by EITHER app's own
+    // providers fires for events emitted through EITHER app's HTTP
+    // server. Round-5 diagnostic logging proved this directly:
+    // `listenerCount('BuildingCreated')` was 3 (one app's worth: Gamification
+    // + Notifications + BackOffice) before `authApp` existed, jumped to 6
+    // the moment this describe's own `authApp` was bootstrapped alongside
+    // `app`, and `BackOfficeEventListener.onBuildingCreated` fired TWICE
+    // per building as a direct result — creating the second, stray
+    // `BuildingVerificationCase` row `getLatestBuildingVerificationCase`
+    // then incorrectly treats as "latest." The same double-fire hit
+    // Gamification's XP/achievement/BuildingScore writes and BackOffice's
+    // own Subscription creation too (all visible as swallowed
+    // `PrismaClientKnownRequestError` "Unique constraint failed" logs from
+    // the second, redundant write racing the first). The real fix is
+    // above: `authApp` is now closed immediately after the two logins it
+    // exists for, before `app` does anything else, closing the window
+    // during which both apps' listeners can coexist — not the 20000ms
+    // timeout below, which stays only because bootstrapping 2 apps really
+    // is genuinely expensive and worth the headroom regardless.
   }, 20000);
 
   afterAll(async () => {
@@ -639,7 +654,8 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     await cleanupPhones(prisma, createdPhones);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
     await app.close();
-    await authApp.close();
+    // authApp is already closed above, in beforeAll, immediately after the
+    // two logins it exists for (ADR-085 round-6) — not closed again here.
   });
 
   it('blocks REVIEWER (rank 1, below required SENIOR_REVIEWER) from assigning a case', async () => {
