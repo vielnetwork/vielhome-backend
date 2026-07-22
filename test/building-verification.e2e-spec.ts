@@ -733,6 +733,44 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     // `getLatestBuildingVerificationCase` looks up by buildingId alone,
     // with no caller filter — so a wrong-person appeal genuinely reaches
     // `BuildingVerificationPolicy.assertCanAppeal`'s own identity check.
+    //
+    // TEMPORARY DIAGNOSTIC (ADR-085 round 3/4 investigation) — round 3
+    // reproduced this test's own failure identically across two
+    // consecutive real runs (422 instead of the expected 403), meaning
+    // `assertCanAppeal`'s own "not REJECTED" branch is firing even though
+    // the immediately-preceding `it` directly confirmed `building2.status
+    // === 'REJECTED'` via Prisma. A full trace of every write path to
+    // `BuildingVerificationCase` (`evaluateNewBuilding`/`appealCase`'s
+    // `create`, `assignCase`'s `update`, `decideCase`'s `update`) found no
+    // code path that could create a second case row for an
+    // already-evaluated building — so this logs the real row(s) for
+    // `building2` directly, to see the actual data behind the failure
+    // rather than guess further. Remove once root-caused.
+    const diagnosticCases = await prisma.buildingVerificationCase.findMany({
+      where: { buildingId: building2 },
+      orderBy: { createdAt: 'asc' },
+    });
+    const diagnosticBuilding = await prisma.building.findUnique({ where: { id: building2 } });
+    // eslint-disable-next-line no-console
+    console.log(
+      '[DIAGNOSTIC ADR-085] building2 =',
+      building2,
+      'case2Id =',
+      case2Id,
+      'building2.status =',
+      diagnosticBuilding?.status,
+      'cases =',
+      JSON.stringify(
+        diagnosticCases.map((c) => ({
+          id: c.id,
+          status: c.status,
+          isAppeal: c.isAppeal,
+          createdAt: c.createdAt,
+          decidedAt: c.decidedAt,
+        })),
+      ),
+    );
+
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${building2}/verification/appeal`)
       .set('Authorization', `Bearer ${founder3.accessToken}`)
