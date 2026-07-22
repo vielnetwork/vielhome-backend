@@ -275,6 +275,10 @@ model Building {
 
   votes              Vote[]
   meetings           Meeting[]
+  // Standing Proxy Voting (21_ADRs > ADR-089) — back-relation for
+  // `VoteProxy.building`, the same denormalized buildingId `Meeting`
+  // already carries alongside its own required `unitId`-scoped parent.
+  voteProxies        VoteProxy[]
 
   cases              Case[]
 
