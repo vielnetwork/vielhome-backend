@@ -757,10 +757,22 @@ describe('Fraud & Abuse Center (e2e) — Report, Case Lifecycle & Metrics (07.03
  * `isSuspended` check, not a defect in the appeal mechanism itself.
  */
 describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, ADR-043/044)', () => {
-  // Budget: 5 calls to POST /auth/otp/request (targetPersonSuspend,
-  // targetPersonWarn, REVIEWER login, ad-hoc SENIOR_REVIEWER register,
-  // PLATFORM_ADMIN login).
+  // Budget: 3 calls to POST /auth/otp/request on `app` (targetPersonSuspend,
+  // targetPersonWarn, ad-hoc SENIOR_REVIEWER register), plus 2 more on a
+  // SEPARATE `authApp` (REVIEWER login, PLATFORM_ADMIN login) — isolated
+  // onto its own throttle bucket. ADR-085 round-2 finding: this describe
+  // originally shared one app and one exactly-5-zero-slack budget across
+  // both concerns; `loginAsSeededStaff`'s own retry-on-stale-code loop
+  // (ADR-083 round 1) silently spends extra `POST /auth/otp/request` calls
+  // under real cross-file seeded-phone contention — at 15 concurrent
+  // suites, `manager-verification.e2e-spec.ts`'s structurally identical
+  // single-app budget was observed to 429 once contention consumed even
+  // one extra token via a login retry, so this describe (same shape, same
+  // risk, not yet observed to fail) gets the same fix pre-emptively.
+  // Splitting staff login onto its own app gives each concern its own full
+  // 5-request ceiling.
   let app: INestApplication;
+  let authApp: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const staffPhones: string[] = [];
@@ -779,6 +791,7 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
+    ({ app: authApp } = await bootstrapTestApp());
 
     targetSuspend = await registerPerson(app);
     createdPhones.push(targetSuspend.phone);
@@ -788,7 +801,7 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     createdPhones.push(targetWarn.phone);
     createdPersonIds.push(targetWarn.personId);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    reviewer = await loginAsSeededStaff(authApp, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
 
     seniorReviewer = await registerPerson(app);
@@ -802,7 +815,7 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
       data: { personId: seniorReviewer.personId, role: 'SENIOR_REVIEWER', isActive: true },
     });
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
+    admin = await loginAsSeededStaff(authApp, PLATFORM_ADMIN_PHONE);
     staffPhones.push(PLATFORM_ADMIN_PHONE);
 
     const caseSuspendRes = await request(app.getHttpServer())
@@ -842,6 +855,7 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
     await cleanupPhones(prisma, createdPhones);
     await app.close();
+    await authApp.close();
   });
 
   it('rejects enforce with targetType PERSON but no targetPersonId (400)', async () => {

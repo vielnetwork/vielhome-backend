@@ -542,9 +542,21 @@ describe('Building Verification (e2e) — Auto-Evaluation & Risk-Based Routing (
 });
 
 describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)', () => {
-  // Budget: 5 calls to POST /auth/otp/request (PLATFORM_ADMIN login,
-  // REVIEWER login, founder1 + founder2 + founder3 registration).
+  // Budget: 3 calls to POST /auth/otp/request on `app` (founder1 + founder2
+  // + founder3 registration), plus 2 more on a SEPARATE `authApp` (PLATFORM_
+  // ADMIN login, REVIEWER login) — isolated onto its own throttle bucket.
+  // ADR-085 round-2 finding: this describe originally shared one app and one
+  // exactly-5-zero-slack budget across both concerns; `loginAsSeededStaff`'s
+  // own retry-on-stale-code loop (ADR-083 round 1) silently spends extra
+  // `POST /auth/otp/request` calls under real cross-file seeded-phone
+  // contention — at 15 concurrent suites, `manager-verification.e2e-spec.ts`'s
+  // structurally identical single-app budget was observed to 429 once
+  // contention consumed even one extra token via a login retry, so this
+  // describe (same shape, same risk, not yet observed to fail) gets the
+  // same fix pre-emptively. Splitting staff login onto its own app gives
+  // each concern its own full 5-request ceiling.
   let app: INestApplication;
+  let authApp: INestApplication;
   let prisma: PrismaService;
   const staffPhones: string[] = [];
   const createdPhones: string[] = [];
@@ -569,10 +581,11 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
+    ({ app: authApp } = await bootstrapTestApp());
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
+    admin = await loginAsSeededStaff(authApp, PLATFORM_ADMIN_PHONE);
     staffPhones.push(PLATFORM_ADMIN_PHONE);
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    reviewer = await loginAsSeededStaff(authApp, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
 
     founder1 = await registerPerson(app);
@@ -610,6 +623,7 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     await cleanupPhones(prisma, createdPhones);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
     await app.close();
+    await authApp.close();
   });
 
   it('blocks REVIEWER (rank 1, below required SENIOR_REVIEWER) from assigning a case', async () => {
