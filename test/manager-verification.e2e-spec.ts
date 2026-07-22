@@ -290,13 +290,45 @@ const PLATFORM_REVIEWER_PHONE = '+989120000001';
  * `ADR-078`/`ADR-079`'s own pattern — see this file's top-of-document
  * comment.
  */
+/**
+ * Round-1 finding (surfaced first by `ADR-083`'s own real toolchain run,
+ * once this became the 5th e2e file sharing these same two FIXED seeded
+ * phone numbers): under Jest's default parallel-worker execution, two
+ * DIFFERENT e2e files running concurrently in separate worker processes
+ * can both call `POST /auth/otp/request` for the SAME seeded phone close
+ * together — whichever request's `OtpRequest` row lands last in the real,
+ * shared Postgres database is the only one whose code still verifies,
+ * so the other file's captured code 422s as stale/invalid. This is a
+ * real, disclosed test-infrastructure race (never a production concern —
+ * real users don't share a phone number), the exact same category this
+ * whole Testing-phase series has repeatedly named ("growing the e2e suite
+ * count is itself a category of risk"), now concretely hitting the
+ * seeded-staff-login pattern for the first time. Fixed with the same
+ * disclosed retry-on-transient-failure spirit as every prior `waitFor`
+ * fix in this series — restarts the WHOLE request+verify sequence (a
+ * fresh code request naturally wins whatever race just invalidated the
+ * previous one) rather than retrying `verify` alone with a stale code.
+ */
 async function loginAsSeededStaff(
   app: INestApplication,
   phone: string,
 ): Promise<RegisteredPerson> {
-  const code = await requestOtpAndCaptureCode(app, phone);
-  const res = await verifyOtp(app, { phone, code }).expect(200);
-  return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const code = await requestOtpAndCaptureCode(app, phone);
+    const res = await verifyOtp(app, { phone, code });
+    if (res.status === 200) {
+      return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
+    }
+    if (attempt === maxAttempts) {
+      throw new Error(
+        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
+          `${res.status} ${JSON.stringify(res.body)}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+  }
+  throw new Error('unreachable');
 }
 
 /**
