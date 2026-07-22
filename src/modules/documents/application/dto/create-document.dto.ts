@@ -14,10 +14,13 @@ const DOCUMENT_VISIBILITIES = ['PUBLIC', 'MEMBERS_ONLY', 'MANAGEMENT_ONLY'] as c
 
 /**
  * Creates a Document and its first version in one call (08.09's "Upload
- * Document" endpoint) — this MVP has no real object-storage integration
- * (see the Documents header comment in `schema.prisma`), so `fileUrl` is
- * accepted as the location of a file the client already uploaded out of
- * band, not a multipart upload handled here.
+ * Document" endpoint). 21_ADRs > ADR-087: when real object storage is
+ * configured, `fileUrl` is the `storageKey` returned by
+ * `POST :id/documents/upload-url` — request that first, PUT the file bytes
+ * to its `uploadUrl`, then call this endpoint with the returned
+ * `storageKey` as `fileUrl`. No DTO/schema change from the pre-ADR-087
+ * shape — this endpoint has always just accepted `fileUrl` as an opaque
+ * string; only what a client SHOULD put there changed.
  */
 export class CreateDocumentDto {
   @ApiProperty({ enum: DOCUMENT_CATEGORIES })

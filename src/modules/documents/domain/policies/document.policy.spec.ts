@@ -26,6 +26,19 @@ describe('DocumentPolicy', () => {
     });
   });
 
+  describe('assertFileSizeWithinLimit', () => {
+    it('allows a file at or under the 25MB ceiling', () => {
+      expect(() => policy.assertFileSizeWithinLimit(1)).not.toThrow();
+      expect(() => policy.assertFileSizeWithinLimit(25 * 1024 * 1024)).not.toThrow();
+    });
+
+    it('rejects a file over the 25MB ceiling', () => {
+      expect(() => policy.assertFileSizeWithinLimit(25 * 1024 * 1024 + 1)).toThrow(
+        ValidationError,
+      );
+    });
+  });
+
   describe('assertCategoryManageable', () => {
     it('allows any member to manage MAINTENANCE/GENERAL', () => {
       expect(() => policy.assertCategoryManageable('MAINTENANCE', false)).not.toThrow();

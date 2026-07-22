@@ -9,6 +9,17 @@ import {
 const SUPPORTED_FILE_TYPES = ['PDF', 'JPG', 'JPEG', 'PNG'] as const;
 
 /**
+ * 21_ADRs > ADR-087 — a disclosed, invented ceiling, not source-specified:
+ * neither 06.08_Document_Flow nor 08.09_Document_API names a maximum file
+ * size anywhere. 25MB comfortably covers this domain's own supported types
+ * (a scanned multi-page PDF or a high-resolution photo of a document) while
+ * still bounding the presigned-upload window's blast radius. Same category
+ * of disclosed round-number choice as `BulkCreateDocumentDto`'s
+ * `ArrayMaxSize(20)` (`ADR-051`).
+ */
+const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
+
+/**
  * 06.08 Rule 011/012 (reconciled — see the Documents schema-comment header
  * in `schema.prisma` for the full reconciliation note): upload/manage
  * rights for these categories require a privileged role
@@ -33,6 +44,27 @@ export class DocumentPolicy {
     ) {
       throw new ValidationError(
         `Unsupported file type "${fileType}". Supported types: ${SUPPORTED_FILE_TYPES.join(', ')}.`,
+      );
+    }
+  }
+
+  /**
+   * 21_ADRs > ADR-087 — checked both when a presigned upload URL is
+   * requested (`DocumentsService.requestUploadUrl`) and again, in the same
+   * "defense in depth" spirit `BuildingSetupService.submit()`'s own comment
+   * uses elsewhere, when the resulting `Document`/`DocumentVersion` is
+   * actually recorded (`createDocument`/`bulkCreateDocuments`/
+   * `uploadVersion`) — the client-declared `fileSize` is trusted metadata
+   * either way (see `StorageService.getPresignedUploadUrl`'s own doc
+   * comment on that trust boundary), but bounding BOTH the declared size
+   * at presign time and the recorded size at metadata-write time closes
+   * off a client that skips the presign step and calls the metadata
+   * endpoints directly with an oversized declared `fileSize`.
+   */
+  assertFileSizeWithinLimit(fileSize: number): void {
+    if (fileSize > MAX_FILE_SIZE_BYTES) {
+      throw new ValidationError(
+        `File is too large (${fileSize} bytes). Maximum allowed: ${MAX_FILE_SIZE_BYTES} bytes (25MB).`,
       );
     }
   }

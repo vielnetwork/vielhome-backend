@@ -31,5 +31,43 @@ services:
       timeout: 5s
       retries: 10
 
+  # 21_ADRs > ADR-087 — S3-compatible object storage for Documents.
+  # Credentials/bucket name below match .env.example's STORAGE_* defaults
+  # exactly; change one, change the other.
+  minio:
+    image: minio/minio:latest
+    container_name: vielhome-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: vielhome
+      MINIO_ROOT_PASSWORD: vielhome-dev-secret
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web console (http://localhost:9001)
+    volumes:
+      - vielhome_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: creates the `vielhome-documents` bucket on first boot, then
+  # exits. `docker-compose up -d` alone is enough — no manual `mc mb` step.
+  minio-init:
+    image: minio/mc:latest
+    container_name: vielhome-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 vielhome vielhome-dev-secret &&
+      mc mb --ignore-existing local/vielhome-documents
+      "
+    restart: "no"
+
 volumes:
   vielhome_postgres_data:
+  vielhome_minio_data:

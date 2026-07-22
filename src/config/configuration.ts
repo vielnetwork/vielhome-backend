@@ -24,6 +24,24 @@ export interface AppConfig {
    * defaulting to wide-open.
    */
   cors: { origins: string[] };
+  /**
+   * 21_ADRs > ADR-087 — S3/MinIO-compatible object storage for Documents.
+   * All five of endpoint/bucket/accessKeyId/secretAccessKey must be set for
+   * `StorageService.isConfigured()` to report true; any one missing means
+   * the presigned-upload endpoint refuses with a clear `UNEXPECTED_ERROR`
+   * and `downloadVersion` falls back to its pre-ADR-087 behavior (return
+   * the stored `fileUrl` value as-is) — the same "stub until configured"
+   * posture this codebase already uses for SMS/OTP delivery.
+   */
+  storage: {
+    endpoint: string;
+    region: string;
+    bucket: string;
+    accessKeyId: string;
+    secretAccessKey: string;
+    forcePathStyle: boolean;
+    useSsl: boolean;
+  };
 }
 
 function requireEnv(key: string, fallback?: string): string {
@@ -92,6 +110,22 @@ export default (): AppConfig => {
         .split(',')
         .map((origin) => origin.trim())
         .filter((origin) => origin.length > 0),
+    },
+    storage: {
+      // Host[:port] only — e.g. `localhost:9000` (local MinIO, see
+      // docker-compose.yml) or `s3.us-east-1.amazonaws.com` (real AWS S3,
+      // non-path-style). No scheme prefix; `useSsl` decides http vs https.
+      endpoint: process.env.STORAGE_ENDPOINT ?? '',
+      region: process.env.STORAGE_REGION ?? 'us-east-1',
+      bucket: process.env.STORAGE_BUCKET ?? '',
+      accessKeyId: process.env.STORAGE_ACCESS_KEY_ID ?? '',
+      secretAccessKey: process.env.STORAGE_SECRET_ACCESS_KEY ?? '',
+      // MinIO (and most self-hosted S3-compatible stores) need path-style
+      // (`https://host/bucket/key`) since they don't do per-bucket DNS —
+      // true is the safer local/dev default. Real AWS S3 wants this false
+      // (`https://bucket.host/key`, virtual-hosted style).
+      forcePathStyle: (process.env.STORAGE_FORCE_PATH_STYLE ?? 'true') === 'true',
+      useSsl: (process.env.STORAGE_USE_SSL ?? 'true') === 'true',
     },
   };
 };

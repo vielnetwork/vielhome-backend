@@ -1,10 +1,15 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsDateString, IsInt, IsOptional, IsPositive, IsString } from 'class-validator';
 
-/** 08.09 "Upload New Version" endpoint — same file metadata shape as CreateDocumentDto, applied to an existing Document. */
+/**
+ * 08.09 "Upload New Version" endpoint — same file metadata shape as
+ * CreateDocumentDto, applied to an existing Document. 21_ADRs > ADR-087:
+ * `fileUrl` is the `storageKey` from `POST :id/documents/upload-url` when
+ * real storage is configured — same no-DTO-change note as CreateDocumentDto.
+ */
 export class UploadVersionDto {
   @ApiProperty({
-    description: 'Location of the already-uploaded file (pre-signed URL / storage key).',
+    description: 'Storage key returned by POST :id/documents/upload-url (ADR-087).',
   })
   @IsString()
   fileUrl!: string;

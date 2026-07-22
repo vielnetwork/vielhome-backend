@@ -9,6 +9,7 @@ import type {
 import { DocumentsService } from '../application/documents.service';
 import { CreateDocumentDto } from '../application/dto/create-document.dto';
 import { BulkCreateDocumentDto } from '../application/dto/bulk-create-document.dto';
+import { RequestUploadUrlDto } from '../application/dto/request-upload-url.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -36,6 +37,25 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
 @Controller({ path: 'buildings', version: '1' })
 export class BuildingDocumentsController {
   constructor(private readonly documents: DocumentsService) {}
+
+  /**
+   * 21_ADRs > ADR-087 — step one of the real-storage upload flow: request
+   * a presigned PUT URL, upload the file bytes directly to storage, then
+   * call `POST :id/documents` (or `/documents/:documentId/versions`) with
+   * the returned `storageKey` as `fileUrl`. Registered above the plain
+   * `:id/documents` POST for readability only — both are already
+   * unambiguous literal-vs-param segments, no route-order fix needed
+   * (same reasoning as `bulk` below).
+   */
+  @Post(':id/documents/upload-url')
+  @UseGuards(MembershipGuard)
+  requestUploadUrl(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: RequestUploadUrlDto,
+  ) {
+    return this.documents.requestUploadUrl(id, dto, user.sub);
+  }
 
   @Post(':id/documents')
   @UseGuards(MembershipGuard)

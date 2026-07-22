@@ -13,9 +13,11 @@ import { DocumentPolicy } from '../domain/policies/document.policy';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { BulkCreateDocumentDto } from './dto/bulk-create-document.dto';
 import { UploadVersionDto } from './dto/upload-version.dto';
+import { RequestUploadUrlDto } from './dto/request-upload-url.dto';
 import { CreateReferenceDto } from './dto/create-reference.dto';
 import { ArchiveDocumentDto } from './dto/archive-document.dto';
 import { AuditService } from '../../../common/audit/audit.service';
+import { StorageService } from '../../../common/storage/storage.service';
 import { AppError, AuthorizationError, NotFoundAppError } from '../../../common/errors/app-error';
 import {
   DocumentArchivedEvent,
@@ -35,6 +37,7 @@ export class DocumentsService {
     private readonly policy: DocumentPolicy,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
+    private readonly storage: StorageService,
   ) {}
 
   private async getBuilding(buildingId: string) {
@@ -70,6 +73,26 @@ export class DocumentsService {
     return found;
   }
 
+  /**
+   * 21_ADRs > ADR-087 — step one of the real-storage upload flow: the
+   * client requests a presigned PUT URL here, uploads the file bytes
+   * directly to storage, then calls `createDocument`/`uploadVersion` with
+   * the returned `storageKey` as `fileUrl`. Membership is checked (this is
+   * a building-scoped action, same as `createDocument`) but NOT category
+   * privilege — category isn't known until the create/upload-version call
+   * itself, and gating on it here would mean asking the client to declare
+   * a category twice.
+   */
+  async requestUploadUrl(buildingId: string, dto: RequestUploadUrlDto, actorPersonId: string) {
+    await this.getBuilding(buildingId);
+    await this.assertMember(actorPersonId, buildingId);
+    this.policy.assertFileTypeSupported(dto.fileType);
+    this.policy.assertFileSizeWithinLimit(dto.fileSize);
+
+    const storageKey = this.storage.buildObjectKey(buildingId, dto.fileName);
+    return this.storage.getPresignedUploadUrl(storageKey);
+  }
+
   async createDocument(
     buildingId: string,
     dto: CreateDocumentDto,
@@ -82,6 +105,7 @@ export class DocumentsService {
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
     this.policy.assertCategoryManageable(dto.category, privileged);
     this.policy.assertFileTypeSupported(dto.fileType);
+    this.policy.assertFileSizeWithinLimit(dto.fileSize);
 
     const { document, version } = await this.documents.createDocumentWithFirstVersion({
       buildingId,
@@ -152,6 +176,7 @@ export class DocumentsService {
       try {
         this.policy.assertCategoryManageable(item.category, privileged);
         this.policy.assertFileTypeSupported(item.fileType);
+        this.policy.assertFileSizeWithinLimit(item.fileSize);
 
         const { document, version } = await this.documents.createDocumentWithFirstVersion({
           buildingId,
@@ -259,6 +284,7 @@ export class DocumentsService {
     this.policy.assertCategoryManageable(found.category, privileged);
     this.policy.assertNotArchived(found.status);
     this.policy.assertFileTypeSupported(dto.fileType);
+    this.policy.assertFileSizeWithinLimit(dto.fileSize);
 
     const version = await this.documents.addVersion({
       documentId,
@@ -374,6 +400,23 @@ export class DocumentsService {
     });
   }
 
+  /**
+   * 21_ADRs > ADR-087 — once real storage is configured
+   * (`StorageService.isConfigured()`), the stored `fileUrl` is treated as
+   * a storage key and a fresh, time-limited presigned GET is returned in
+   * its place, instead of the raw stored value. This is a real,
+   * intentional behavior change once an operator turns storage on: a
+   * client relying on the pre-ADR-087 "returns whatever string I stored"
+   * behavior would now get a signed URL wrapping that string as if it
+   * were an object key. Not a concern for this MVP (no production data
+   * predates this ADR — every prior `fileUrl` write was already this
+   * codebase's own client-supplied-metadata stub), and disclosed here and
+   * in this ADR's own Consequences rather than silently changed. When
+   * storage is NOT configured, this returns exactly the pre-ADR-087
+   * behavior (the raw stored value) — no regression for any environment
+   * that hasn't provisioned real storage yet, including this sandbox's
+   * own e2e test suite.
+   */
   async downloadVersion(versionId: string, actorPersonId: string, requestId: string) {
     const version = await this.documents.findVersionWithDocument(versionId);
     if (!version) throw new NotFoundAppError('Document version not found.');
@@ -393,6 +436,10 @@ export class DocumentsService {
       requestId,
     });
 
-    return { fileUrl: version.fileUrl, fileName: version.fileName, fileType: version.fileType };
+    const fileUrl = this.storage.isConfigured()
+      ? this.storage.getPresignedDownloadUrl(version.fileUrl)
+      : version.fileUrl;
+
+    return { fileUrl, fileName: version.fileName, fileType: version.fileType };
   }
 }
