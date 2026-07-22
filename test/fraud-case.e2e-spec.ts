@@ -848,7 +848,18 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
       .send({ signalType: 'OTHER', targetPersonId: targetSuspend.personId })
       .expect(201);
     openCaseId = openCaseRes.body.data.id;
-  });
+    // ADR-085 round-3/4 finding: two full bootstrapTestApp() calls in one
+    // beforeAll (app + authApp, ADR-085 round-2's own throttle-isolation
+    // fix) can push total setup time past Jest's default 5000ms hook
+    // timeout under real concurrent load — observed directly in this
+    // series' own sibling describes as "Exceeded timeout of 5000 ms for a
+    // hook" at the authApp bootstrap line. Each bootstrapTestApp() does a
+    // full Test.createTestingModule().compile() — real Postgres/Redis
+    // connections, every provider initialized — not a cheap operation,
+    // and doing it twice per describe is real added cost. Giving the hook
+    // explicit headroom is simpler and safer than reaching into
+    // ThrottlerStorage internals to avoid the second app.
+  }, 20000);
 
   afterAll(async () => {
     await cleanupFraudArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });

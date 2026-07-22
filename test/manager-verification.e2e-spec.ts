@@ -643,7 +643,20 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
     case1Id = case1!.id;
     case2Id = case2!.id;
     case3Id = case3!.id;
-  });
+    // ADR-085 round-3/4 finding: two full bootstrapTestApp() calls in one
+    // beforeAll (app + authApp, ADR-085 round-2's own throttle-isolation
+    // fix) can push total setup time past Jest's default 5000ms hook
+    // timeout under real concurrent load — observed directly as "Exceeded
+    // timeout of 5000 ms for a hook" at the authApp bootstrap line, and
+    // very likely also the cause of round 3's own harder-to-explain
+    // 422/404 mismatches (a slow-but-still-under-5000ms beforeAll shifting
+    // this describe's timing relative to other concurrent suites). Each
+    // bootstrapTestApp() does a full Test.createTestingModule().compile()
+    // — real Postgres/Redis connections, every provider initialized — not
+    // a cheap operation, and doing it twice per describe is real added
+    // cost. Giving the hook explicit headroom is simpler and safer than
+    // reaching into ThrottlerStorage internals to avoid the second app.
+  }, 20000);
 
   afterAll(async () => {
     await cleanupBuildings(prisma, createdBuildingIds);

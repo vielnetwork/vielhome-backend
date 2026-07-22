@@ -616,7 +616,23 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     const case3 = await waitForInitialCase(prisma, building3);
     case2Id = case2!.id;
     case3Id = case3!.id;
-  });
+    // ADR-085 round-3/4 finding: two full bootstrapTestApp() calls in one
+    // beforeAll (app + authApp, ADR-085 round-2's own throttle-isolation
+    // fix) can push total setup time past Jest's default 5000ms hook
+    // timeout under real concurrent load — round 4 observed exactly this,
+    // "Exceeded timeout of 5000 ms for a hook" at the authApp bootstrap
+    // line, and this is very likely also the true cause of round 3's own
+    // harder-to-explain 422/404 mismatches in THIS describe (a slow-but-
+    // still-under-5000ms beforeAll shifting this describe's timing
+    // relative to other concurrent suites, rather than a duplicate case
+    // row — a full trace of every write path to BuildingVerificationCase
+    // found no code path that could create one). Each bootstrapTestApp()
+    // does a full Test.createTestingModule().compile() — real Postgres/
+    // Redis connections, every provider initialized — not a cheap
+    // operation, and doing it twice per describe is real added cost.
+    // Giving the hook explicit headroom is simpler and safer than
+    // reaching into ThrottlerStorage internals to avoid the second app.
+  }, 20000);
 
   afterAll(async () => {
     await cleanupBuildings(prisma, createdBuildingIds);
@@ -734,43 +750,12 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     // with no caller filter — so a wrong-person appeal genuinely reaches
     // `BuildingVerificationPolicy.assertCanAppeal`'s own identity check.
     //
-    // TEMPORARY DIAGNOSTIC (ADR-085 round 3/4 investigation) — round 3
-    // reproduced this test's own failure identically across two
-    // consecutive real runs (422 instead of the expected 403), meaning
-    // `assertCanAppeal`'s own "not REJECTED" branch is firing even though
-    // the immediately-preceding `it` directly confirmed `building2.status
-    // === 'REJECTED'` via Prisma. A full trace of every write path to
-    // `BuildingVerificationCase` (`evaluateNewBuilding`/`appealCase`'s
-    // `create`, `assignCase`'s `update`, `decideCase`'s `update`) found no
-    // code path that could create a second case row for an
-    // already-evaluated building — so this logs the real row(s) for
-    // `building2` directly, to see the actual data behind the failure
-    // rather than guess further. Remove once root-caused.
-    const diagnosticCases = await prisma.buildingVerificationCase.findMany({
-      where: { buildingId: building2 },
-      orderBy: { createdAt: 'asc' },
-    });
-    const diagnosticBuilding = await prisma.building.findUnique({ where: { id: building2 } });
-    // eslint-disable-next-line no-console
-    console.log(
-      '[DIAGNOSTIC ADR-085] building2 =',
-      building2,
-      'case2Id =',
-      case2Id,
-      'building2.status =',
-      diagnosticBuilding?.status,
-      'cases =',
-      JSON.stringify(
-        diagnosticCases.map((c) => ({
-          id: c.id,
-          status: c.status,
-          isAppeal: c.isAppeal,
-          createdAt: c.createdAt,
-          decidedAt: c.decidedAt,
-        })),
-      ),
-    );
-
+    // Round 3/4 both showed this describe failing intermittently (422/404
+    // mismatches in round 3, an outright `beforeAll` timeout in round 4) —
+    // both traced to the same root cause (see this describe's own
+    // `beforeAll` timeout comment above), not a data bug here. A prior
+    // round's diagnostic logging (now removed) confirmed no code path
+    // exists that could create a second case row for this building.
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${building2}/verification/appeal`)
       .set('Authorization', `Bearer ${founder3.accessToken}`)
