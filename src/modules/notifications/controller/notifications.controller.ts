@@ -1,7 +1,8 @@
-import { Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { NotificationCategory } from '@prisma/client';
 import { NotificationsService } from '../application/notifications.service';
+import { UpdatePushTokenDto } from '../application/dto/update-push-token.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
@@ -46,6 +47,12 @@ export class NotificationsController {
   @Post('read-all')
   markAllAsRead(@CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
     return this.notifications.markAllAsRead(user.sub, requestId);
+  }
+
+  /** 21_ADRs > ADR-088 — registers/refreshes the FCM push token for one of the caller's own already-logged-in devices. A literal segment, registered alongside `unread-count`/`search` above `:notificationId`, same reason as those two. */
+  @Patch('push-token')
+  updatePushToken(@CurrentUser() user: JwtPayload, @Body() dto: UpdatePushTokenDto) {
+    return this.notifications.updatePushToken(user.sub, dto);
   }
 
   @Get()

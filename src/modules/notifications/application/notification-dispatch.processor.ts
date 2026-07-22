@@ -2,6 +2,9 @@ import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import type { Job } from 'bullmq';
 import { NotificationRepository } from '../infrastructure/repositories/notification.repository';
+import { EmailProviderService } from '../../../common/notification-providers/email-provider.service';
+import { SmsProviderService } from '../../../common/notification-providers/sms-provider.service';
+import { PushProviderService } from '../../../common/notification-providers/push-provider.service';
 
 export const NOTIFICATION_DISPATCH_QUEUE = 'notification-dispatch';
 export const DISPATCH_DELIVERY_JOB = 'dispatch-delivery';
@@ -24,17 +27,42 @@ export interface DispatchDeliveryJobData {
  *
  * Only non-IN_APP channels ever reach this queue — see
  * `NotificationsService.notify`'s own doc comment for why IN_APP stays
- * synchronous. The dispatch itself is still the same log-stub
- * `NotificationsService.notify` used to run inline (no real Push/Email/SMS
- * provider exists yet, unchanged by this ADR) — what moved is WHERE it
- * runs (a background worker, not the original event-triggered request),
- * not WHAT it does.
+ * synchronous.
+ *
+ * 21_ADRs > ADR-088 — real Push/Email/SMS dispatch replaces the pure
+ * log-stub each channel used to run unconditionally (ADR-027/ADR-039,
+ * unchanged in shape here). Each channel independently falls back to the
+ * EXACT pre-ADR-088 stub behavior (same log line, same `markDeliverySent`
+ * call) whenever its own provider isn't configured OR the recipient has no
+ * usable target for that channel (no `email`; no `Device` row with a
+ * `pushToken`) — no regression for any environment without real providers
+ * configured, including this sandbox's own e2e suite/CI. A real provider
+ * throwing propagates out of `process()` uncaught — BullMQ's own
+ * `attempts: 3`/exponential-backoff (set by `NotificationsService.notify`)
+ * retries it, and `onFailed` below records a permanent `FAILED` status
+ * only once retries are exhausted, exactly as this processor's own
+ * pre-ADR-088 doc comment already anticipated ("a real provider will be
+ * able to throw").
+ *
+ * Still always marks `SENT`, never `DELIVERED`, on a successful provider
+ * call — accepted-by-provider is not the same guarantee as
+ * confirmed-delivered-to-device, and none of SendGrid/Twilio/FCM's synchronous
+ * HTTP responses used here report that; real delivery confirmation needs
+ * each provider's own asynchronous webhook (SendGrid Event Webhook, Twilio
+ * status callbacks — FCM's v1 API doesn't offer per-device delivery
+ * confirmation at all), out of scope for this ADR and named in its own
+ * Future Review.
  */
 @Processor(NOTIFICATION_DISPATCH_QUEUE)
 export class NotificationDispatchProcessor extends WorkerHost {
   private readonly logger = new Logger(NotificationDispatchProcessor.name);
 
-  constructor(private readonly notifications: NotificationRepository) {
+  constructor(
+    private readonly notifications: NotificationRepository,
+    private readonly emailProvider: EmailProviderService,
+    private readonly smsProvider: SmsProviderService,
+    private readonly pushProvider: PushProviderService,
+  ) {
     super();
   }
 
@@ -57,14 +85,95 @@ export class NotificationDispatchProcessor extends WorkerHost {
       return;
     }
 
-    // Stub dispatch — same "model the real shape, stub the missing
-    // infrastructure" pattern as OTP delivery and Documents' file storage.
-    // Always marked SENT (dispatched to the stub), never DELIVERED — there
-    // is no real provider to confirm receipt (ADR-027, unchanged here).
-    this.logger.log(
-      `[notification-stub ${delivery.channel}] to person=${delivery.notification.recipientId}: "${delivery.notification.title}"`,
-    );
+    const { notification } = delivery;
+    const recipient = notification.recipient;
+
+    switch (delivery.channel) {
+      case 'EMAIL':
+        if (this.emailProvider.isConfigured() && recipient.email) {
+          await this.emailProvider.send({
+            to: recipient.email,
+            subject: notification.title,
+            body: notification.body,
+          });
+          await this.notifications.markDeliverySent(deliveryId);
+          return;
+        }
+        break;
+      case 'SMS':
+        // `recipient.phone` is a required field (every Person has one —
+        // it's how they authenticate), so this branch is reachable
+        // whenever `SmsProviderService` is configured, regardless of what
+        // else is filled in on the recipient's profile.
+        if (this.smsProvider.isConfigured()) {
+          await this.smsProvider.send({
+            to: recipient.phone,
+            body: `${notification.title}: ${notification.body}`,
+          });
+          await this.notifications.markDeliverySent(deliveryId);
+          return;
+        }
+        break;
+      case 'PUSH':
+        if (this.pushProvider.isConfigured() && recipient.devices.length > 0) {
+          await this.dispatchPush(deliveryId, recipient.devices, notification);
+          return;
+        }
+        break;
+      default:
+        break;
+    }
+
+    this.stubDispatch(delivery.channel, notification.recipientId, notification.title);
     await this.notifications.markDeliverySent(deliveryId);
+  }
+
+  /**
+   * A person can have multiple registered devices. Sends to every one with
+   * a `pushToken` (already filtered by `NotificationRepository.
+   * findDeliveryById`'s own `include`) via `Promise.allSettled` — one
+   * stale/uninstalled device's token going bad shouldn't block delivery to
+   * the person's other devices. Marks `SENT` if AT LEAST ONE device
+   * succeeded; if every attempted device failed, re-throws the first
+   * failure so BullMQ retries the whole delivery (a device-specific
+   * permanent failure, e.g. an uninstalled app whose token FCM will never
+   * accept again, is not distinguished from a transient one here — no
+   * source doc specifies per-device token pruning, named in Future Review).
+   */
+  private async dispatchPush(
+    deliveryId: string,
+    devices: Array<{ pushToken: string | null }>,
+    notification: { title: string; body: string },
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      devices
+        .filter((device): device is { pushToken: string } => device.pushToken !== null)
+        .map((device) =>
+          this.pushProvider.send({
+            token: device.pushToken,
+            title: notification.title,
+            body: notification.body,
+          }),
+        ),
+    );
+
+    const anySucceeded = results.some((result) => result.status === 'fulfilled');
+    if (anySucceeded) {
+      await this.notifications.markDeliverySent(deliveryId);
+      return;
+    }
+
+    const firstFailure = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    throw firstFailure?.reason instanceof Error
+      ? firstFailure.reason
+      : new Error('Push dispatch failed on every registered device.');
+  }
+
+  /** The exact pre-ADR-088 stub log line — unchanged so a diff against any earlier delivered version shows zero difference in this one path. */
+  private stubDispatch(channel: string, recipientId: string, title: string): void {
+    this.logger.log(`[notification-stub ${channel}] to person=${recipientId}: "${title}"`);
   }
 
   /**

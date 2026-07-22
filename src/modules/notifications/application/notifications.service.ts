@@ -10,6 +10,7 @@ import {
 import { NotificationRepository } from '../infrastructure/repositories/notification.repository';
 import { NotificationPolicy } from '../domain/policies/notification.policy';
 import { UpdatePreferenceDto } from './dto/update-preference.dto';
+import { UpdatePushTokenDto } from './dto/update-push-token.dto';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
 import {
@@ -261,6 +262,26 @@ export class NotificationsService {
       requestId,
     });
     return updated;
+  }
+
+  /**
+   * 21_ADRs > ADR-088 — `PATCH /notifications/push-token`. 404s (rather
+   * than 403) on a device that doesn't belong to the caller, same
+   * ownership-hiding posture the repository method's own doc comment
+   * explains — this service layer doesn't get enough information back to
+   * distinguish "wrong owner" from "truly nonexistent" even if it wanted
+   * to leak that distinction.
+   */
+  async updatePushToken(personId: string, dto: UpdatePushTokenDto): Promise<{ ok: true }> {
+    const updated = await this.notifications.updateDevicePushToken(
+      personId,
+      dto.deviceToken,
+      dto.pushToken,
+    );
+    if (!updated) {
+      throw new NotFoundAppError('Device not found for this account.');
+    }
+    return { ok: true };
   }
 
   async getPreferences(personId: string) {

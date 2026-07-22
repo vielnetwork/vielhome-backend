@@ -140,6 +140,18 @@ model Device {
   createdAt    DateTime @default(now())
   revokedAt    DateTime?
 
+  // 21_ADRs > ADR-088 — real Push provider (Firebase Cloud Messaging)
+  // integration for Notifications. Distinct from `deviceToken` above:
+  // `deviceToken` is a stable per-install identifier the client generates
+  // itself for the "Remember Device"/refresh-token flow (ADR-023-era) and
+  // never changes; `pushToken` is the FCM registration token the OS/SDK
+  // issues, rotates periodically, and the client re-registers via
+  // `PATCH /notifications/push-token`. Nullable — not every device
+  // registers for push (or push may not be configured at all), additive
+  // per the schema-freeze policy (25_API_v1_Database_Freeze_Manifest §4:
+  // "every schema change was additive").
+  pushToken    String?  @unique
+
   refreshTokens RefreshToken[]
 
   @@index([personId])

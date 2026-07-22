@@ -42,6 +42,18 @@ export interface AppConfig {
     forcePathStyle: boolean;
     useSsl: boolean;
   };
+  /**
+   * 21_ADRs > ADR-088 — real Push/Email/SMS provider integration for
+   * Notifications (and, for `sms`, `AuthService.requestOtp`'s own OTP
+   * delivery). Each sub-block is independently gated — a channel with any
+   * of its own values unset falls back to that channel's pre-ADR-088 stub
+   * behavior; the three channels do not depend on each other.
+   */
+  notificationProviders: {
+    email: { apiKey: string; fromAddress: string; fromName: string };
+    sms: { accountSid: string; authToken: string; fromNumber: string };
+    push: { projectId: string; clientEmail: string; privateKey: string };
+  };
 }
 
 function requireEnv(key: string, fallback?: string): string {
@@ -126,6 +138,23 @@ export default (): AppConfig => {
       // (`https://bucket.host/key`, virtual-hosted style).
       forcePathStyle: (process.env.STORAGE_FORCE_PATH_STYLE ?? 'true') === 'true',
       useSsl: (process.env.STORAGE_USE_SSL ?? 'true') === 'true',
+    },
+    notificationProviders: {
+      email: {
+        apiKey: process.env.EMAIL_PROVIDER_API_KEY ?? '',
+        fromAddress: process.env.EMAIL_FROM_ADDRESS ?? '',
+        fromName: process.env.EMAIL_FROM_NAME ?? '',
+      },
+      sms: {
+        accountSid: process.env.SMS_PROVIDER_ACCOUNT_SID ?? '',
+        authToken: process.env.SMS_PROVIDER_AUTH_TOKEN ?? '',
+        fromNumber: process.env.SMS_PROVIDER_FROM_NUMBER ?? '',
+      },
+      push: {
+        projectId: process.env.PUSH_FIREBASE_PROJECT_ID ?? '',
+        clientEmail: process.env.PUSH_FIREBASE_CLIENT_EMAIL ?? '',
+        privateKey: process.env.PUSH_FIREBASE_PRIVATE_KEY ?? '',
+      },
     },
   };
 };

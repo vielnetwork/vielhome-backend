@@ -9,6 +9,7 @@ import { PrismaModule } from './common/prisma/prisma.module';
 import { QueueConfigModule } from './common/queue/queue-config.module';
 import { AuditModule } from './common/audit/audit.module';
 import { StorageModule } from './common/storage/storage.module';
+import { NotificationProvidersModule } from './common/notification-providers/notification-providers.module';
 import { RequestContextMiddleware } from './common/middleware/request-context.middleware';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/foundation/auth/auth.module';
@@ -65,6 +66,11 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     // listing photos — both named in ADR-026/ADR-030's own Future Review)
     // shouldn't need DocumentsModule as a dependency just to store a file.
     StorageModule,
+    // 21_ADRs > ADR-088 — same placement/reasoning as StorageModule above.
+    // Two feature modules consume this today (NotificationsModule's own
+    // dispatch processor; Auth's `AuthService.requestOtp`, for real OTP SMS
+    // delivery) without either importing the other.
+    NotificationProvidersModule,
     HealthModule,
     AuthModule,
     BuildingModule,

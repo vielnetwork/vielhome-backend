@@ -1,11 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { NotificationCategory, NotificationChannel, NotificationPriority } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
-
 @Injectable()
 export class NotificationRepository {
   constructor(private readonly prisma: PrismaService) {}
-
   /** Creates the Notification and one NotificationDelivery row per channel that passed the preference/priority gate in one write. */
   createNotification(params: {
     recipientId: string;
@@ -35,7 +33,6 @@ export class NotificationRepository {
       include: { deliveries: true },
     });
   }
-
   /**
    * 21_ADRs > ADR-077 round-3 — the exact same "un-awaited `EventEmitter2
    * .emit()` chain still in flight when a test's own cleanup deletes the
@@ -53,14 +50,12 @@ export class NotificationRepository {
   async markDeliverySent(deliveryId: string): Promise<void> {
     await this.updateDeliveryIfStillPresent(deliveryId, { status: 'SENT', sentAt: new Date() });
   }
-
   async markDeliveryFailed(deliveryId: string, reason: string): Promise<void> {
     await this.updateDeliveryIfStillPresent(deliveryId, {
       status: 'FAILED',
       failureReason: reason,
     });
   }
-
   private async updateDeliveryIfStillPresent(
     deliveryId: string,
     data: { status: 'SENT' | 'FAILED'; sentAt?: Date; failureReason?: string },
@@ -75,19 +70,32 @@ export class NotificationRepository {
       throw error;
     }
   }
-
-  /** Used by `NotificationDispatchProcessor` (21_ADRs > ADR-039) — a delivery row plus the parent Notification's own recipient/title, everything the stub dispatch needs to log a message and decide whether it's still PENDING. */
+  /**
+   * Used by `NotificationDispatchProcessor` (21_ADRs > ADR-039) — a
+   * delivery row plus the parent Notification's own recipient/title,
+   * everything the (still-available) log-stub dispatch needs. 21_ADRs >
+   * ADR-088 extends the include to the recipient's own `email`/`phone`
+   * (real Email/SMS dispatch) and non-revoked `devices` (real Push
+   * dispatch needs each device's `pushToken`) — this one extra include is
+   * cheaper than a second round-trip per delivery.
+   */
   findDeliveryById(id: string) {
     return this.prisma.notificationDelivery.findUnique({
       where: { id },
-      include: { notification: true },
+      include: {
+        notification: {
+          include: {
+            recipient: {
+              include: { devices: { where: { revokedAt: null, pushToken: { not: null } } } },
+            },
+          },
+        },
+      },
     });
   }
-
   findById(id: string) {
     return this.prisma.notification.findUnique({ where: { id }, include: { deliveries: true } });
   }
-
   listForPerson(
     personId: string,
     filter?: { category?: NotificationCategory; unreadOnly?: boolean; includeArchived?: boolean },
@@ -102,7 +110,6 @@ export class NotificationRepository {
       orderBy: { createdAt: 'desc' },
     });
   }
-
   searchForPerson(personId: string, params: { title?: string; category?: NotificationCategory }) {
     return this.prisma.notification.findMany({
       where: {
@@ -114,28 +121,23 @@ export class NotificationRepository {
       orderBy: { createdAt: 'desc' },
     });
   }
-
   countUnread(personId: string) {
     return this.prisma.notification.count({
       where: { recipientId: personId, readAt: null, archivedAt: null },
     });
   }
-
   markRead(id: string) {
     return this.prisma.notification.update({ where: { id }, data: { readAt: new Date() } });
   }
-
   markAllRead(personId: string) {
     return this.prisma.notification.updateMany({
       where: { recipientId: personId, readAt: null },
       data: { readAt: new Date() },
     });
   }
-
   archive(id: string) {
     return this.prisma.notification.update({ where: { id }, data: { archivedAt: new Date() } });
   }
-
   /**
    * One row per person, created lazily on first read/write — mirrors the
    * "no signup-time row" laziness already used for Finance's default Fund.
@@ -195,7 +197,31 @@ export class NotificationRepository {
       throw error;
     }
   }
-
+  /**
+   * 21_ADRs > ADR-088 — registers/refreshes the FCM registration token for
+   * one of the caller's own devices (`PATCH /notifications/push-token`).
+   * `updateMany` with `personId` in the `where` (rather than `update` by
+   * `deviceToken` alone) means a device that exists but belongs to a
+   * DIFFERENT person updates zero rows instead of succeeding — the caller
+   * can't overwrite another account's push target even if they somehow
+   * knew that device's `deviceToken`. Returns whether a row was actually
+   * updated so the service layer can 404 on a genuine "not found," without
+   * this repository method leaking which specific reason (wrong owner vs.
+   * truly nonexistent vs. revoked) caused the zero-count — same
+   * ownership-hiding posture `DocumentPolicy`/`CasePolicy` already use
+   * elsewhere in this codebase.
+   */
+  async updateDevicePushToken(
+    personId: string,
+    deviceToken: string,
+    pushToken: string,
+  ): Promise<boolean> {
+    const result = await this.prisma.device.updateMany({
+      where: { deviceToken, personId, revokedAt: null },
+      data: { pushToken, lastSeenAt: new Date() },
+    });
+    return result.count > 0;
+  }
   updatePreference(
     personId: string,
     data: Partial<{

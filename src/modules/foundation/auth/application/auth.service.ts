@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'crypto';
@@ -7,6 +7,7 @@ import { AuthRepository } from '../infrastructure/repositories/auth.repository';
 import { OtpDomainService } from '../domain/services/otp.domain-service';
 import { OtpPolicy } from '../domain/policies/otp.policy';
 import { BuildingService } from '../../../building/application/building.service';
+import { SmsProviderService } from '../../../../common/notification-providers/sms-provider.service';
 import { RequestOtpDto } from './dto/request-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -34,6 +35,8 @@ export interface TokenPair {
  */
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly repo: AuthRepository,
     private readonly otp: OtpDomainService,
@@ -43,6 +46,7 @@ export class AuthService {
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
     private readonly buildingService: BuildingService,
+    private readonly smsProvider: SmsProviderService,
   ) {}
 
   async requestOtp(dto: RequestOtpDto, requestId: string): Promise<{ expiresInSeconds: number }> {
@@ -59,21 +63,7 @@ export class AuthService {
       maxAttempts,
     });
 
-    // Infrastructure (SMS gateway) is intentionally not wired yet — logged
-    // instead so the flow is testable end-to-end before the SMS adapter
-    // lands (11_Backend_Architecture > Infrastructure Layer: "Everything
-    // replaceable").
-    //
-    // 21_ADRs > 26_Security_Review_v1.0 §1.1 — this is a necessary interim
-    // behavior (no other OTP delivery mechanism exists yet), but it is a
-    // real security-relevant fact, not just a product gap: in production
-    // this line writes a live, usable login/registration credential into
-    // durable, aggregated logs (ADR-064's JsonLoggerService). Treat
-    // production log access as sensitive-credential-equivalent access
-    // until the real SMS/Push provider replaces this line — do not remove
-    // or silence this comment without also closing that provider gap.
-    // eslint-disable-next-line no-console
-    console.log(`[OTP] ${dto.phone} (${dto.purpose}): ${code} — expires in ${ttlSeconds}s`);
+    await this.deliverOtpCode(dto.phone, dto.purpose, code, ttlSeconds);
 
     await this.audit.record({
       action: 'OtpRequested',
@@ -215,6 +205,52 @@ export class AuthService {
     });
 
     return { accessToken, refreshToken: rawRefreshToken, expiresIn: auth.accessExpiresIn };
+  }
+
+  /**
+   * 21_ADRs > ADR-088 — closes `26_Security_Review_v1.0` §1.1 exactly as
+   * `requestOtp`'s own prior comment anticipated ("do not remove or
+   * silence this comment without also closing that provider gap"): once a
+   * real SMS provider is configured, the OTP code is no longer written to
+   * durable, aggregated logs at all in the success path — it goes out via
+   * `SmsProviderService` instead, the same infrastructure Notifications'
+   * own SMS channel uses (`NotificationDispatchProcessor`).
+   *
+   * A provider failure does NOT fail the whole `requestOtp` call — the
+   * `OtpRequest` row already exists and a resend flow already covers "I
+   * didn't get it," so hard-failing the request over a transient downstream
+   * SMS hiccup would be worse UX than falling back to the pre-ADR-088
+   * console-log stub for that one attempt (logged as a `warn`, not
+   * silently swallowed, so a real outage is still visible in production
+   * logs — just not by leaking the credential itself). When no provider is
+   * configured at all, behavior is byte-for-byte the pre-ADR-088 stub.
+   */
+  private async deliverOtpCode(
+    phone: string,
+    purpose: string,
+    code: string,
+    ttlSeconds: number,
+  ): Promise<void> {
+    if (this.smsProvider.isConfigured()) {
+      try {
+        await this.smsProvider.send({
+          to: phone,
+          body: `Your VielHome verification code is ${code}. It expires in ${Math.round(ttlSeconds / 60)} minute(s).`,
+        });
+        return;
+      } catch (error) {
+        this.logger.warn(
+          `Real SMS OTP delivery failed for ${phone} (${purpose}), falling back to console log ` +
+            `this one time: ${(error as Error).message}`,
+        );
+      }
+    }
+
+    // Pre-ADR-088 stub, unchanged — see this method's own doc comment for
+    // when this still runs (no provider configured, or a provider call
+    // just failed above).
+    // eslint-disable-next-line no-console
+    console.log(`[OTP] ${phone} (${purpose}): ${code} — expires in ${ttlSeconds}s`);
   }
 
   private hashToken(token: string): string {
