@@ -338,10 +338,7 @@ const PLATFORM_REVIEWER_PHONE = '+989120000001';
  * fresh code request naturally wins whatever race just invalidated the
  * previous one) rather than retrying `verify` alone with a stale code.
  */
-async function loginAsSeededStaff(
-  app: INestApplication,
-  phone: string,
-): Promise<RegisteredPerson> {
+async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const code = await requestOtpAndCaptureCode(app, phone);
@@ -386,10 +383,7 @@ async function deleteStaffLoginArtifactsOnceBatch(
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
 }
 
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-): Promise<void> {
+async function cleanupStaffLoginArtifacts(prisma: PrismaService, phones: string[]): Promise<void> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -776,9 +770,7 @@ describe('Subscription Management (e2e) — Feature Grants (07.04 Rule 008/009/0
 
   it('lets REVIEWER revoke a grant — falls back to the plan (07.04 Rule 018)', async () => {
     const res = await request(app.getHttpServer())
-      .post(
-        `/api/v1/backoffice/buildings/${buildingId}/subscription/grants/${smsGrantId}/revoke`,
-      )
+      .post(`/api/v1/backoffice/buildings/${buildingId}/subscription/grants/${smsGrantId}/revoke`)
       .set('Authorization', `Bearer ${reviewer.accessToken}`)
       .expect(201);
 

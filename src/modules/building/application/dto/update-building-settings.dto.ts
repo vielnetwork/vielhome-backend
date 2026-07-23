@@ -9,7 +9,7 @@ import { IsBoolean, IsOptional } from 'class-validator';
  */
 export class UpdateBuildingSettingsDto {
   @ApiPropertyOptional({
-    description: '04.06 Rule 4 — allow a unit\'s current tenant to vote in place of its owner.',
+    description: "04.06 Rule 4 — allow a unit's current tenant to vote in place of its owner.",
   })
   @IsOptional()
   @IsBoolean()

@@ -1,5 +1,8 @@
 import { VotePolicy } from './vote.policy';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 describe('VotePolicy', () => {
   let policy: VotePolicy;

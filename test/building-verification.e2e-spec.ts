@@ -376,10 +376,7 @@ const PLATFORM_REVIEWER_PHONE = '+989120000001';
  * fresh code request naturally wins whatever race just invalidated the
  * previous one) rather than retrying `verify` alone with a stale code.
  */
-async function loginAsSeededStaff(
-  app: INestApplication,
-  phone: string,
-): Promise<RegisteredPerson> {
+async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const code = await requestOtpAndCaptureCodeDirect(app, phone);
@@ -424,10 +421,7 @@ async function deleteStaffLoginArtifactsOnceBatch(
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
 }
 
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-): Promise<void> {
+async function cleanupStaffLoginArtifacts(prisma: PrismaService, phones: string[]): Promise<void> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -824,7 +818,7 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
 
   let appealCaseId: string;
 
-  it("lets the real creator appeal — opens a linked UNDER_REVIEW case (07.01)", async () => {
+  it('lets the real creator appeal — opens a linked UNDER_REVIEW case (07.01)', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${building2}/verification/appeal`)
       .set('Authorization', `Bearer ${founder2.accessToken}`)

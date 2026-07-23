@@ -358,10 +358,7 @@ const PLATFORM_REVIEWER_PHONE = '+989120000001';
  * execution) applies equally here as the 7th file sharing this exact
  * pattern. Copied verbatim (post-fix) from `fraud-case.e2e-spec.ts`.
  */
-async function loginAsSeededStaff(
-  app: INestApplication,
-  phone: string,
-): Promise<RegisteredPerson> {
+async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const code = await requestOtpAndCaptureCode(app, phone);
@@ -406,10 +403,7 @@ async function deleteStaffLoginArtifactsOnceBatch(
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
 }
 
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-): Promise<void> {
+async function cleanupStaffLoginArtifacts(prisma: PrismaService, phones: string[]): Promise<void> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {

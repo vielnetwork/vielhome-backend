@@ -118,7 +118,10 @@ async function requestOtpAndCaptureCode(
   return match[1];
 }
 
-function verifyOtp(app: INestApplication, params: { phone: string; code: string; deviceToken?: string }) {
+function verifyOtp(
+  app: INestApplication,
+  params: { phone: string; code: string; deviceToken?: string },
+) {
   return request(app.getHttpServer())
     .post('/api/v1/auth/otp/verify')
     .send({
@@ -220,7 +223,7 @@ describe('Notifications — Real Push/Email/SMS Provider Dispatch (e2e, ADR-088)
         .expect(401);
     });
 
-    it('registers a push token for the caller\'s own already-logged-in device', async () => {
+    it("registers a push token for the caller's own already-logged-in device", async () => {
       const res = await request(app.getHttpServer())
         .patch('/api/v1/notifications/push-token')
         .set('Authorization', `Bearer ${personA.accessToken}`)
@@ -229,7 +232,9 @@ describe('Notifications — Real Push/Email/SMS Provider Dispatch (e2e, ADR-088)
 
       expect(res.body.data.ok).toBe(true);
 
-      const device = await prisma.device.findUnique({ where: { deviceToken: personA.deviceToken } });
+      const device = await prisma.device.findUnique({
+        where: { deviceToken: personA.deviceToken },
+      });
       expect(device?.pushToken).toBe('fcm-token-personA-device1');
     });
 
@@ -253,7 +258,9 @@ describe('Notifications — Real Push/Email/SMS Provider Dispatch (e2e, ADR-088)
       expect(res.body.errors[0].code).toBe('NOT_FOUND');
 
       // And personA's own row is untouched by personB's attempt.
-      const device = await prisma.device.findUnique({ where: { deviceToken: personA.deviceToken } });
+      const device = await prisma.device.findUnique({
+        where: { deviceToken: personA.deviceToken },
+      });
       expect(device?.pushToken).toBe('fcm-token-personA-device1');
     });
 

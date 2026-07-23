@@ -815,7 +815,7 @@ describe('Notifications (e2e) — Search', () => {
     expect(mismatched.body.data).toEqual([]);
   });
 
-  it('scopes search strictly to the caller — never leaks another person\'s data', async () => {
+  it("scopes search strictly to the caller — never leaks another person's data", async () => {
     const managerResults = await request(app.getHttpServer())
       .get('/api/v1/notifications/search')
       .query({ title: 'شارژ' })
@@ -1028,7 +1028,7 @@ describe('Notifications (e2e) — Cross-Person Authorization Isolation', () => {
     await app.close();
   });
 
-  it('blocks a different person from reading another person\'s notification (403)', async () => {
+  it("blocks a different person from reading another person's notification (403)", async () => {
     const res = await request(app.getHttpServer())
       .get(`/api/v1/notifications/${personANotificationId}`)
       .set('Authorization', `Bearer ${personB.accessToken}`)
@@ -1036,7 +1036,7 @@ describe('Notifications (e2e) — Cross-Person Authorization Isolation', () => {
     expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
 
-  it('blocks a different person from marking another person\'s notification read', async () => {
+  it("blocks a different person from marking another person's notification read", async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/notifications/${personANotificationId}/read`)
       .set('Authorization', `Bearer ${personB.accessToken}`)
@@ -1044,7 +1044,7 @@ describe('Notifications (e2e) — Cross-Person Authorization Isolation', () => {
     expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
 
-  it('blocks a different person from archiving another person\'s notification (403)', async () => {
+  it("blocks a different person from archiving another person's notification (403)", async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/notifications/${personANotificationId}/archive`)
       .set('Authorization', `Bearer ${personB.accessToken}`)
@@ -1132,7 +1132,7 @@ describe('Notifications (e2e) — Preferences', () => {
     expect(res.body.data.marketingEnabled).toBe(false);
   });
 
-  it('a second PATCH with a different field preserves the first PATCH\'s change', async () => {
+  it("a second PATCH with a different field preserves the first PATCH's change", async () => {
     const res = await request(app.getHttpServer())
       .patch('/api/v1/notification-preferences')
       .set('Authorization', `Bearer ${personA.accessToken}`)
@@ -1243,9 +1243,9 @@ describe('Notifications (e2e) — NotificationTemplate Staff CRUD (ADR-060)', ()
       .get('/api/v1/backoffice/notification-templates')
       .set('Authorization', `Bearer ${reviewer.accessToken}`)
       .expect(200);
-    expect(
-      list.body.data.some((t: { code: string }) => t.code === templateCode('welcome')),
-    ).toBe(true);
+    expect(list.body.data.some((t: { code: string }) => t.code === templateCode('welcome'))).toBe(
+      true,
+    );
 
     const get = await request(app.getHttpServer())
       .get(`/api/v1/backoffice/notification-templates/${createdTemplateIds[0]}`)
@@ -1315,9 +1315,7 @@ describe('Notifications (e2e) — NotificationTemplate Staff CRUD (ADR-060)', ()
       .query({ isActive: 'true' })
       .set('Authorization', `Bearer ${admin.accessToken}`)
       .expect(200);
-    expect(activeOnly.body.data.map((t: { id: string }) => t.id)).toContain(
-      createdTemplateIds[0],
-    );
+    expect(activeOnly.body.data.map((t: { id: string }) => t.id)).toContain(createdTemplateIds[0]);
     expect(activeOnly.body.data.map((t: { id: string }) => t.id)).not.toContain(
       inactive.body.data.id,
     );
@@ -1332,7 +1330,7 @@ describe('Notifications (e2e) — NotificationTemplate Staff CRUD (ADR-060)', ()
     );
   });
 
-  it('PLATFORM_ADMIN updates a template\'s copy and active state', async () => {
+  it("PLATFORM_ADMIN updates a template's copy and active state", async () => {
     const updatedTitle = 'به‌روزرسانی شد';
     const res = await request(app.getHttpServer())
       .patch(`/api/v1/backoffice/notification-templates/${createdTemplateIds[0]}`)

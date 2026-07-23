@@ -1,5 +1,8 @@
 import { VoteProxyPolicy } from './vote-proxy.policy';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 describe('VoteProxyPolicy', () => {
   let policy: VoteProxyPolicy;
@@ -9,7 +12,7 @@ describe('VoteProxyPolicy', () => {
   });
 
   describe('assertCallerIsEligibleVoter', () => {
-    it('allows the unit\'s live eligible voter', () => {
+    it("allows the unit's live eligible voter", () => {
       expect(() => policy.assertCallerIsEligibleVoter(true)).not.toThrow();
     });
 

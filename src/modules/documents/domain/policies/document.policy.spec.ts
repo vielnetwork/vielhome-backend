@@ -33,9 +33,7 @@ describe('DocumentPolicy', () => {
     });
 
     it('rejects a file over the 25MB ceiling', () => {
-      expect(() => policy.assertFileSizeWithinLimit(25 * 1024 * 1024 + 1)).toThrow(
-        ValidationError,
-      );
+      expect(() => policy.assertFileSizeWithinLimit(25 * 1024 * 1024 + 1)).toThrow(ValidationError);
     });
   });
 

@@ -84,7 +84,10 @@ export class PushProviderService {
   /** Returns a cached, still-valid bearer token, or exchanges a fresh service-account JWT for a new one. */
   private async getAccessToken(): Promise<string> {
     const nowSeconds = Math.floor(Date.now() / 1000);
-    if (this.cachedToken && this.cachedToken.expiresAtEpochSeconds - TOKEN_REFRESH_SKEW_SECONDS > nowSeconds) {
+    if (
+      this.cachedToken &&
+      this.cachedToken.expiresAtEpochSeconds - TOKEN_REFRESH_SKEW_SECONDS > nowSeconds
+    ) {
       return this.cachedToken.accessToken;
     }
 

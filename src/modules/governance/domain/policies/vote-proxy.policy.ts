@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 export interface CurrentVoteProxy {
   id: string;

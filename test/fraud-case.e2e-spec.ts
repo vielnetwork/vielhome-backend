@@ -443,10 +443,7 @@ const PLATFORM_REVIEWER_PHONE = '+989120000001';
  * fresh code request naturally wins whatever race just invalidated the
  * previous one) rather than retrying `verify` alone with a stale code.
  */
-async function loginAsSeededStaff(
-  app: INestApplication,
-  phone: string,
-): Promise<RegisteredPerson> {
+async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const code = await requestOtpAndCaptureCodeDirect(app, phone);
@@ -491,10 +488,7 @@ async function deleteStaffLoginArtifactsOnceBatch(
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
 }
 
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-): Promise<void> {
+async function cleanupStaffLoginArtifacts(prisma: PrismaService, phones: string[]): Promise<void> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -702,9 +696,7 @@ describe('Fraud & Abuse Center (e2e) — Report, Case Lifecycle & Metrics (07.03
       .send({ evidenceNotes: 'Confirmed: 3 accounts share one device fingerprint.' })
       .expect(201);
 
-    expect(res.body.data.evidenceNotes).toBe(
-      'Confirmed: 3 accounts share one device fingerprint.',
-    );
+    expect(res.body.data.evidenceNotes).toBe('Confirmed: 3 accounts share one device fingerprint.');
   });
 
   it('REVIEWER confirms the case — CONFIRMED, decidedAt set (Rule 007/011)', async () => {

@@ -15,7 +15,11 @@ type Delivery = {
     title: string;
     body: string;
     recipientId: string;
-    recipient: { email: string | null; phone: string; devices: Array<{ pushToken: string | null }> };
+    recipient: {
+      email: string | null;
+      phone: string;
+      devices: Array<{ pushToken: string | null }>;
+    };
   };
 };
 
@@ -66,7 +70,12 @@ function makeJob(deliveryId = 'delivery-1') {
 describe('NotificationDispatchProcessor', () => {
   it('ignores a job whose name is not the dispatch job', async () => {
     const { notifications, emailProvider, smsProvider, pushProvider } = makeMocks(null);
-    const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+    const processor = new NotificationDispatchProcessor(
+      notifications,
+      emailProvider,
+      smsProvider,
+      pushProvider,
+    );
     await processor.process({ name: 'something-else', data: { deliveryId: 'x' } } as never);
     expect(notifications.findDeliveryById).not.toHaveBeenCalled();
   });
@@ -75,7 +84,12 @@ describe('NotificationDispatchProcessor', () => {
     const { notifications, emailProvider, smsProvider, pushProvider } = makeMocks(
       makeDelivery({ status: 'SENT' }),
     );
-    const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+    const processor = new NotificationDispatchProcessor(
+      notifications,
+      emailProvider,
+      smsProvider,
+      pushProvider,
+    );
     await processor.process(makeJob());
     expect(notifications.markDeliverySent).not.toHaveBeenCalled();
   });
@@ -83,7 +97,12 @@ describe('NotificationDispatchProcessor', () => {
   describe('EMAIL channel', () => {
     it('falls back to the stub when EmailProviderService is not configured', async () => {
       const { notifications, emailProvider, smsProvider, pushProvider } = makeMocks(makeDelivery());
-      const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+      const processor = new NotificationDispatchProcessor(
+        notifications,
+        emailProvider,
+        smsProvider,
+        pushProvider,
+      );
       await processor.process(makeJob());
       expect(emailProvider.send).not.toHaveBeenCalled();
       expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
@@ -91,10 +110,20 @@ describe('NotificationDispatchProcessor', () => {
 
     it('falls back to the stub when configured but the recipient has no email', async () => {
       const { notifications, emailProvider, smsProvider, pushProvider } = makeMocks(
-        makeDelivery({ notification: { ...makeDelivery().notification, recipient: { email: null, phone: '+1', devices: [] } } }),
+        makeDelivery({
+          notification: {
+            ...makeDelivery().notification,
+            recipient: { email: null, phone: '+1', devices: [] },
+          },
+        }),
       );
       (emailProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+      const processor = new NotificationDispatchProcessor(
+        notifications,
+        emailProvider,
+        smsProvider,
+        pushProvider,
+      );
       await processor.process(makeJob());
       expect(emailProvider.send).not.toHaveBeenCalled();
       expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
@@ -103,7 +132,12 @@ describe('NotificationDispatchProcessor', () => {
     it('dispatches via the real provider when configured and the recipient has an email', async () => {
       const { notifications, emailProvider, smsProvider, pushProvider } = makeMocks(makeDelivery());
       (emailProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+      const processor = new NotificationDispatchProcessor(
+        notifications,
+        emailProvider,
+        smsProvider,
+        pushProvider,
+      );
       await processor.process(makeJob());
       expect(emailProvider.send).toHaveBeenCalledWith({
         to: 'owner@example.com',
@@ -117,7 +151,12 @@ describe('NotificationDispatchProcessor', () => {
       const { notifications, emailProvider, smsProvider, pushProvider } = makeMocks(makeDelivery());
       (emailProvider.isConfigured as jest.Mock).mockReturnValue(true);
       (emailProvider.send as jest.Mock).mockRejectedValue(new Error('SendGrid 500'));
-      const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+      const processor = new NotificationDispatchProcessor(
+        notifications,
+        emailProvider,
+        smsProvider,
+        pushProvider,
+      );
       await expect(processor.process(makeJob())).rejects.toThrow('SendGrid 500');
       expect(notifications.markDeliverySent).not.toHaveBeenCalled();
     });
@@ -129,7 +168,12 @@ describe('NotificationDispatchProcessor', () => {
         makeDelivery({ channel: 'SMS' }),
       );
       (smsProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+      const processor = new NotificationDispatchProcessor(
+        notifications,
+        emailProvider,
+        smsProvider,
+        pushProvider,
+      );
       await processor.process(makeJob());
       expect(smsProvider.send).toHaveBeenCalledWith({
         to: '+15551234567',
@@ -142,7 +186,12 @@ describe('NotificationDispatchProcessor', () => {
       const { notifications, emailProvider, smsProvider, pushProvider } = makeMocks(
         makeDelivery({ channel: 'SMS' }),
       );
-      const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+      const processor = new NotificationDispatchProcessor(
+        notifications,
+        emailProvider,
+        smsProvider,
+        pushProvider,
+      );
       await processor.process(makeJob());
       expect(smsProvider.send).not.toHaveBeenCalled();
       expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
@@ -155,7 +204,12 @@ describe('NotificationDispatchProcessor', () => {
         makeDelivery({ channel: 'PUSH' }),
       );
       (pushProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+      const processor = new NotificationDispatchProcessor(
+        notifications,
+        emailProvider,
+        smsProvider,
+        pushProvider,
+      );
       await processor.process(makeJob());
       expect(pushProvider.send).not.toHaveBeenCalled();
       expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
@@ -179,7 +233,12 @@ describe('NotificationDispatchProcessor', () => {
         .mockRejectedValueOnce(new Error('stale token'))
         .mockResolvedValueOnce(undefined);
 
-      const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+      const processor = new NotificationDispatchProcessor(
+        notifications,
+        emailProvider,
+        smsProvider,
+        pushProvider,
+      );
       await processor.process(makeJob());
 
       expect(pushProvider.send).toHaveBeenCalledTimes(2);
@@ -198,7 +257,12 @@ describe('NotificationDispatchProcessor', () => {
       (pushProvider.isConfigured as jest.Mock).mockReturnValue(true);
       (pushProvider.send as jest.Mock).mockRejectedValue(new Error('FCM unreachable'));
 
-      const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+      const processor = new NotificationDispatchProcessor(
+        notifications,
+        emailProvider,
+        smsProvider,
+        pushProvider,
+      );
       await expect(processor.process(makeJob())).rejects.toThrow('FCM unreachable');
       expect(notifications.markDeliverySent).not.toHaveBeenCalled();
     });
@@ -207,7 +271,12 @@ describe('NotificationDispatchProcessor', () => {
   describe('onFailed', () => {
     it('marks FAILED only once every configured attempt is exhausted', async () => {
       const { notifications, emailProvider, smsProvider, pushProvider } = makeMocks(null);
-      const processor = new NotificationDispatchProcessor(notifications, emailProvider, smsProvider, pushProvider);
+      const processor = new NotificationDispatchProcessor(
+        notifications,
+        emailProvider,
+        smsProvider,
+        pushProvider,
+      );
 
       await processor.onFailed(
         { data: { deliveryId: 'd1' }, attemptsMade: 2, opts: { attempts: 3 } } as never,

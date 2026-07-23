@@ -10,7 +10,9 @@ import { IsNotEmpty, IsString } from 'class-validator';
  * it current, independent of the login flow.
  */
 export class UpdatePushTokenDto {
-  @ApiProperty({ description: "The caller's own stable per-install device token (Remember Device)." })
+  @ApiProperty({
+    description: "The caller's own stable per-install device token (Remember Device).",
+  })
   @IsString()
   @IsNotEmpty()
   deviceToken!: string;

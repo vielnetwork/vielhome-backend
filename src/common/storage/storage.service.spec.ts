@@ -3,7 +3,9 @@ import { StorageService } from './storage.service';
 import { UnexpectedAppError } from '../errors/app-error';
 import type { AppConfig } from '../../config/configuration';
 
-function makeConfigService(storage: Partial<AppConfig['storage']> = {}): ConfigService<AppConfig, true> {
+function makeConfigService(
+  storage: Partial<AppConfig['storage']> = {},
+): ConfigService<AppConfig, true> {
   const full: AppConfig['storage'] = {
     endpoint: '',
     region: 'us-east-1',
@@ -45,9 +47,7 @@ describe('StorageService', () => {
     const service = new StorageService(makeConfigService());
 
     it('getPresignedUploadUrl throws UnexpectedAppError, not a silent no-op', () => {
-      expect(() => service.getPresignedUploadUrl('documents/b1/x.pdf')).toThrow(
-        UnexpectedAppError,
-      );
+      expect(() => service.getPresignedUploadUrl('documents/b1/x.pdf')).toThrow(UnexpectedAppError);
     });
 
     it('getPresignedDownloadUrl throws UnexpectedAppError', () => {
@@ -109,7 +109,9 @@ describe('StorageService', () => {
       );
       const { uploadUrl } = service.getPresignedUploadUrl('documents/b1/x.pdf');
       expect(
-        uploadUrl.startsWith('https://vielhome-prod-documents.s3.us-east-1.amazonaws.com/documents/'),
+        uploadUrl.startsWith(
+          'https://vielhome-prod-documents.s3.us-east-1.amazonaws.com/documents/',
+        ),
       ).toBe(true);
     });
   });

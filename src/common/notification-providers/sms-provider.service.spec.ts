@@ -14,7 +14,11 @@ function makeConfigService(
   return { get: () => full } as unknown as ConfigService<AppConfig, true>;
 }
 
-const CONFIGURED = { accountSid: 'ACxxxxtest', authToken: 'secret-token', fromNumber: '+15551234567' };
+const CONFIGURED = {
+  accountSid: 'ACxxxxtest',
+  authToken: 'secret-token',
+  fromNumber: '+15551234567',
+};
 
 describe('SmsProviderService', () => {
   const originalFetch = global.fetch;
@@ -26,9 +30,9 @@ describe('SmsProviderService', () => {
   describe('isConfigured', () => {
     it('is false unless accountSid, authToken, and fromNumber are all set', () => {
       expect(new SmsProviderService(makeConfigService()).isConfigured()).toBe(false);
-      expect(
-        new SmsProviderService(makeConfigService({ accountSid: 'x' })).isConfigured(),
-      ).toBe(false);
+      expect(new SmsProviderService(makeConfigService({ accountSid: 'x' })).isConfigured()).toBe(
+        false,
+      );
       expect(
         new SmsProviderService(makeConfigService({ ...CONFIGURED, fromNumber: '' })).isConfigured(),
       ).toBe(false);
@@ -41,7 +45,9 @@ describe('SmsProviderService', () => {
 
   describe('send', () => {
     it('POSTs form-encoded to the Twilio Messages API with HTTP Basic Auth (sid:token, base64)', async () => {
-      const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 201, text: async () => '{"sid":"SMxyz"}' });
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValue({ ok: true, status: 201, text: async () => '{"sid":"SMxyz"}' });
       global.fetch = fetchMock as unknown as typeof fetch;
 
       const service = new SmsProviderService(makeConfigService(CONFIGURED));
@@ -53,7 +59,10 @@ describe('SmsProviderService', () => {
       expect(init.method).toBe('POST');
       expect(init.headers['Content-Type']).toBe('application/x-www-form-urlencoded');
 
-      const decoded = Buffer.from(init.headers.Authorization.replace('Basic ', ''), 'base64').toString('utf8');
+      const decoded = Buffer.from(
+        init.headers.Authorization.replace('Basic ', ''),
+        'base64',
+      ).toString('utf8');
       expect(decoded).toBe('ACxxxxtest:secret-token');
 
       const params = new URLSearchParams(init.body);
@@ -63,9 +72,12 @@ describe('SmsProviderService', () => {
     });
 
     it('throws ProviderHttpError on a non-2xx response', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue({ ok: false, status: 400, statusText: 'Bad Request', text: async () => '{"message":"invalid number"}' }) as unknown as typeof fetch;
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: async () => '{"message":"invalid number"}',
+      }) as unknown as typeof fetch;
 
       const service = new SmsProviderService(makeConfigService(CONFIGURED));
       await expect(service.send({ to: 'bad', body: 'x' })).rejects.toThrow(ProviderHttpError);
@@ -75,7 +87,9 @@ describe('SmsProviderService', () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ETIMEDOUT')) as unknown as typeof fetch;
 
       const service = new SmsProviderService(makeConfigService(CONFIGURED));
-      await expect(service.send({ to: '+15559876543', body: 'x' })).rejects.toThrow(ProviderHttpError);
+      await expect(service.send({ to: '+15559876543', body: 'x' })).rejects.toThrow(
+        ProviderHttpError,
+      );
     });
   });
 });

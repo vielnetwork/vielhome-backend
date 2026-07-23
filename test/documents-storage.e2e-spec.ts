@@ -43,9 +43,9 @@ import type { AppConfig } from '../src/config/configuration';
 // service). Either way, nothing in this file is silently skipped.
 const STORAGE_CONFIGURED_FOR_TEST = Boolean(
   process.env.STORAGE_ENDPOINT &&
-    process.env.STORAGE_BUCKET &&
-    process.env.STORAGE_ACCESS_KEY_ID &&
-    process.env.STORAGE_SECRET_ACCESS_KEY,
+  process.env.STORAGE_BUCKET &&
+  process.env.STORAGE_ACCESS_KEY_ID &&
+  process.env.STORAGE_SECRET_ACCESS_KEY,
 );
 
 const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;

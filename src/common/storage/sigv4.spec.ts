@@ -73,9 +73,7 @@ describe('sigv4', () => {
       const qs = buildCanonicalQueryString([
         ['X-Amz-Credential', 'AKIAEXAMPLE/20130524/us-east-1/s3/aws4_request'],
       ]);
-      expect(qs).toBe(
-        'X-Amz-Credential=AKIAEXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request',
-      );
+      expect(qs).toBe('X-Amz-Credential=AKIAEXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request');
     });
   });
 

@@ -107,7 +107,11 @@ export function buildStringToSign(params: {
 }
 
 /** kSecret -> kDate -> kRegion -> kService -> kSigning, per the SigV4 spec's own derivation chain. */
-export function deriveSigningKey(secretAccessKey: string, dateStamp: string, region: string): Buffer {
+export function deriveSigningKey(
+  secretAccessKey: string,
+  dateStamp: string,
+  region: string,
+): Buffer {
   const kDate = hmac(`AWS4${secretAccessKey}`, dateStamp);
   const kRegion = hmac(kDate, region);
   const kService = hmac(kRegion, 's3');

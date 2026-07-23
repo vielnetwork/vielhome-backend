@@ -50,11 +50,13 @@ describe('PushProviderService', () => {
   describe('isConfigured', () => {
     it('is false unless projectId, clientEmail, and privateKey are all set', () => {
       expect(new PushProviderService(makeConfigService()).isConfigured()).toBe(false);
+      expect(new PushProviderService(makeConfigService({ projectId: 'x' })).isConfigured()).toBe(
+        false,
+      );
       expect(
-        new PushProviderService(makeConfigService({ projectId: 'x' })).isConfigured(),
-      ).toBe(false);
-      expect(
-        new PushProviderService(makeConfigService({ ...CONFIGURED, privateKey: '' })).isConfigured(),
+        new PushProviderService(
+          makeConfigService({ ...CONFIGURED, privateKey: '' }),
+        ).isConfigured(),
       ).toBe(false);
     });
 
@@ -80,7 +82,11 @@ describe('PushProviderService', () => {
       global.fetch = fetchMock as unknown as typeof fetch;
 
       const service = new PushProviderService(makeConfigService(CONFIGURED));
-      await service.send({ token: 'device-token-abc', title: 'Vote created', body: 'A new vote is open.' });
+      await service.send({
+        token: 'device-token-abc',
+        title: 'Vote created',
+        body: 'A new vote is open.',
+      });
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
 
@@ -132,7 +138,11 @@ describe('PushProviderService', () => {
           status: 200,
           text: async () => JSON.stringify({ access_token: 'tok1', expires_in: 3600 }),
         })
-        .mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ name: 'x' }) });
+        .mockResolvedValue({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ name: 'x' }),
+        });
       global.fetch = fetchMock as unknown as typeof fetch;
 
       const service = new PushProviderService(makeConfigService(CONFIGURED));

@@ -284,7 +284,11 @@ export class VotingService {
       // election") means the property's own vote is what's restricted,
       // regardless of who is physically holding the pen.
       const candidatePersonIds = vote.options.map((o) => o.value);
-      this.policy.assertNotVotingOnOwnCandidacy(true, snapshot.eligiblePersonId, candidatePersonIds);
+      this.policy.assertNotVotingOnOwnCandidacy(
+        true,
+        snapshot.eligiblePersonId,
+        candidatePersonIds,
+      );
     }
 
     const ballot = await this.voting.createBallot({

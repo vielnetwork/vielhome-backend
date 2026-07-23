@@ -455,7 +455,7 @@ describe('Cases (e2e) — Creation, Listing & Visibility (06.07 Rule 001/004/021
   let privateCaseId: string;
   let publicCaseId: string;
 
-  it('Rule 021: a privileged member sees every case, incl. another\'s PRIVATE one', async () => {
+  it("Rule 021: a privileged member sees every case, incl. another's PRIVATE one", async () => {
     privateCaseId = await createCase(app, buildingId, member.accessToken, {
       visibility: 'PRIVATE',
       title: 'member private case',
@@ -486,7 +486,7 @@ describe('Cases (e2e) — Creation, Listing & Visibility (06.07 Rule 001/004/021
     expect(ids).toContain(publicCaseId);
   });
 
-  it('blocks a non-privileged, non-creator member from another\'s PRIVATE case', async () => {
+  it("blocks a non-privileged, non-creator member from another's PRIVATE case", async () => {
     const outsiderPrivateCase = await createCase(app, buildingId, manager.accessToken, {
       visibility: 'PRIVATE',
       title: 'manager private case',

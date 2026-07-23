@@ -256,10 +256,7 @@ const PLATFORM_REVIEWER_PHONE = '+989120000001';
  * request+verify restarts the whole sequence rather than retrying
  * `verify` alone with a stale code.
  */
-async function loginAsSeededStaff(
-  app: INestApplication,
-  phone: string,
-): Promise<RegisteredPerson> {
+async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const code = await requestOtpAndCaptureCodeDirect(app, phone);
@@ -295,10 +292,7 @@ async function deleteStaffLoginArtifactsOnceBatch(
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
 }
 
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-): Promise<void> {
+async function cleanupStaffLoginArtifacts(prisma: PrismaService, phones: string[]): Promise<void> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -498,7 +492,11 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
     const resB = await request(app.getHttpServer())
       .post('/api/v1/marketplace/providers')
       .set('Authorization', `Bearer ${submitterB.accessToken}`)
-      .send({ name: 'Suspicious Property Managers', category: 'PROFESSIONAL_MANAGEMENT', city: 'Shiraz' })
+      .send({
+        name: 'Suspicious Property Managers',
+        category: 'PROFESSIONAL_MANAGEMENT',
+        city: 'Shiraz',
+      })
       .expect(201);
     rejectedId = resB.body.data.id;
   });
@@ -649,7 +647,7 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
     expect(byCity.body.data.map((p: { id: string }) => p.id)).toContain(approvedId);
   });
 
-  it("REVIEWER deactivates the approved listing — isActive false, status stays APPROVED, drops from the public directory", async () => {
+  it('REVIEWER deactivates the approved listing — isActive false, status stays APPROVED, drops from the public directory', async () => {
     const decideRes = await request(app.getHttpServer())
       .post(`/api/v1/backoffice/marketplace-providers/${approvedId}/deactivate`)
       .set('Authorization', `Bearer ${reviewer.accessToken}`)

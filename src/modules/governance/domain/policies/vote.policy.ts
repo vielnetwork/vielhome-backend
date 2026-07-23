@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 /**
  * Business rules for Governance/Voting (04.06_Governance_Rules,
