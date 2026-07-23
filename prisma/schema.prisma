@@ -7,6 +7,17 @@
 //  - History Never Changes: nothing here is hard-deleted. Corrections create new rows.
 //  - Identity is global, Membership is local (per building).
 //  - Every important action is audited (see AuditLog).
+//
+// Schema-change process (21_ADRs > ADR-090): every change to this file MUST
+// be paired with a real `prisma migrate dev --name <change>` migration
+// committed under prisma/migrations/ — NOT applied via `prisma db push`
+// alone. `db push` is fine for local iteration before a migration is
+// generated, but the migration itself must land in the same commit/patch.
+// ADR-090 exists specifically because this rule was never written down
+// anywhere before it: every schema change from ADR-064 through ADR-089 that
+// touched this file was applied via `db push` only, and two of them
+// (ADR-088's Device.pushToken, ADR-089's BuildingSettings/VoteProxy) were
+// never captured as real migrations until ADR-090's catch-up migration.
 
 generator client {
   provider = "prisma-client-js"

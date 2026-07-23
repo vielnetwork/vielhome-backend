@@ -5,14 +5,23 @@
 # time. Treat the first real run as a genuine test pass, the same way
 # README.md already asks for the first local `npm install` run.
 #
-# Design notes (see ADR-064's Decision section for the full rationale):
-# - `prisma db push --accept-data-loss` is used instead of `prisma migrate
-#   deploy` deliberately. This CI database is ephemeral (a fresh service
-#   container every run, dropped when the job ends) — there is no data to
-#   lose, and `db push` does not depend on whether `prisma/migrations/`
-#   exists or has been committed yet (ADR-063's baseline script is a
-#   separate, user-run, local step). Using `migrate deploy` here would make
-#   CI's ability to pass depend on the timing of that unrelated local step.
+# Design notes (see ADR-064's Decision section for the full original CI
+# rationale; see ADR-090 for the change below):
+# - **Update (21_ADRs > ADR-090):** now uses `prisma migrate deploy`
+#   instead of `prisma db push --accept-data-loss`. ADR-064's original
+#   reasoning for `db push` no longer applies — `prisma/migrations/` is a
+#   real, trustworthy migration history as of ADR-090 (a missing
+#   `migration_lock.toml` was fixed and a catch-up migration was added
+#   capturing every schema change since ADR-063's baseline that had only
+#   ever been applied via `db push`, never actually captured as a real
+#   migration file — the exact gap this change now prevents from
+#   recurring). Using `migrate deploy` here means CI now exercises the
+#   SAME command a real production deployment would run, so a future
+#   schema change that's applied via `db push` locally but never turned
+#   into a committed migration file will make CI's database end up
+#   missing that change — and any test touching it will fail loudly,
+#   right in that same PR, instead of silently accumulating drift for
+#   months the way this exact class of gap already did once.
 # - `npm ci` requires `package-lock.json`, which does not exist in this
 #   repository yet (no environment that has run this workflow's author's
 #   own sandbox has ever had npm registry access to generate one — see
@@ -90,8 +99,8 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
-      - name: Push database schema (ephemeral CI database — see header comment)
-        run: npx prisma db push --accept-data-loss
+      - name: Apply migration history (21_ADRs > ADR-090 — see header comment)
+        run: npx prisma migrate deploy
 
       - name: Lint (non-mutating)
         run: npm run lint:ci
