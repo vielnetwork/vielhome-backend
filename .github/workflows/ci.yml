@@ -32,6 +32,16 @@
 #   has `--fix` baked in, which would silently rewrite files and could mask
 #   a real failure instead of reporting one. CI should fail loudly on lint
 #   violations, not auto-correct them.
+# - **Update (21_ADRs > ADR-090, post-delivery finding):** added a "Seed
+#   database" step (`npm run db:seed`) right after migration deploy. This
+#   workflow never had one. It stayed invisible as long as CI never got
+#   past Lint (its actual state from ADR-064 through ADR-089); the very
+#   first run to reach the E2E step against a genuinely fresh
+#   `migrate deploy`-created database (this ADR's own change) failed
+#   121/375 tests — every failure a 403 on a staff-gated route or a missing
+#   achievement-code assertion, because `prisma/seed.ts`'s two fixed
+#   PlatformStaff accounts and its AchievementDefinition rows never
+#   existed. See the seed step's own inline comment for the full account.
 name: CI
 
 on:
@@ -101,6 +111,27 @@ jobs:
 
       - name: Apply migration history (21_ADRs > ADR-090 — see header comment)
         run: npx prisma migrate deploy
+
+      # 21_ADRs > ADR-090 (post-delivery finding) — `prisma/seed.ts` creates
+      # the two fixed PlatformStaff accounts (`+989120000000` PLATFORM_ADMIN,
+      # `+989120000001` REVIEWER) and the AchievementDefinition rows every
+      # e2e file's own `loginAsSeededStaff` helper and gamification-unlock
+      # assertions depend on existing BEFORE the suite runs (see each e2e
+      # file's own top-of-document comment, and `seed.ts`'s doc comment —
+      # "no self-service admin UI exists, no way to bootstrap the first
+      # admin"). This step never existed in this workflow at all: as long as
+      # the old `prisma db push` step ran against a database Actions had
+      # already reused across runs (no fresh-DB service container churn),
+      # or simply because nobody had gotten CI past Lint yet to notice, this
+      # gap stayed invisible. The first CI run against a genuinely fresh
+      # `migrate deploy`-created database (this ADR's own change) surfaced
+      # it for real: 121/375 e2e tests failing, every one of them either a
+      # 403 on a staff-gated route or an empty/missing achievement-code
+      # assertion — exactly what a missing seed predicts. No `prisma.seed`
+      # entry exists in package.json, so `npx prisma db seed` would not
+      # auto-resolve this — `npm run db:seed` is called explicitly here.
+      - name: Seed database
+        run: npm run db:seed
 
       - name: Lint (non-mutating)
         run: npm run lint:ci
