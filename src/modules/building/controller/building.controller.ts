@@ -85,8 +85,14 @@ export class BuildingController {
     return this.buildings.getUnit(id, unitId);
   }
 
+  // Security hardening (Building Setup Refinement + Access/Membership
+  // Completion, Phase 1): unit creation is a MANAGER-only operation.
+  // Previously guarded only by `MembershipGuard` (any current member of
+  // any role) — a real access-control gap, the same class already fixed
+  // on `resolveMembershipRequest` per ADR-064.
   @Post(':id/units')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
   addUnit(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
@@ -96,8 +102,27 @@ export class BuildingController {
     return this.buildings.addUnit(id, user.sub, dto, requestId);
   }
 
+  // Security hardening (Building Setup Refinement + Access/Membership
+  // Completion, Phase 1): general unit-property editing is a MANAGER-only
+  // operation. Previously guarded only by `MembershipGuard`, which meant
+  // any current member (including TENANT/BOARD_MEMBER/ACCOUNTANT) could
+  // set/reassign a unit's pending `ownerPhone` via `UpdateUnitDto` — and
+  // since `AuthService.verifyOtp` auto-links any unit whose `ownerPhone`
+  // matches the verifying person's own server-verified phone (see
+  // `BuildingService.linkOwnerAccountByPhone`), that let a non-manager
+  // member hijack a different, still-unclaimed unit by pointing its
+  // `ownerPhone` at themselves, then self-triggering the auto-link on
+  // their next login — a real privilege-escalation path, not just a
+  // permissions-hygiene gap. Restricting this endpoint to MANAGER closes
+  // it: `ownerPhone` can now only be set here by someone already
+  // authorized to run the building, and the dedicated `inviteOwner`
+  // endpoint below is now MANAGER-only for the same reason. Owner
+  // self-claim (a real, unit-scoped, identity-derived-from-session flow)
+  // and post-claim read-only enforcement are deliberately NOT part of
+  // this phase — see the Building Setup Refinement audit's Section M.
   @Patch(':id/units/:unitId')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
   updateUnit(
     @Param('id') id: string,
     @Param('unitId') unitId: string,
@@ -108,8 +133,14 @@ export class BuildingController {
     return this.buildings.updateUnit(id, unitId, dto, user.sub, requestId);
   }
 
+  // Security hardening (Building Setup Refinement + Access/Membership
+  // Completion, Phase 1): owner invitation is a MANAGER-only operation —
+  // same reasoning as `updateUnit` above (this endpoint writes the same
+  // `ownerFullName`/`ownerPhone` fields via `BuildingService.inviteOwner`
+  // -> `BuildingRepository.updateUnit`).
   @Post(':id/units/:unitId/invite-owner')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
   inviteOwner(
     @Param('id') id: string,
     @Param('unitId') unitId: string,

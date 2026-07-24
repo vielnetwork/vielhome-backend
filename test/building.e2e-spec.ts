@@ -580,7 +580,15 @@ describe('Building (e2e) — Ownership Transfer (21_ADRs > ADR-035)', () => {
     ({ app, prisma } = await bootstrapTestApp());
     founder = await registerPerson(app);
     createdPhones.push(founder.phone);
-    buildingId = await createBuilding(app, founder.accessToken, { totalUnits: 2 });
+    // Founder registers as MANAGER — the invite-owner endpoint below is
+    // now MANAGER-only (Building Setup Refinement Phase 1 authorization
+    // hardening); without this override the founder defaults to OWNER
+    // (see reviewPayload's default 'role'), which can no longer invite
+    // owners. Same pattern already used by the Tenancy describe below.
+    buildingId = await createBuilding(app, founder.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 2,
+    });
     createdBuildingIds.push(buildingId);
 
     const unitsRes = await request(app.getHttpServer())
@@ -716,7 +724,15 @@ describe('Building (e2e) — Phone Number Input & Normalization (Invite Owner / 
     ({ app, prisma } = await bootstrapTestApp());
     founder = await registerPerson(app);
     createdPhones.push(founder.phone);
-    buildingId = await createBuilding(app, founder.accessToken, { totalUnits: 2 });
+    // Founder registers as MANAGER — the invite-owner endpoint below is
+    // now MANAGER-only (Building Setup Refinement Phase 1 authorization
+    // hardening); without this override the founder defaults to OWNER
+    // (see reviewPayload's default 'role'), which can no longer invite
+    // owners. Same pattern already used by the Tenancy describe below.
+    buildingId = await createBuilding(app, founder.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 2,
+    });
     createdBuildingIds.push(buildingId);
 
     const unitsRes = await request(app.getHttpServer())
@@ -935,5 +951,290 @@ describe('Building (e2e) — Tenancy (21_ADRs > ADR-035)', () => {
       .expect(422);
 
     expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+});
+
+describe('Building (e2e) — Unit Authorization Hardening (Building Setup Refinement, Phase 1)', () => {
+  // Budget: 5 calls to POST /auth/otp/request (manager + owner + tenant +
+  // board member + accountant).
+  //
+  // Closes the audited gap: `addUnit`, `updateUnit`, and `inviteOwner` were
+  // previously guarded only by `MembershipGuard` (any current member of any
+  // role), which let a non-manager member set/reassign a unit's pending
+  // `ownerPhone` via the generic Update Unit endpoint — and since
+  // `AuthService.verifyOtp` auto-links any unit whose `ownerPhone` matches
+  // the verifying person's own server-verified phone
+  // (`BuildingService.linkOwnerAccountByPhone`), that was a real
+  // privilege-escalation path, not just a permissions-hygiene gap. See
+  // `building.controller.ts`'s own comments on these three endpoints and
+  // the "Building Setup Refinement + Access/Membership Completion" audit
+  // doc for the full writeup.
+  //
+  // Owner self-claim and post-claim read-only enforcement are a separate,
+  // later phase and are deliberately NOT covered here — this describe only
+  // proves the MANAGER-only boundary now enforced at the API layer.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let owner: RegisteredPerson;
+  let tenant: RegisteredPerson;
+  let boardMember: RegisteredPerson;
+  let accountant: RegisteredPerson;
+  let buildingId: string;
+  // `unitId` carries the fixture TENANT (occupied); `targetUnitId` is left
+  // deliberately unclaimed — no Ownership row, `ownerPhone` still null — so
+  // it can double as the victim unit for the ownerPhone-hijack regression
+  // test below.
+  let unitId: string;
+  let targetUnitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 2,
+    });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+    targetUnitId = unitsRes.body.data[1].id;
+
+    owner = await registerPerson(app);
+    createdPhones.push(owner.phone);
+    await joinBuildingAsApprovedMember(app, buildingId, owner.accessToken, manager.accessToken, 'OWNER');
+
+    // Real TENANT membership via the legitimate manager-driven Tenancy flow
+    // (`TenancyPolicy.assertCanCreate`) — not a fixture shortcut.
+    tenant = await registerPerson(app);
+    createdPhones.push(tenant.phone);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/tenancy`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ tenantPersonId: tenant.personId })
+      .expect(201);
+
+    // No public API creates BOARD_MEMBER/ACCOUNTANT memberships today (no
+    // invite flow exists for either role) — these two are fixture-created
+    // directly via Prisma. The person and their access token are still
+    // real, registered through the actual OTP flow above; only the
+    // role-membership row itself is seeded directly, since there is no
+    // legitimate HTTP path to create one. The HTTP requests under test
+    // below still go through the real guard chain unmodified.
+    boardMember = await registerPerson(app);
+    createdPhones.push(boardMember.phone);
+    await prisma.membership.create({
+      data: { personId: boardMember.personId, buildingId, role: 'BOARD_MEMBER', isCurrent: true },
+    });
+
+    accountant = await registerPerson(app);
+    createdPhones.push(accountant.phone);
+    await prisma.membership.create({
+      data: { personId: accountant.personId, buildingId, role: 'ACCOUNTANT', isCurrent: true },
+    });
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  describe('POST :id/units (add unit) — MANAGER only', () => {
+    it('allows MANAGER', async () => {
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ unitNumber: `AUTH-MGR-${RUN_ID}` })
+        .expect(201);
+    });
+
+    it('rejects OWNER (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ unitNumber: `AUTH-OWNER-${RUN_ID}` })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects TENANT (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${tenant.accessToken}`)
+        .send({ unitNumber: `AUTH-TENANT-${RUN_ID}` })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects BOARD_MEMBER (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${boardMember.accessToken}`)
+        .send({ unitNumber: `AUTH-BOARD-${RUN_ID}` })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects ACCOUNTANT (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${accountant.accessToken}`)
+        .send({ unitNumber: `AUTH-ACCT-${RUN_ID}` })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+  });
+
+  describe('PATCH :id/units/:unitId (update unit) — MANAGER only', () => {
+    it('allows MANAGER', async () => {
+      await request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ floorNumber: 3 })
+        .expect(200);
+    });
+
+    it('rejects OWNER (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ floorNumber: 4 })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects TENANT (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${tenant.accessToken}`)
+        .send({ floorNumber: 5 })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects BOARD_MEMBER (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${boardMember.accessToken}`)
+        .send({ floorNumber: 6 })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects ACCOUNTANT (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${accountant.accessToken}`)
+        .send({ floorNumber: 7 })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+  });
+
+  describe('POST :id/units/:unitId/invite-owner — MANAGER only', () => {
+    it('allows MANAGER', async () => {
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${targetUnitId}/invite-owner`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ ownerFullName: 'Auth Matrix Owner', ownerPhone: nextPhone() })
+        .expect(201);
+    });
+
+    it('rejects OWNER (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${targetUnitId}/invite-owner`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ ownerFullName: 'Should Not Work', ownerPhone: nextPhone() })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects TENANT (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${targetUnitId}/invite-owner`)
+        .set('Authorization', `Bearer ${tenant.accessToken}`)
+        .send({ ownerFullName: 'Should Not Work', ownerPhone: nextPhone() })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects BOARD_MEMBER (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${targetUnitId}/invite-owner`)
+        .set('Authorization', `Bearer ${boardMember.accessToken}`)
+        .send({ ownerFullName: 'Should Not Work', ownerPhone: nextPhone() })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects ACCOUNTANT (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${targetUnitId}/invite-owner`)
+        .set('Authorization', `Bearer ${accountant.accessToken}`)
+        .send({ ownerFullName: 'Should Not Work', ownerPhone: nextPhone() })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+  });
+
+  describe('ownerPhone privilege-escalation regression (the audited exploit path)', () => {
+    // Uses its own building/unit — separate from the `targetUnitId` above,
+    // which the invite-owner matrix already claims — so this stays a clean,
+    // single-purpose regression proof: a non-manager member must not be
+    // able to point a DIFFERENT, still-unclaimed unit's `ownerPhone` at
+    // themselves through the generic Update Unit endpoint. Before the fix,
+    // this PATCH would have succeeded and the attacker's next OTP verify
+    // would have auto-linked them as that unit's owner
+    // (`AuthService.verifyOtp` -> `BuildingService.linkOwnerAccountByPhone`
+    // -> `BuildingRepository.findUnlinkedOwnerUnitsByPhone`). The request
+    // must now fail authorization before any such side effect becomes
+    // possible.
+    let victimUnitId: string;
+
+    beforeAll(async () => {
+      const unitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      // `unitId` (index 0) already has the fixture TENANT; pick any unit
+      // that is still fully unclaimed. `targetUnitId` (index 1) was claimed
+      // by the invite-owner matrix's MANAGER case above, so add one more
+      // skeleton unit to guarantee an untouched, unclaimed victim.
+      const addRes = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ unitNumber: `AUTH-VICTIM-${RUN_ID}` })
+        .expect(201);
+      victimUnitId = addRes.body.data.id;
+      expect(unitsRes.body.data).toBeDefined();
+    });
+
+    it("rejects a non-manager member's attempt to PATCH another unclaimed unit's ownerPhone to their own phone", async () => {
+      const before = await prisma.unit.findUnique({ where: { id: victimUnitId } });
+      expect(before?.ownerPhone).toBeNull();
+
+      const res = await request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/units/${victimUnitId}`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ ownerFullName: 'Attacker Self-Claim', ownerPhone: owner.phone })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+
+      // No side effect: the unit's ownerPhone must remain untouched, so
+      // there is nothing for the attacker's next OTP verify to auto-link.
+      const after = await prisma.unit.findUnique({ where: { id: victimUnitId } });
+      expect(after?.ownerPhone).toBeNull();
+      expect(after?.ownerFullName).toBeNull();
+    });
   });
 });
