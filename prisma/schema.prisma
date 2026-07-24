@@ -58,6 +58,7 @@ model Person {
   isSuspended Boolean @default(false)
 
   createdChargeBatches ChargeBatch[]    @relation("ChargeBatchCreatedBy")
+  chargeItemPayerOf ChargeItemPayer[]   @relation("ChargeItemPayerPerson")
   payments          Payment[]           @relation("PaymentPayer")
   approvedPayments  Payment[]           @relation("PaymentApprovedBy")
   ledgerEntries     LedgerEntry[]       @relation("LedgerActor")
@@ -736,6 +737,40 @@ enum ChargeCalculationMethod {
   MIXED
 }
 
+// ADR-095 (Sprint 29, Charge Generation Phase 2) — which units a FIXED/
+// AREA_BASED charge batch covers. Irrelevant to MIXED (its `items[]`
+// already IS the explicit unit selection) — `ChargePolicy` rejects
+// unitScope/unitIds being sent alongside MIXED rather than silently
+// ignoring them.
+enum ChargeUnitScope {
+  ALL
+  RESIDENTIAL
+  COMMERCIAL
+  PARKING
+  STORAGE
+  MANUAL
+}
+
+// ADR-095 — who a charge batch's debt is attributed to, informational
+// only (does NOT restrict who may call `createPayment` — see that
+// method's own doc comment, unchanged). Snapshotted per ChargeItem at
+// issue time via `ChargeItem.resolvedPayerType` + `ChargeItemPayer`, not
+// re-derived live, so later ownership/tenancy changes never rewrite
+// historical responsibility.
+enum ChargePayerType {
+  OWNER
+  TENANT
+}
+
+// ADR-095 — FIXED: lateFeeValue is a flat Toman amount. PERCENTAGE:
+// lateFeeValue is an integer percent of the ChargeItem's ORIGINAL
+// `amount` (never the current remaining balance) — frozen semantics, see
+// ADR-095 Decision point 3.
+enum LateFeeType {
+  FIXED
+  PERCENTAGE
+}
+
 enum ChargeBatchStatus {
   DRAFT
   ISSUED
@@ -762,6 +797,19 @@ model ChargeBatch {
   periodStart        DateTime?
   periodEnd          DateTime?
   dueDate            DateTime?
+  // ADR-095 — resolved effective scope for FIXED/AREA_BASED (an omitted
+  // `unitScope` in the request resolves to ALL only inside the
+  // FIXED/AREA_BASED calculation path, never as a DTO-level default — see
+  // FinanceService.resolveChargeItems). Always null for MIXED, since unit
+  // selection there comes entirely from `items[]`.
+  unitScope          ChargeUnitScope?
+  // ADR-095 — the requested payer type; NOT the resolved outcome (a
+  // requested TENANT can still resolve to OWNER per unit if that unit has
+  // no active tenant — see ChargeItem.resolvedPayerType below).
+  payerType          ChargePayerType?
+  lateFeeType        LateFeeType?
+  lateFeeValue       Int?
+  lateFeeGraceDays   Int?
   createdById        String
   createdBy          Person                  @relation("ChargeBatchCreatedBy", fields: [createdById], references: [id])
   issuedAt           DateTime?
@@ -800,10 +848,39 @@ model ChargeItem {
 
   allocations PaymentAllocation[]
 
+  // ADR-095 — payer snapshot, written once inside `issueChargeBatch`'s own
+  // transaction (never at DRAFT creation, since a draft can sit for days
+  // before issue — see ChargeBatch.payerType's own comment). Null/empty
+  // when the batch never requested a payerType. `resolvedPayerType` can
+  // differ from the batch's requested `payerType` (TENANT-with-no-active-
+  // tenant falls back to OWNER) — this field records the ACTUAL outcome.
+  resolvedPayerType ChargePayerType?
+  payers            ChargeItemPayer[]
+
   @@index([chargeBatchId])
   @@index([unitId])
   @@index([unitId, status])
   @@map("charge_items")
+}
+
+// ADR-095 — normalized multi-payer snapshot. A unit's OWNER responsibility
+// can legitimately mean more than one person (this schema has never
+// enforced single-ownership-per-unit — see `Ownership`'s own comment), so
+// this is a join table (one row per resolved payer) rather than a single
+// scalar column, matching this schema's established join-table convention
+// (`PaymentAllocation`, `Ownership`) over ad hoc arrays.
+model ChargeItemPayer {
+  id           String     @id @default(cuid())
+  chargeItemId String
+  chargeItem   ChargeItem @relation(fields: [chargeItemId], references: [id])
+  personId     String
+  person       Person     @relation("ChargeItemPayerPerson", fields: [personId], references: [id])
+  createdAt    DateTime   @default(now())
+
+  @@unique([chargeItemId, personId])
+  @@index([chargeItemId])
+  @@index([personId])
+  @@map("charge_item_payers")
 }
 
 enum PaymentMethod {
@@ -1004,6 +1081,19 @@ model Adjustment {
 
   allocations PaymentAllocation[]
 
+  // ADR-095 (Sprint 29, Charge Generation Phase 2) — generic source
+  // reference, mirroring `LedgerEntry.referenceType`/`referenceId`'s own
+  // established convention, so a system-originated Adjustment (e.g. an
+  // applied late fee, `sourceType: 'LATE_FEE'`, `sourceId: <ChargeItem.id>`)
+  // can be traced back to what created it. Both null for every ordinary
+  // manual Adjustment (the `createAdjustment` path unchanged since
+  // ADR-037) — Postgres does not treat two NULLs as equal, so the unique
+  // constraint below never restricts manual adjustments, only concurrent
+  // duplicate system-sourced ones.
+  sourceType  String?
+  sourceId    String?
+
+  @@unique([sourceType, sourceId])
   @@index([unitId])
   @@index([buildingId])
   @@map("adjustments")

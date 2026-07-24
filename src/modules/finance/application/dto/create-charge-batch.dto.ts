@@ -4,14 +4,21 @@ import {
   IsArray,
   IsDateString,
   IsIn,
+  IsInt,
   IsNumber,
   IsOptional,
   IsPositive,
   IsString,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
 const CALCULATION_METHODS = ['FIXED', 'AREA_BASED', 'MIXED'] as const;
+
+// ADR-095 (Sprint 29, Charge Generation Phase 2)
+const UNIT_SCOPES = ['ALL', 'RESIDENTIAL', 'COMMERCIAL', 'PARKING', 'STORAGE', 'MANUAL'] as const;
+const PAYER_TYPES = ['OWNER', 'TENANT'] as const;
+const LATE_FEE_TYPES = ['FIXED', 'PERCENTAGE'] as const;
 
 export class ChargeBatchItemDto {
   @ApiProperty()
@@ -87,4 +94,56 @@ export class CreateChargeBatchDto {
   @IsOptional()
   @IsDateString()
   dueDate?: string;
+
+  /**
+   * ADR-095 — deliberately left `undefined` when omitted, no property
+   * initializer default. `FinanceService.resolveChargeItems` resolves an
+   * omitted value to ALL, but only inside the FIXED/AREA_BASED branch —
+   * doing the default here would silently turn an omitted unitScope on a
+   * MIXED request into "MIXED + ALL" before `ChargePolicy` ever sees it
+   * was omitted, defeating the contradiction check below. Ignored
+   * entirely for MIXED (its own `items[]` is the unit selection) —
+   * `ChargePolicy.assertValidCalculationInputs` rejects sending it
+   * alongside MIXED at all, rather than silently ignoring it.
+   */
+  @ApiProperty({ required: false, enum: UNIT_SCOPES })
+  @IsOptional()
+  @IsIn(UNIT_SCOPES)
+  unitScope?: (typeof UNIT_SCOPES)[number];
+
+  /** Required + validated (building membership, no duplicates) when unitScope === 'MANUAL'. */
+  @ApiProperty({ required: false, type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  unitIds?: string[];
+
+  /**
+   * Informational only (12_Finance_Architecture) — identifies whose debt
+   * this is for display/notification targeting. Never restricts who may
+   * call `createPayment`. Resolved + snapshotted onto each ChargeItem at
+   * ISSUE time, not at draft creation — see ChargeItem.resolvedPayerType.
+   */
+  @ApiProperty({ required: false, enum: PAYER_TYPES })
+  @IsOptional()
+  @IsIn(PAYER_TYPES)
+  payerType?: (typeof PAYER_TYPES)[number];
+
+  @ApiProperty({ required: false, enum: LATE_FEE_TYPES })
+  @IsOptional()
+  @IsIn(LATE_FEE_TYPES)
+  lateFeeType?: (typeof LATE_FEE_TYPES)[number];
+
+  /** Flat Toman amount for FIXED, integer percent (of the ORIGINAL ChargeItem.amount) for PERCENTAGE. */
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  lateFeeValue?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  lateFeeGraceDays?: number;
 }

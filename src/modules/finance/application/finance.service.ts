@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Prisma } from '@prisma/client';
 import { FinanceRepository } from '../infrastructure/repositories/finance.repository';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { ChargePolicy } from '../domain/policies/charge.policy';
@@ -14,7 +15,16 @@ import { CreateAdjustmentDto } from './dto/create-adjustment.dto';
 import { ReversePaymentDto } from './dto/reverse-payment.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { AuditService } from '../../../common/audit/audit.service';
-import { NotFoundAppError } from '../../../common/errors/app-error';
+import {
+  BusinessRuleViolationError,
+  DuplicateError,
+  NotFoundAppError,
+} from '../../../common/errors/app-error';
+
+/** ADR-095 — defensive backstop against `Adjustment`'s `@@unique([sourceType, sourceId])` racing a concurrent duplicate late-fee application; the `findAdjustmentBySource` pre-check in `applyLateFee` handles the non-concurrent case. */
+function isUniqueConstraintViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
 import { ChargeBatchCancelledEvent, ChargeBatchIssuedEvent } from '../events/charge-batch.events';
 import {
   PaymentApprovedEvent,
@@ -170,26 +180,94 @@ export class FinanceService {
   /**
    * Resolves calculationMethod -> the concrete per-unit item list. See
    * CreateChargeBatchDto's class comment for what each method expects.
+   * ADR-095 (Sprint 29, Charge Generation Phase 2) — also resolves
+   * `unitScope` for FIXED/AREA_BASED. An omitted `unitScope` resolves to
+   * ALL right here, never at the DTO layer (see CreateChargeBatchDto.
+   * unitScope's own comment for why) — MIXED never reaches this
+   * resolution at all, since `ChargePolicy` rejects unitScope/unitIds
+   * combined with MIXED before this point. Shared verbatim by
+   * `createChargeBatch` and `previewChargeBatch` so the two can never
+   * structurally drift.
    */
-  private async resolveChargeItems(buildingId: string, dto: CreateChargeBatchDto) {
+  private async resolveChargeItems(
+    buildingId: string,
+    dto: CreateChargeBatchDto,
+  ): Promise<{
+    items: Array<{ unitId: string; amount: number }>;
+    effectiveUnitScope: CreateChargeBatchDto['unitScope'] | null;
+  }> {
     this.chargePolicy.assertValidCalculationInputs(dto.calculationMethod, dto);
 
     if (dto.calculationMethod === 'MIXED') {
-      return dto.items!.map((i) => ({ unitId: i.unitId, amount: i.amount }));
+      return {
+        items: dto.items!.map((i) => ({ unitId: i.unitId, amount: i.amount })),
+        effectiveUnitScope: null,
+      };
     }
 
-    const units = await this.buildings.listUnits(buildingId);
+    const allUnits = await this.buildings.listUnits(buildingId);
+    const effectiveUnitScope = dto.unitScope ?? 'ALL';
+    const units = this.filterUnitsByScope(allUnits, effectiveUnitScope, dto.unitIds);
 
     if (dto.calculationMethod === 'FIXED') {
-      return units.map((u) => ({ unitId: u.id, amount: dto.amountPerUnit! }));
+      return {
+        items: units.map((u) => ({ unitId: u.id, amount: dto.amountPerUnit! })),
+        effectiveUnitScope,
+      };
     }
 
     // AREA_BASED — units with no areaSqm configured yet are skipped rather
     // than charged 0 (06_User_Flows: area is a "Configure Units" follow-up,
     // not guaranteed at skeleton-unit creation time).
-    return units
-      .filter((u) => u.areaSqm && u.areaSqm > 0)
-      .map((u) => ({ unitId: u.id, amount: Math.round(dto.ratePerSqm! * (u.areaSqm as number)) }));
+    return {
+      items: units
+        .filter((u) => u.areaSqm && u.areaSqm > 0)
+        .map((u) => ({ unitId: u.id, amount: Math.round(dto.ratePerSqm! * (u.areaSqm as number)) })),
+      effectiveUnitScope,
+    };
+  }
+
+  /** ADR-095 — MANUAL is checked against the building's real unit list, never trusted blindly (`ChargePolicy.assertUnitsBelongToBuilding`). */
+  private filterUnitsByScope<T extends { id: string; type: string }>(
+    units: T[],
+    scope: string,
+    unitIds: string[] | undefined,
+  ): T[] {
+    if (scope === 'ALL') return units;
+    if (scope === 'MANUAL') {
+      this.chargePolicy.assertUnitsBelongToBuilding(unitIds!, new Set(units.map((u) => u.id)));
+      const idSet = new Set(unitIds);
+      return units.filter((u) => idSet.has(u.id));
+    }
+    return units.filter((u) => u.type === scope);
+  }
+
+  /**
+   * ADR-095 — resolves who a unit's charge is attributed to (informational
+   * only, see ChargeBatch.payerType's own comment). TENANT falls back to
+   * OWNER — snapshotting ALL current owners, never picking one arbitrarily,
+   * since this schema has never enforced single-ownership-per-unit (see
+   * `Ownership`'s own schema comment). Shared verbatim by
+   * `previewChargeBatch` (display-only) and `issueChargeBatch` (persisted
+   * snapshot) — same function, so the two can only ever differ because the
+   * underlying ownership/tenancy data changed between calls, never because
+   * the resolution logic differs.
+   */
+  private async resolvePayers(
+    unitId: string,
+    payerType: CreateChargeBatchDto['payerType'],
+  ): Promise<{ resolvedPayerType: 'OWNER' | 'TENANT'; personIds: string[] } | null> {
+    if (!payerType) return null;
+
+    if (payerType === 'TENANT') {
+      const tenancy = await this.buildings.findCurrentTenancyForUnit(unitId);
+      if (tenancy) {
+        return { resolvedPayerType: 'TENANT', personIds: [tenancy.personId] };
+      }
+    }
+
+    const ownerIds = await this.buildings.getCurrentOwnerPersonIds(unitId);
+    return { resolvedPayerType: 'OWNER', personIds: ownerIds };
   }
 
   async createChargeBatch(
@@ -207,7 +285,7 @@ export class FinanceService {
       throw new NotFoundAppError('Fund not found.');
     }
 
-    const items = await this.resolveChargeItems(buildingId, dto);
+    const { items, effectiveUnitScope } = await this.resolveChargeItems(buildingId, dto);
 
     const batch = await this.finance.createChargeBatch({
       buildingId,
@@ -220,6 +298,11 @@ export class FinanceService {
       dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined,
       createdById: actorPersonId,
       items,
+      unitScope: effectiveUnitScope ?? undefined,
+      payerType: dto.payerType,
+      lateFeeType: dto.lateFeeType,
+      lateFeeValue: dto.lateFeeValue,
+      lateFeeGraceDays: dto.lateFeeGraceDays,
     });
 
     await this.audit.record({
@@ -229,10 +312,96 @@ export class FinanceService {
       entityType: 'ChargeBatch',
       entityId: batch.id,
       requestId,
-      metadata: { calculationMethod: dto.calculationMethod, itemCount: items.length },
+      metadata: {
+        calculationMethod: dto.calculationMethod,
+        itemCount: items.length,
+        unitScope: effectiveUnitScope,
+        payerType: dto.payerType,
+      },
     });
 
     return batch;
+  }
+
+  /**
+   * ADR-095 — zero-write preview: no ChargeBatch/ChargeItem/Adjustment/
+   * LedgerEntry/AuditLog row is ever created, and no domain event is
+   * emitted. Uses the exact same `resolveChargeItems`/`resolvePayers`
+   * private methods the real `createChargeBatch`/`issueChargeBatch` use,
+   * so preview and the real batch can never structurally drift. Uses
+   * `findDefaultFund` (read-only) instead of `getOrCreateDefaultFund` —
+   * the latter creates a Fund row as a side effect, which preview must
+   * never do; a missing default fund is surfaced as `willCreateDefaultFund`
+   * instead, created for real only by the actual `createChargeBatch` call.
+   */
+  async previewChargeBatch(buildingId: string, dto: CreateChargeBatchDto) {
+    await this.getBuilding(buildingId);
+
+    let fund: { id: string; name: string } | null = null;
+    let willCreateDefaultFund = false;
+    if (dto.fundId) {
+      const found = await this.finance.findFundById(dto.fundId);
+      if (!found || found.buildingId !== buildingId) {
+        throw new NotFoundAppError('Fund not found.');
+      }
+      fund = { id: found.id, name: found.name };
+    } else {
+      const found = await this.finance.findDefaultFund(buildingId);
+      if (found) {
+        fund = { id: found.id, name: found.name };
+      } else {
+        willCreateDefaultFund = true;
+      }
+    }
+
+    const { items, effectiveUnitScope } = await this.resolveChargeItems(buildingId, dto);
+    const allUnits = await this.buildings.listUnits(buildingId);
+    const unitById = new Map(allUnits.map((u) => [u.id, u]));
+
+    const previewItems = await Promise.all(
+      items.map(async (item) => {
+        const unit = unitById.get(item.unitId);
+        const payer = await this.resolvePayers(item.unitId, dto.payerType);
+        return {
+          unitId: item.unitId,
+          unitNumber: unit?.unitNumber ?? null,
+          unitType: unit?.type ?? null,
+          amount: item.amount,
+          resolvedPayerType: payer?.resolvedPayerType ?? null,
+          payerPersonIds: payer?.personIds ?? [],
+        };
+      }),
+    );
+
+    const validationWarnings: string[] = [];
+    if (willCreateDefaultFund) {
+      validationWarnings.push(
+        'No default fund exists for this building yet — one will be created automatically when this charge batch is actually issued via createChargeBatch, not by this preview.',
+      );
+    }
+    const noOwnerCount = previewItems.filter(
+      (i) => i.resolvedPayerType === 'OWNER' && i.payerPersonIds.length === 0,
+    ).length;
+    if (noOwnerCount > 0) {
+      validationWarnings.push(`${noOwnerCount} unit(s) have no current owner on record.`);
+    }
+    if (previewItems.length === 0) {
+      validationWarnings.push('No units matched the requested scope — this batch would have zero items.');
+    }
+
+    return {
+      fund,
+      willCreateDefaultFund,
+      unitScope: effectiveUnitScope,
+      calculationMethod: dto.calculationMethod,
+      items: previewItems,
+      totalUnitCount: previewItems.length,
+      grandTotal: previewItems.reduce((sum, i) => sum + i.amount, 0),
+      lateFeePolicy: dto.lateFeeType
+        ? { type: dto.lateFeeType, value: dto.lateFeeValue, graceDays: dto.lateFeeGraceDays ?? 0 }
+        : null,
+      validationWarnings,
+    };
   }
 
   listChargeBatches(buildingId: string) {
@@ -256,6 +425,37 @@ export class FinanceService {
     const batch = await this.getChargeBatch(buildingId, chargeBatchId);
     this.chargePolicy.assertIssuable(batch.status, batch.totalAmount);
 
+    // ADR-095 — the payer snapshot is resolved HERE, at issue time, never
+    // at DRAFT creation (a draft can sit unissued for days — see
+    // ChargeBatch.payerType's own schema comment). Resolved in the
+    // service (BuildingRepository's ownership/tenancy lookups aren't
+    // available to FinanceRepository) but written inside the SAME atomic
+    // transaction as the status flip, by passing the resolution into
+    // `finance.issueChargeBatch` below.
+    let payerResolutions: Array<{
+      chargeItemId: string;
+      resolvedPayerType: 'OWNER' | 'TENANT';
+      personIds: string[];
+    }> = [];
+    // Narrowed into a local const before the closure below — TS narrowing
+    // on a property access (`batch.payerType`) does not persist inside a
+    // nested arrow function, since the property could in principle change
+    // between the check and the closure running; a local const doesn't
+    // have that ambiguity.
+    const requestedPayerType = batch.payerType;
+    if (requestedPayerType) {
+      payerResolutions = await Promise.all(
+        batch.chargeItems.map(async (item) => {
+          const resolved = await this.resolvePayers(item.unitId, requestedPayerType);
+          return {
+            chargeItemId: item.id,
+            resolvedPayerType: resolved!.resolvedPayerType,
+            personIds: resolved!.personIds,
+          };
+        }),
+      );
+    }
+
     const issued = await this.finance.issueChargeBatch({
       chargeBatchId,
       buildingId,
@@ -263,6 +463,7 @@ export class FinanceService {
       totalAmount: batch.totalAmount,
       actorId: actorPersonId,
       requestId,
+      payerResolutions,
     });
 
     await this.audit.record({
@@ -320,9 +521,121 @@ export class FinanceService {
     return unit;
   }
 
+  /** ADR-095 — each item's `lateFee` is computed live (never persisted) via `ChargePolicy.computeLateFeeEligibility`. */
   async listUnitChargeItems(buildingId: string, unitId: string) {
     await this.getOwnUnit(buildingId, unitId);
-    return this.finance.listChargeItemsByUnit(unitId);
+    const items = await this.finance.listChargeItemsByUnit(unitId);
+    const appliedIds = await this.finance.findAppliedLateFeeChargeItemIds(items.map((i) => i.id));
+    const now = new Date();
+
+    return items.map((item) => {
+      const result = this.chargePolicy.computeLateFeeEligibility({
+        batchStatus: item.chargeBatch.status,
+        lateFeeType: item.chargeBatch.lateFeeType,
+        lateFeeValue: item.chargeBatch.lateFeeValue,
+        lateFeeGraceDays: item.chargeBatch.lateFeeGraceDays,
+        dueDate: item.chargeBatch.dueDate,
+        now,
+        itemAmount: item.amount,
+        itemPaidAmount: item.paidAmount,
+        alreadyApplied: appliedIds.has(item.id),
+      });
+      return {
+        ...item,
+        lateFee: result?.eligible ? { eligible: true as const, amount: result.amount } : null,
+      };
+    });
+  }
+
+  /**
+   * ADR-095 — applies an eligible late fee as a real, ledger-backed
+   * positive Adjustment (`sourceType: 'LATE_FEE'`, `sourceId:
+   * chargeItemId`) — see Adjustment's own schema comment ("e.g. a one-off
+   * late fee"); no new financial primitive was needed. Guards the
+   * ChargeItem belongs to BOTH the requested building and unit before
+   * anything else. Idempotent: a pre-check via `findAdjustmentBySource`
+   * plus the DB-level `@@unique([sourceType, sourceId])` constraint (caught
+   * here as a race-condition backstop) both prevent applying the same late
+   * fee twice.
+   */
+  async applyLateFee(
+    buildingId: string,
+    unitId: string,
+    chargeItemId: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    const item = await this.finance.findChargeItemById(chargeItemId);
+    if (!item || item.unitId !== unitId || item.chargeBatch.buildingId !== buildingId) {
+      throw new NotFoundAppError('Charge item not found.');
+    }
+
+    const alreadyApplied = !!(await this.finance.findAdjustmentBySource('LATE_FEE', chargeItemId));
+    // ADR-095 correction 6 — re-applying a late fee to an item that already
+    // has one is a DUPLICATE (409), a distinct, actionable case from the
+    // general "not eligible" (422). This must be checked BEFORE consulting
+    // policy eligibility below: computeLateFeeEligibility also treats
+    // alreadyApplied as one of several reasons to return ineligible (it
+    // needs that for the listUnitChargeItems/getUnitDebt aggregate views,
+    // which scan many items at once with no room for per-item error
+    // semantics) and would otherwise silently fold this case into the
+    // generic 422 message.
+    if (alreadyApplied) {
+      throw new DuplicateError('A late fee has already been applied to this charge item.');
+    }
+
+    const eligibility = this.chargePolicy.computeLateFeeEligibility({
+      batchStatus: item.chargeBatch.status,
+      lateFeeType: item.chargeBatch.lateFeeType,
+      lateFeeValue: item.chargeBatch.lateFeeValue,
+      lateFeeGraceDays: item.chargeBatch.lateFeeGraceDays,
+      dueDate: item.chargeBatch.dueDate,
+      now: new Date(),
+      itemAmount: item.amount,
+      itemPaidAmount: item.paidAmount,
+      alreadyApplied,
+    });
+
+    if (!eligibility?.eligible) {
+      throw new BusinessRuleViolationError('This charge item is not eligible for a late fee.');
+    }
+
+    let adjustment;
+    try {
+      adjustment = await this.finance.createAdjustment({
+        unitId,
+        buildingId,
+        fundId: item.chargeBatch.fundId,
+        amount: eligibility.amount,
+        reason: `Late fee — ${item.chargeBatch.title}`,
+        createdById: actorPersonId,
+        requestId,
+        sourceType: 'LATE_FEE',
+        sourceId: chargeItemId,
+      });
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) {
+        throw new DuplicateError('A late fee has already been applied to this charge item.');
+      }
+      throw error;
+    }
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      buildingId,
+      action: 'LateFeeApplied',
+      entityType: 'Adjustment',
+      entityId: adjustment.id,
+      requestId,
+      metadata: { unitId, chargeItemId, amount: eligibility.amount },
+    });
+
+    this.events.emit(
+      'AdjustmentCreated',
+      new AdjustmentCreatedEvent(adjustment.id, buildingId, unitId, eligibility.amount, actorPersonId),
+    );
+
+    return adjustment;
   }
 
   // --- Adjustments (08.05 Rule 014 — see 21_ADRs > ADR-037) -------------------
@@ -378,9 +691,39 @@ export class FinanceService {
     return this.finance.listAdjustmentsByUnit(unitId);
   }
 
+  /** ADR-095 — `eligibleLateFeeTotal`/`eligibleLateFees` are computed, informational-only additions; the existing `chargeItemDebt`/`adjustmentDebt`/`totalDebt`/`creditBalance` shape is unchanged. */
   async getUnitDebt(buildingId: string, unitId: string) {
     await this.getOwnUnit(buildingId, unitId);
-    return this.finance.getUnitDebt(unitId);
+    const debt = await this.finance.getUnitDebt(unitId);
+
+    const candidates = await this.finance.listLateFeeEligibleCandidates(unitId);
+    const appliedIds = await this.finance.findAppliedLateFeeChargeItemIds(
+      candidates.map((c) => c.id),
+    );
+    const now = new Date();
+
+    const eligibleLateFees = candidates
+      .map((c) => {
+        const result = this.chargePolicy.computeLateFeeEligibility({
+          batchStatus: c.chargeBatch.status,
+          lateFeeType: c.chargeBatch.lateFeeType,
+          lateFeeValue: c.chargeBatch.lateFeeValue,
+          lateFeeGraceDays: c.chargeBatch.lateFeeGraceDays,
+          dueDate: c.chargeBatch.dueDate,
+          now,
+          itemAmount: c.amount,
+          itemPaidAmount: c.paidAmount,
+          alreadyApplied: appliedIds.has(c.id),
+        });
+        return result?.eligible ? { chargeItemId: c.id, amount: result.amount } : null;
+      })
+      .filter((x): x is { chargeItemId: string; amount: number } => x !== null);
+
+    return {
+      ...debt,
+      eligibleLateFeeTotal: eligibleLateFees.reduce((sum, f) => sum + f.amount, 0),
+      eligibleLateFees,
+    };
   }
 
   // --- Payments ----------------------------------------------------------------

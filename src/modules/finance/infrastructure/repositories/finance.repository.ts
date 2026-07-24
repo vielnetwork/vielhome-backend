@@ -2,8 +2,11 @@ import { Injectable } from '@nestjs/common';
 import {
   ChargeCalculationMethod,
   ChargeItemStatus,
+  ChargePayerType,
+  ChargeUnitScope,
   FundAccountLinkType,
   FundType,
+  LateFeeType,
   LedgerEntryType,
   PaymentMethod,
 } from '@prisma/client';
@@ -130,6 +133,17 @@ export class FinanceRepository {
    * fund if none exists yet. Safe to call repeatedly: `isDefault` is looked
    * up first, never assumed.
    */
+  /**
+   * ADR-095 — read-only counterpart to `getOrCreateDefaultFund` below, for
+   * `previewChargeBatch`. Preview must never create a Fund as a side
+   * effect (it must be zero-write) — this returns null instead when no
+   * default fund exists yet, letting the caller surface a
+   * `willCreateDefaultFund` warning instead of actually creating one.
+   */
+  findDefaultFund(buildingId: string) {
+    return this.prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
+  }
+
   async getOrCreateDefaultFund(buildingId: string) {
     const existing = await this.prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
     if (existing) return existing;
@@ -158,6 +172,12 @@ export class FinanceRepository {
     dueDate?: Date;
     createdById: string;
     items: Array<{ unitId: string; amount: number }>;
+    // ADR-095 (Sprint 29, Charge Generation Phase 2)
+    unitScope?: ChargeUnitScope;
+    payerType?: ChargePayerType;
+    lateFeeType?: LateFeeType;
+    lateFeeValue?: number;
+    lateFeeGraceDays?: number;
   }) {
     const totalAmount = params.items.reduce((sum, i) => sum + i.amount, 0);
 
@@ -175,6 +195,11 @@ export class FinanceRepository {
           createdById: params.createdById,
           totalAmount,
           status: 'DRAFT',
+          unitScope: params.unitScope,
+          payerType: params.payerType,
+          lateFeeType: params.lateFeeType,
+          lateFeeValue: params.lateFeeValue,
+          lateFeeGraceDays: params.lateFeeGraceDays,
         },
       });
 
@@ -212,9 +237,73 @@ export class FinanceRepository {
   listChargeItemsByUnit(unitId: string) {
     return this.prisma.chargeItem.findMany({
       where: { unitId },
-      include: { chargeBatch: { select: { id: true, title: true, status: true, dueDate: true } } },
+      include: {
+        chargeBatch: {
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            dueDate: true,
+            lateFeeType: true,
+            lateFeeValue: true,
+            lateFeeGraceDays: true,
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /** ADR-095 — used by `applyLateFee`'s building+unit ownership guard and its eligibility recheck. */
+  findChargeItemById(chargeItemId: string) {
+    return this.prisma.chargeItem.findUnique({
+      where: { id: chargeItemId },
+      include: {
+        chargeBatch: {
+          select: {
+            id: true,
+            buildingId: true,
+            fundId: true,
+            title: true,
+            status: true,
+            dueDate: true,
+            lateFeeType: true,
+            lateFeeValue: true,
+            lateFeeGraceDays: true,
+          },
+        },
+      },
+    });
+  }
+
+  /**
+   * ADR-095 — late-fee eligibility candidates for a unit's outstanding
+   * ChargeItems (feeds `FinanceService.getUnitDebt`'s `eligibleLateFees`).
+   * Deliberately separate from `getUnitDebt`'s own debt-total query below,
+   * which stays unchanged from ADR-053.
+   */
+  listLateFeeEligibleCandidates(unitId: string) {
+    return this.prisma.chargeItem.findMany({
+      where: { unitId, status: { not: 'PAID' } },
+      select: {
+        id: true,
+        amount: true,
+        paidAmount: true,
+        chargeBatch: {
+          select: { status: true, dueDate: true, lateFeeType: true, lateFeeValue: true, lateFeeGraceDays: true },
+        },
+      },
+    });
+  }
+
+  /** ADR-095 — which of these ChargeItems already have an applied (Adjustment-backed) late fee. */
+  async findAppliedLateFeeChargeItemIds(chargeItemIds: string[]): Promise<Set<string>> {
+    if (chargeItemIds.length === 0) return new Set();
+    const rows = await this.prisma.adjustment.findMany({
+      where: { sourceType: 'LATE_FEE', sourceId: { in: chargeItemIds } },
+      select: { sourceId: true },
+    });
+    return new Set(rows.map((r) => r.sourceId as string));
   }
 
   hasAnyPaidChargeItems(chargeBatchId: string): Promise<boolean> {
@@ -244,12 +333,36 @@ export class FinanceRepository {
     totalAmount: number;
     actorId: string;
     requestId?: string;
+    // ADR-095 — pre-resolved payer snapshot (unit ownership/tenancy is
+    // cross-module data FinanceRepository has no access to; FinanceService
+    // resolves it via BuildingRepository BEFORE calling this method, so
+    // the write still lands inside this same atomic issue transaction).
+    payerResolutions?: Array<{
+      chargeItemId: string;
+      resolvedPayerType: ChargePayerType;
+      personIds: string[];
+    }>;
   }) {
     return this.prisma.$transaction(async (tx) => {
       const batch = await tx.chargeBatch.update({
         where: { id: params.chargeBatchId },
         data: { status: 'ISSUED', issuedAt: new Date() },
       });
+
+      for (const resolution of params.payerResolutions ?? []) {
+        await tx.chargeItem.update({
+          where: { id: resolution.chargeItemId },
+          data: { resolvedPayerType: resolution.resolvedPayerType },
+        });
+        if (resolution.personIds.length > 0) {
+          await tx.chargeItemPayer.createMany({
+            data: resolution.personIds.map((personId) => ({
+              chargeItemId: resolution.chargeItemId,
+              personId,
+            })),
+          });
+        }
+      }
 
       const items = await tx.chargeItem.findMany({
         where: { chargeBatchId: params.chargeBatchId },
@@ -490,6 +603,13 @@ export class FinanceRepository {
     reason: string;
     createdById: string;
     requestId?: string;
+    // ADR-095 — set only for system-originated adjustments (e.g. an
+    // applied late fee); left undefined for every ordinary manual
+    // adjustment, unchanged since ADR-037. See Adjustment's own schema
+    // comment for why NULL/NULL never collides with the DB-level
+    // `@@unique([sourceType, sourceId])` constraint.
+    sourceType?: string;
+    sourceId?: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
       const adjustment = await tx.adjustment.create({
@@ -500,6 +620,8 @@ export class FinanceRepository {
           amount: params.amount,
           reason: params.reason,
           createdById: params.createdById,
+          sourceType: params.sourceType,
+          sourceId: params.sourceId,
         },
       });
 
@@ -554,6 +676,11 @@ export class FinanceRepository {
 
   listAdjustmentsByUnit(unitId: string) {
     return this.prisma.adjustment.findMany({ where: { unitId }, orderBy: { createdAt: 'desc' } });
+  }
+
+  /** ADR-095 — idempotency pre-check before `createAdjustment` for a system-sourced adjustment (e.g. a late fee). */
+  findAdjustmentBySource(sourceType: string, sourceId: string) {
+    return this.prisma.adjustment.findFirst({ where: { sourceType, sourceId } });
   }
 
   /**

@@ -124,6 +124,21 @@ export class FinanceController {
     return this.finance.createChargeBatch(id, dto, user.sub, requestId);
   }
 
+  /**
+   * ADR-095 (Sprint 29, Charge Generation Phase 2) — zero-write preview,
+   * same DTO as `POST :id/charges` and the exact same calculation/payer-
+   * resolution functions, so the two can never structurally drift. Same
+   * MANAGER gate as the real create — a preview reveals resolved payer
+   * identities (Person ids), which is financial/PII-adjacent data, not a
+   * read any building member should get by default.
+   */
+  @Post(':id/charges/preview')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
+  previewChargeBatch(@Param('id') id: string, @Body() dto: CreateChargeBatchDto) {
+    return this.finance.previewChargeBatch(id, dto);
+  }
+
   @Get(':id/charges')
   @UseGuards(MembershipGuard)
   listChargeBatches(@Param('id') id: string) {
@@ -211,6 +226,26 @@ export class FinanceController {
     @RequestId() requestId: string,
   ) {
     return this.finance.createAdjustment(id, unitId, dto, user.sub, requestId);
+  }
+
+  /**
+   * ADR-095 — applies an eligible late fee as a real, ledger-backed
+   * Adjustment. Same role gate as manual Adjustment creation above (both
+   * are financial corrections with the same real-money consequence).
+   * `FinanceService.applyLateFee` verifies the ChargeItem belongs to BOTH
+   * this building AND this unit before anything else.
+   */
+  @Post(':id/units/:unitId/charge-items/:chargeItemId/late-fee')
+  @UseGuards(RolesGuard)
+  @Roles('ACCOUNTANT', 'MANAGER')
+  applyLateFee(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @Param('chargeItemId') chargeItemId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.finance.applyLateFee(id, unitId, chargeItemId, user.sub, requestId);
   }
 
   // --- Payments --------------------------------------------------------------------

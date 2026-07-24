@@ -22,14 +22,27 @@ export class ChargePolicy {
       amountPerUnit?: number;
       ratePerSqm?: number;
       items?: Array<{ unitId: string; amount: number }>;
+      unitScope?: string;
+      unitIds?: string[];
     },
   ): void {
+    // ADR-095 — MIXED's own `items[]` IS the unit selection; unitScope/
+    // unitIds sent alongside it is a contradictory payload and must be
+    // rejected outright, never silently ignored (see CreateChargeBatchDto's
+    // own doc comment on `unitScope`).
+    if (method === 'MIXED' && (input.unitScope !== undefined || input.unitIds !== undefined)) {
+      throw new BusinessRuleViolationError(
+        'unitScope/unitIds cannot be combined with MIXED — unit selection there comes from items.',
+      );
+    }
+
     if (method === 'FIXED') {
       if (!input.amountPerUnit || input.amountPerUnit <= 0) {
         throw new BusinessRuleViolationError(
           'A FIXED charge batch requires a positive amountPerUnit.',
         );
       }
+      this.assertValidUnitScopeInputs(input.unitScope, input.unitIds);
       return;
     }
     if (method === 'AREA_BASED') {
@@ -38,6 +51,7 @@ export class ChargePolicy {
           'An AREA_BASED charge batch requires a positive ratePerSqm.',
         );
       }
+      this.assertValidUnitScopeInputs(input.unitScope, input.unitIds);
       return;
     }
     // MIXED
@@ -49,6 +63,81 @@ export class ChargePolicy {
     if (input.items.some((i) => i.amount <= 0)) {
       throw new BusinessRuleViolationError('Every MIXED charge item amount must be positive.');
     }
+  }
+
+  /**
+   * ADR-095 — shape-only checks for `unitScope`/`unitIds` that don't need
+   * DB access (MANUAL requires a non-empty, duplicate-free unitIds array).
+   * Whether each id actually belongs to the target building is checked in
+   * `FinanceService.resolveChargeItems` instead, once the building's real
+   * unit list is fetched — this policy stays persistence-free.
+   */
+  private assertValidUnitScopeInputs(unitScope: string | undefined, unitIds: string[] | undefined): void {
+    if (unitScope !== 'MANUAL') return;
+    if (!unitIds || unitIds.length === 0) {
+      throw new BusinessRuleViolationError('unitScope MANUAL requires a non-empty unitIds array.');
+    }
+    if (new Set(unitIds).size !== unitIds.length) {
+      throw new BusinessRuleViolationError('unitIds must not contain duplicates.');
+    }
+  }
+
+  /**
+   * ADR-095 — every MANUAL-scope unitId must actually belong to the
+   * building being charged; called from the service once the building's
+   * unit list has been fetched.
+   */
+  assertUnitsBelongToBuilding(unitIds: string[], validUnitIds: Set<string>): void {
+    const invalid = unitIds.filter((id) => !validUnitIds.has(id));
+    if (invalid.length > 0) {
+      throw new BusinessRuleViolationError(
+        `One or more selected units do not belong to this building: ${invalid.join(', ')}`,
+      );
+    }
+  }
+
+  /**
+   * ADR-095 — a ChargeItem becomes late-fee eligible only once ALL of:
+   * the batch is ISSUED, a late-fee policy exists on it, `dueDate +
+   * graceDays` has passed, the item still has outstanding principal
+   * (fully-settled items are never eligible), and no late fee has already
+   * been applied to it (idempotency — checked by the caller via
+   * `alreadyApplied`, sourced from `Adjustment.sourceType/sourceId`).
+   * PERCENTAGE is always computed from the item's ORIGINAL `amount`, never
+   * the current remaining balance — frozen semantics (ADR-095 Decision
+   * point 3), so a partially-paid item's eligible fee doesn't shrink as
+   * it's paid down.
+   */
+  computeLateFeeEligibility(params: {
+    batchStatus: string;
+    lateFeeType: string | null;
+    lateFeeValue: number | null;
+    lateFeeGraceDays: number | null;
+    dueDate: Date | null;
+    now: Date;
+    itemAmount: number;
+    itemPaidAmount: number;
+    alreadyApplied: boolean;
+  }): { eligible: boolean; amount: number } | null {
+    if (params.batchStatus !== 'ISSUED') return null;
+    if (!params.lateFeeType || !params.lateFeeValue) return null;
+    if (!params.dueDate) return null;
+    if (params.alreadyApplied) return null;
+
+    const outstanding = params.itemAmount - params.itemPaidAmount;
+    if (outstanding <= 0) return null;
+
+    const graceDays = params.lateFeeGraceDays ?? 0;
+    const eligibleFrom = new Date(params.dueDate);
+    eligibleFrom.setDate(eligibleFrom.getDate() + graceDays);
+    if (params.now < eligibleFrom) return null;
+
+    const amount =
+      params.lateFeeType === 'FIXED'
+        ? params.lateFeeValue
+        : Math.round((params.itemAmount * params.lateFeeValue) / 100);
+
+    return { eligible: true, amount };
   }
 
   /** A batch cannot be issued twice, and an empty batch has nothing to collect. */

@@ -180,6 +180,13 @@ async function deleteBuildingsOnceBatch(
   await prisma.refund.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.payment.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.adjustment.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  // ADR-095 — charge_item_payers has an ON DELETE RESTRICT FK to charge_items
+  // (a deliberate choice — see 21_ADRs > ADR-095 — a payer snapshot must
+  // never silently vanish out from under a charge item), so test cleanup
+  // must delete these rows before the charge items they reference.
+  await prisma.chargeItemPayer.deleteMany({
+    where: { chargeItem: { chargeBatch: { buildingId: { in: buildingIds } } } },
+  });
   await prisma.chargeItem.deleteMany({
     where: { chargeBatch: { buildingId: { in: buildingIds } } },
   });
@@ -941,6 +948,480 @@ describe('Finance (e2e) — Adjustments & Unit Debt (21_ADRs > ADR-037/ADR-053)'
       }),
     );
     expect(xp?.amount).toBe(20);
+  });
+});
+
+describe('Finance (e2e) — Charge Generation Phase 2 (ADR-095)', () => {
+  // Budget: 4 calls to POST /auth/otp/request (manager + owner1 + owner2 + tenant).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let owner1: RegisteredPerson;
+  let owner2: RegisteredPerson;
+  let tenant: RegisteredPerson;
+  let buildingId: string;
+  let residentialUnitId: string;
+  let commercialUnitId: string;
+  let ownerOnlyUnitId: string;
+  let multiOwnerUnitId: string;
+  let percentageTestUnitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    owner1 = await registerPerson(app);
+    createdPhones.push(owner1.phone);
+    owner2 = await registerPerson(app);
+    createdPhones.push(owner2.phone);
+    tenant = await registerPerson(app);
+    createdPhones.push(tenant.phone);
+
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 5 });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const unitIds = unitsRes.body.data.map((u: { id: string }) => u.id);
+    [residentialUnitId, commercialUnitId, ownerOnlyUnitId, multiOwnerUnitId, percentageTestUnitId] =
+      unitIds;
+
+    // Skeleton units default to RESIDENTIAL and there is no API path to
+    // change `type` afterward (`UpdateUnitDto` has no such field —
+    // confirmed by direct read) — seeding it directly here is the
+    // narrowest way to get a COMMERCIAL unit for the scope-filter tests
+    // below without re-deriving Building's own unit-creation flow.
+    await prisma.unit.update({ where: { id: commercialUnitId }, data: { type: 'COMMERCIAL' } });
+
+    // OWNER fixtures seeded directly against `Ownership` (the only table
+    // `BuildingRepository.getCurrentOwnerPersonIds` reads) rather than via
+    // the real invite-owner/OTP auto-link flow — `building.e2e-spec.ts`
+    // already exercises that flow end-to-end; re-deriving it here would
+    // only add OTP budget without testing anything Finance-specific.
+    await prisma.ownership.create({
+      data: { unitId: ownerOnlyUnitId, personId: owner1.personId, isCurrent: true },
+    });
+    await prisma.ownership.create({
+      data: { unitId: multiOwnerUnitId, personId: owner1.personId, isCurrent: true },
+    });
+    await prisma.ownership.create({
+      data: { unitId: multiOwnerUnitId, personId: owner2.personId, isCurrent: true },
+    });
+
+    // TENANT fixture via the real endpoint — `ownerOnlyUnitId` ends up
+    // with BOTH a current owner and a current tenant, exercising the
+    // TENANT-present resolution path (the fallback-to-OWNER path is
+    // covered separately below on `multiOwnerUnitId`, which has owners
+    // but no tenant).
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${ownerOnlyUnitId}/tenancy`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ tenantPersonId: tenant.personId })
+      .expect(201);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  // --- Gap 1: Unit Scope -------------------------------------------------------
+
+  it('unitScope RESIDENTIAL excludes the COMMERCIAL unit', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Residential Only',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 100_000,
+        unitScope: 'RESIDENTIAL',
+      })
+      .expect(201);
+
+    expect(
+      res.body.data.items.some((i: { unitId: string }) => i.unitId === commercialUnitId),
+    ).toBe(false);
+    expect(res.body.data.totalUnitCount).toBe(4);
+  });
+
+  it('unitScope COMMERCIAL includes only the COMMERCIAL unit', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Commercial Only',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 100_000,
+        unitScope: 'COMMERCIAL',
+      })
+      .expect(201);
+
+    expect(res.body.data.items).toHaveLength(1);
+    expect(res.body.data.items[0].unitId).toBe(commercialUnitId);
+  });
+
+  it('unitScope MANUAL charges exactly the listed units', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Manual Selection',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 100_000,
+        unitScope: 'MANUAL',
+        unitIds: [residentialUnitId, commercialUnitId],
+      })
+      .expect(201);
+
+    expect(res.body.data.items.map((i: { unitId: string }) => i.unitId).sort()).toEqual(
+      [residentialUnitId, commercialUnitId].sort(),
+    );
+  });
+
+  it('rejects unitScope MANUAL with a unit id outside the building (BUSINESS_RULE_VIOLATION)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Bad Manual',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 100_000,
+        unitScope: 'MANUAL',
+        unitIds: ['not-a-real-unit-id'],
+      })
+      .expect(422);
+
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('rejects duplicate unitIds under MANUAL scope (BUSINESS_RULE_VIOLATION)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Dup Manual',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 100_000,
+        unitScope: 'MANUAL',
+        unitIds: [residentialUnitId, residentialUnitId],
+      })
+      .expect(422);
+
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('rejects MIXED combined with unitScope instead of silently ignoring it', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Mixed + Scope',
+        calculationMethod: 'MIXED',
+        items: [{ unitId: residentialUnitId, amount: 10_000 }],
+        unitScope: 'ALL',
+      })
+      .expect(422);
+
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  // --- Gap 4: Preview is zero-write ---------------------------------------------
+
+  it('preview writes nothing to the database and matches what the real create produces', async () => {
+    const counts = async () => ({
+      batches: await prisma.chargeBatch.count({ where: { buildingId } }),
+      items: await prisma.chargeItem.count({ where: { chargeBatch: { buildingId } } }),
+      adjustments: await prisma.adjustment.count({ where: { buildingId } }),
+      ledger: await prisma.ledgerEntry.count({ where: { buildingId } }),
+    });
+    const before = await counts();
+
+    const previewRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Preview Parity Check',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 77_000,
+        unitScope: 'MANUAL',
+        unitIds: [residentialUnitId],
+      })
+      .expect(201);
+
+    const after = await counts();
+    expect(after).toEqual(before);
+    expect(previewRes.body.data.grandTotal).toBe(77_000);
+    expect(previewRes.body.data.totalUnitCount).toBe(1);
+
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Preview Parity Check',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 77_000,
+        unitScope: 'MANUAL',
+        unitIds: [residentialUnitId],
+      })
+      .expect(201);
+    expect(createRes.body.data.totalAmount).toBe(previewRes.body.data.grandTotal);
+  });
+
+  it('preview reports willCreateDefaultFund (never creates one) when no default fund exists yet', async () => {
+    const freshBuildingId = await createBuilding(app, manager.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
+    createdBuildingIds.push(freshBuildingId);
+
+    expect(await prisma.fund.count({ where: { buildingId: freshBuildingId } })).toBe(0);
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${freshBuildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ title: 'No Fund Yet', calculationMethod: 'FIXED', amountPerUnit: 50_000 })
+      .expect(201);
+
+    expect(res.body.data.fund).toBeNull();
+    expect(res.body.data.willCreateDefaultFund).toBe(true);
+    expect(await prisma.fund.count({ where: { buildingId: freshBuildingId } })).toBe(0);
+  });
+
+  // --- Gap 2: Payer Responsibility ------------------------------------------------
+
+  it('snapshots the active TENANT as the resolved payer at issue time', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Tenant Payer',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 60_000,
+        unitScope: 'MANUAL',
+        unitIds: [ownerOnlyUnitId],
+        payerType: 'TENANT',
+      })
+      .expect(201);
+    const batchId = createRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${batchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const item = await prisma.chargeItem.findFirst({
+      where: { chargeBatchId: batchId, unitId: ownerOnlyUnitId },
+      include: { payers: true },
+    });
+    expect(item?.resolvedPayerType).toBe('TENANT');
+    expect(item?.payers.map((p) => p.personId)).toEqual([tenant.personId]);
+  });
+
+  it('falls back to OWNER (snapshotting ALL current co-owners) when TENANT is requested but no active tenant exists', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Tenant Fallback To Co-Owners',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 60_000,
+        unitScope: 'MANUAL',
+        unitIds: [multiOwnerUnitId],
+        payerType: 'TENANT',
+      })
+      .expect(201);
+    const batchId = createRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${batchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const item = await prisma.chargeItem.findFirst({
+      where: { chargeBatchId: batchId, unitId: multiOwnerUnitId },
+      include: { payers: true },
+    });
+    expect(item?.resolvedPayerType).toBe('OWNER');
+    expect(item?.payers.map((p) => p.personId).sort()).toEqual(
+      [owner1.personId, owner2.personId].sort(),
+    );
+  });
+
+  // --- Gap 3: Late Fee -----------------------------------------------------------
+
+  let lateFeeChargeItemId: string;
+
+  it('applies an eligible FIXED late fee as a real, ledger-backed Adjustment', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Late Fee Batch',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 400_000,
+        unitScope: 'MANUAL',
+        unitIds: [residentialUnitId],
+        dueDate: '2020-01-01T00:00:00.000Z', // long past — deterministically eligible
+        lateFeeType: 'FIXED',
+        lateFeeValue: 25_000,
+        lateFeeGraceDays: 0,
+      })
+      .expect(201);
+    const batchId = createRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${batchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const item = await prisma.chargeItem.findFirst({
+      where: { chargeBatchId: batchId, unitId: residentialUnitId },
+    });
+    lateFeeChargeItemId = item!.id;
+
+    const debtRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${residentialUnitId}/debt`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(debtRes.body.data.eligibleLateFeeTotal).toBe(25_000);
+    expect(debtRes.body.data.eligibleLateFees).toEqual([
+      { chargeItemId: lateFeeChargeItemId, amount: 25_000 },
+    ]);
+
+    const itemsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${residentialUnitId}/charge-items`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const listedItem = itemsRes.body.data.find(
+      (i: { id: string }) => i.id === lateFeeChargeItemId,
+    );
+    expect(listedItem.lateFee).toEqual({ eligible: true, amount: 25_000 });
+
+    const applyRes = await request(app.getHttpServer())
+      .post(
+        `/api/v1/buildings/${buildingId}/units/${residentialUnitId}/charge-items/${lateFeeChargeItemId}/late-fee`,
+      )
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(201);
+    expect(applyRes.body.data.amount).toBe(25_000);
+    expect(applyRes.body.data.sourceType).toBe('LATE_FEE');
+    expect(applyRes.body.data.sourceId).toBe(lateFeeChargeItemId);
+
+    const ledgerRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/ledger`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(
+      ledgerRes.body.data.some(
+        (e: { entryType: string; referenceId: string }) =>
+          e.entryType === 'ADJUSTMENT' && e.referenceId === applyRes.body.data.id,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects applying the same late fee twice (DUPLICATE, 409)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(
+        `/api/v1/buildings/${buildingId}/units/${residentialUnitId}/charge-items/${lateFeeChargeItemId}/late-fee`,
+      )
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(409);
+    expect(res.body.errors[0].code).toBe('DUPLICATE');
+  });
+
+  it('rejects applying a late fee before dueDate + graceDays has passed (BUSINESS_RULE_VIOLATION)', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Not Yet Due',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 300_000,
+        unitScope: 'MANUAL',
+        unitIds: [residentialUnitId],
+        dueDate: '2099-01-01T00:00:00.000Z',
+        lateFeeType: 'FIXED',
+        lateFeeValue: 10_000,
+      })
+      .expect(201);
+    const batchId = createRes.body.data.id;
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${batchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const item = await prisma.chargeItem.findFirst({
+      where: { chargeBatchId: batchId, unitId: residentialUnitId },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post(
+        `/api/v1/buildings/${buildingId}/units/${residentialUnitId}/charge-items/${item!.id}/late-fee`,
+      )
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(422);
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('computes PERCENTAGE late fee from the ORIGINAL ChargeItem amount, not the partially-paid remaining balance', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Percentage Late Fee',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 1_000_000,
+        unitScope: 'MANUAL',
+        unitIds: [percentageTestUnitId], // isolated unit — no other outstanding items to skew the waiver's oldest-debt-first ordering
+        dueDate: '2020-01-01T00:00:00.000Z',
+        lateFeeType: 'PERCENTAGE',
+        lateFeeValue: 2,
+      })
+      .expect(201);
+    const batchId = createRes.body.data.id;
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${batchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    // Waive most of the debt so the REMAINING balance (100_000) would give
+    // a very different 2% figure (2_000) than the ORIGINAL amount's 2%
+    // (20_000) — proves which one the calculation actually used.
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${percentageTestUnitId}/adjustments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ amount: -900_000, reason: 'e2e partial waiver for percentage late fee test' })
+      .expect(201);
+
+    const item = await prisma.chargeItem.findFirst({
+      where: { chargeBatchId: batchId, unitId: percentageTestUnitId },
+    });
+    expect(item?.paidAmount).toBe(900_000);
+
+    const applyRes = await request(app.getHttpServer())
+      .post(
+        `/api/v1/buildings/${buildingId}/units/${percentageTestUnitId}/charge-items/${item!.id}/late-fee`,
+      )
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(201);
+    expect(applyRes.body.data.amount).toBe(20_000);
+  });
+
+  it("rejects applying a late fee when the ChargeItem doesn't belong to the given unit (404)", async () => {
+    const res = await request(app.getHttpServer())
+      .post(
+        `/api/v1/buildings/${buildingId}/units/${commercialUnitId}/charge-items/${lateFeeChargeItemId}/late-fee`,
+      )
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
   });
 });
 
