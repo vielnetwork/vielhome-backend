@@ -307,4 +307,20 @@ export class BuildingController {
   ) {
     return this.buildings.updateSettings(id, dto, user.sub, requestId);
   }
+
+  // --- Mobile Governance UI catch-up (21_ADRs > ADR-092) -------------------
+  //
+  // Phone-based member lookup, scoped to this building — see
+  // `BuildingService.lookupMemberByPhone`'s own doc comment for why this
+  // exists (resolving `GrantVoteProxyDto.proxyPersonId` from a phone
+  // number, the same way Transfer Ownership's `newOwnerPhone` already
+  // works, since no other endpoint lets a resident find another member's
+  // raw personId). Must stay ABOVE `:id` is not a concern here (nested
+  // under `:id/members/lookup`, not a bare top-level path the way the
+  // Address step's own `lookup` route needed protecting).
+  @Get(':id/members/lookup')
+  @UseGuards(MembershipGuard)
+  lookupMemberByPhone(@Param('id') id: string, @Query('phone') phone: string) {
+    return this.buildings.lookupMemberByPhone(id, phone);
+  }
 }

@@ -608,4 +608,21 @@ export class BuildingService {
 
     return updated;
   }
+
+  /**
+   * Mobile Governance UI catch-up (21_ADRs > ADR-092) — any current member
+   * may look up a fellow member by phone, scoped to THIS building only
+   * (`BuildingRepository.findMemberByPhone`'s own `buildingId` filter).
+   * Exists specifically so the Grant Vote Proxy screen can resolve a phone
+   * number to the `personId` `GrantVoteProxyDto` requires, without a
+   * resident needing to know it directly — see that repository method's
+   * own doc comment. Returns `null` (not a 404) when nobody with that
+   * phone currently belongs to this building, mirroring
+   * `BuildingSetupService.lookupPostalCode`'s own "not found is a normal
+   * result, not an error" shape.
+   */
+  async lookupMemberByPhone(buildingId: string, phone: string) {
+    await this.getById(buildingId); // 404s if the building doesn't exist
+    return this.buildings.findMemberByPhone(buildingId, phone);
+  }
 }

@@ -291,6 +291,29 @@ export class BuildingRepository {
       .map((r) => r.role);
   }
 
+  /**
+   * Mobile Governance UI catch-up (21_ADRs > ADR-092) — resolves a phone
+   * number to a CURRENT member of this specific building, so the Grant
+   * Vote Proxy screen can offer the same phone-based selection UX Transfer
+   * Ownership already established (`TransferOwnershipDto.newOwnerPhone`),
+   * rather than requiring a resident to type another member's raw
+   * `personId` (`GrantVoteProxyDto.proxyPersonId` — ADR-089 Alternative
+   * F). `Person.phone` is globally unique, so at most one Membership row
+   * can match; returns `null` (a normal "no such member," not an error)
+   * if nobody with that phone currently belongs to this building.
+   */
+  async findMemberByPhone(
+    buildingId: string,
+    phone: string,
+  ): Promise<{ personId: string; fullName: string | null; role: MembershipRole } | null> {
+    const membership = await this.prisma.membership.findFirst({
+      where: { buildingId, isCurrent: true, person: { phone } },
+      select: { personId: true, role: true, person: { select: { fullName: true } } },
+    });
+    if (!membership) return null;
+    return { personId: membership.personId, fullName: membership.person.fullName, role: membership.role };
+  }
+
   // --- Notification recipient resolution (21_ADRs > ADR-027) --------------
   // These exist purely so NotificationsModule can resolve "who should hear
   // about this event" without importing Finance/Governance/Cases — the
