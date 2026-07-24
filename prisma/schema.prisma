@@ -682,6 +682,14 @@ enum FundType {
   CUSTOM
 }
 
+// Added in ADR-094 (Sprint 29) — metadata only, no real bank-integration
+// gateway exists at MVP (mirrors PaymentMethod's own CASH/BANK_TRANSFER,
+// no-online-gateway precedent).
+enum FundAccountLinkType {
+  BANK
+  CASH
+}
+
 // A building may define multiple independent funds (12_Finance_Architecture
 // > "Multiple Funds"). Every ChargeBatch/Payment/LedgerEntry belongs to
 // exactly one fund. `isDefault` marks the fund new charges default into when
@@ -696,6 +704,16 @@ model Fund {
   type        FundType @default(CURRENT)
   description String?
   isDefault   Boolean  @default(false)
+  // Added in ADR-094 (Sprint 29) — a fund is never hard-deleted (matches
+  // 12_Finance_Architecture's "nothing is deleted" philosophy, and every
+  // Fund has FK references from LedgerEntry/Payment/ChargeBatch/Adjustment
+  // that a real delete would orphan or force-cascade through financial
+  // history). Deactivation is the only removal path; a deactivated fund
+  // keeps its full history and balance, it just can't receive new Charge
+  // Batches or Payments going forward.
+  isActive        Boolean              @default(true)
+  accountLinkType FundAccountLinkType?
+  accountReference String?
   // Denormalized cache of the sum of this fund's LedgerEntry rows — see
   // section note above. Updated transactionally, never authoritative.
   balance     Int      @default(0)
@@ -906,6 +924,11 @@ enum LedgerEntryType {
   // REVERSAL undoes an erroneous/bounced/fraudulent approval, as if it
   // never happened.
   REVERSAL
+  // Added in ADR-094 (Sprint 29) — a Fund's initialBalance at creation
+  // time is never written directly to Fund.balance; it's posted as a real
+  // ledger entry like every other cash movement, keeping the Ledger the
+  // actual source of truth (12_Finance_Architecture > "Ledger").
+  OPENING_BALANCE
 }
 
 enum LedgerDirection {

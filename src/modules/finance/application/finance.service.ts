@@ -4,7 +4,9 @@ import { FinanceRepository } from '../infrastructure/repositories/finance.reposi
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { ChargePolicy } from '../domain/policies/charge.policy';
 import { PaymentPolicy } from '../domain/policies/payment.policy';
+import { FundPolicy } from '../domain/policies/fund.policy';
 import { CreateFundDto } from './dto/create-fund.dto';
+import { UpdateFundDto } from './dto/update-fund.dto';
 import { CreateChargeBatchDto } from './dto/create-charge-batch.dto';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { RejectPaymentDto } from './dto/reject-payment.dto';
@@ -29,6 +31,7 @@ export class FinanceService {
     private readonly buildings: BuildingRepository,
     private readonly chargePolicy: ChargePolicy,
     private readonly paymentPolicy: PaymentPolicy,
+    private readonly fundPolicy: FundPolicy,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
   ) {}
@@ -54,6 +57,11 @@ export class FinanceService {
       name: dto.name,
       type: dto.type,
       description: dto.description,
+      initialBalance: dto.initialBalance,
+      accountLinkType: dto.accountLinkType,
+      accountReference: dto.accountReference,
+      actorId: actorPersonId,
+      requestId,
     });
 
     await this.audit.record({
@@ -63,6 +71,7 @@ export class FinanceService {
       entityType: 'Fund',
       entityId: fund.id,
       requestId,
+      metadata: dto.initialBalance ? { initialBalance: dto.initialBalance } : undefined,
     });
 
     return fund;
@@ -70,6 +79,90 @@ export class FinanceService {
 
   listFunds(buildingId: string) {
     return this.finance.listFunds(buildingId);
+  }
+
+  /** Same not-found-or-wrong-building guard shape as `getChargeBatch`. */
+  async getFund(buildingId: string, fundId: string) {
+    const fund = await this.finance.findFundById(fundId);
+    if (!fund || fund.buildingId !== buildingId) {
+      throw new NotFoundAppError('Fund not found.');
+    }
+    return fund;
+  }
+
+  async updateFund(
+    buildingId: string,
+    fundId: string,
+    dto: UpdateFundDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    const existing = await this.getFund(buildingId, fundId);
+    this.fundPolicy.assertActive(existing.isActive);
+
+    const fund = await this.finance.updateFund(fundId, {
+      name: dto.name,
+      type: dto.type,
+      description: dto.description,
+      accountLinkType: dto.accountLinkType,
+      accountReference: dto.accountReference,
+    });
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      buildingId,
+      action: 'FundUpdated',
+      entityType: 'Fund',
+      entityId: fundId,
+      requestId,
+    });
+
+    return fund;
+  }
+
+  async deactivateFund(
+    buildingId: string,
+    fundId: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    const existing = await this.getFund(buildingId, fundId);
+    this.fundPolicy.assertDeactivatable(existing.isDefault);
+
+    const fund = await this.finance.setFundActive(fundId, false);
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      buildingId,
+      action: 'FundDeactivated',
+      entityType: 'Fund',
+      entityId: fundId,
+      requestId,
+    });
+
+    return fund;
+  }
+
+  async reactivateFund(
+    buildingId: string,
+    fundId: string,
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    await this.getFund(buildingId, fundId);
+
+    const fund = await this.finance.setFundActive(fundId, true);
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      buildingId,
+      action: 'FundReactivated',
+      entityType: 'Fund',
+      entityId: fundId,
+      requestId,
+    });
+
+    return fund;
   }
 
   // --- Charge Batches ----------------------------------------------------------

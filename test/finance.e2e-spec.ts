@@ -462,6 +462,84 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
     expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
 
+  // --- ADR-094 (Sprint 29) — Fund initial balance, edit, deactivate/reactivate ---
+
+  let editableFundId: string;
+
+  it('posts an OPENING_BALANCE ledger entry and sets Fund.balance when created with an initialBalance', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/funds`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        name: 'Renovation Fund',
+        type: 'RENOVATION',
+        initialBalance: 2_000_000,
+        accountLinkType: 'BANK',
+        accountReference: 'IR-e2e-000',
+      })
+      .expect(201);
+
+    editableFundId = res.body.data.id;
+    expect(res.body.data.balance).toBe(2_000_000);
+
+    const ledgerRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/ledger`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const openingEntry = ledgerRes.body.data.find(
+      (e: { entryType: string; referenceId: string }) =>
+        e.entryType === 'OPENING_BALANCE' && e.referenceId === editableFundId,
+    );
+    expect(openingEntry).toBeDefined();
+    expect(openingEntry.amount).toBe(2_000_000);
+  });
+
+  it('lets the manager edit a Fund (name/description/account fields, never balance)', async () => {
+    const res = await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/funds/${editableFundId}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ name: 'Renovation Fund (Updated)', accountReference: 'IR-e2e-001' })
+      .expect(200);
+
+    expect(res.body.data.name).toBe('Renovation Fund (Updated)');
+    expect(res.body.data.accountReference).toBe('IR-e2e-001');
+    // Editing never touches balance — still exactly the opening amount.
+    expect(res.body.data.balance).toBe(2_000_000);
+  });
+
+  it('blocks a non-manager member from editing a Fund (403)', async () => {
+    const res = await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/funds/${editableFundId}`)
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .send({ name: 'Hijacked Name' })
+      .expect(403);
+
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+
+  it('deactivates a non-default Fund, then blocks further edits to it', async () => {
+    const res = await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/funds/${editableFundId}/deactivate`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(res.body.data.isActive).toBe(false);
+
+    const editRes = await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/funds/${editableFundId}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ name: 'Should Not Apply' })
+      .expect(422);
+    expect(editRes.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('reactivates the Fund, restoring editability', async () => {
+    const res = await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/funds/${editableFundId}/reactivate`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(res.body.data.isActive).toBe(true);
+  });
+
   let chargeBatchId: string;
 
   it('creates a FIXED charge batch covering every unit via the default fund', async () => {
@@ -482,6 +560,25 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
     expect(getRes.body.data.chargeItems).toHaveLength(2);
     expect(getRes.body.data.chargeItems[0].amount).toBe(500_000);
     expect(getRes.body.data.chargeItems[0].status).toBe('UNPAID');
+  });
+
+  it("rejects deactivating the building's default fund (BUSINESS_RULE_VIOLATION)", async () => {
+    // The default CURRENT fund was lazily created above by the FIXED
+    // charge batch (createChargeBatch's own fundId-optional fallback) —
+    // fetch it by listing funds and finding isDefault, rather than
+    // assuming an id.
+    const listRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/funds`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const defaultFund = listRes.body.data.find((f: { isDefault: boolean }) => f.isDefault);
+    expect(defaultFund).toBeDefined();
+
+    const res = await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/funds/${defaultFund.id}/deactivate`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(422);
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
 
   it('rejects a MIXED charge batch with no explicit items (BUSINESS_RULE_VIOLATION)', async () => {

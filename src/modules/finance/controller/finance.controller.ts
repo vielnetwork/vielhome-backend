@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@ne
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { FinanceService } from '../application/finance.service';
 import { CreateFundDto } from '../application/dto/create-fund.dto';
+import { UpdateFundDto } from '../application/dto/update-fund.dto';
 import { CreateChargeBatchDto } from '../application/dto/create-charge-batch.dto';
 import { CreatePaymentDto } from '../application/dto/create-payment.dto';
 import { RejectPaymentDto } from '../application/dto/reject-payment.dto';
@@ -63,6 +64,50 @@ export class FinanceController {
   @UseGuards(MembershipGuard)
   listFunds(@Param('id') id: string) {
     return this.finance.listFunds(id);
+  }
+
+  @Get(':id/funds/:fundId')
+  @UseGuards(MembershipGuard)
+  getFund(@Param('id') id: string, @Param('fundId') fundId: string) {
+    return this.finance.getFund(id, fundId);
+  }
+
+  @Patch(':id/funds/:fundId')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
+  updateFund(
+    @Param('id') id: string,
+    @Param('fundId') fundId: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateFundDto,
+    @RequestId() requestId: string,
+  ) {
+    return this.finance.updateFund(id, fundId, dto, user.sub, requestId);
+  }
+
+  /** ADR-094 (Sprint 29) — deactivation, not deletion; see Fund model's own schema comment for why a Fund is never hard-deleted. */
+  @Patch(':id/funds/:fundId/deactivate')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
+  deactivateFund(
+    @Param('id') id: string,
+    @Param('fundId') fundId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.finance.deactivateFund(id, fundId, user.sub, requestId);
+  }
+
+  @Patch(':id/funds/:fundId/reactivate')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
+  reactivateFund(
+    @Param('id') id: string,
+    @Param('fundId') fundId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.finance.reactivateFund(id, fundId, user.sub, requestId);
   }
 
   // --- Charge Batches ----------------------------------------------------------

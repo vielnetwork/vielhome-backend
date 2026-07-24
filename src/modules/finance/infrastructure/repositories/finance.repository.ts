@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   ChargeCalculationMethod,
   ChargeItemStatus,
+  FundAccountLinkType,
   FundType,
   LedgerEntryType,
   PaymentMethod,
@@ -54,14 +55,71 @@ export class FinanceRepository {
     return this.prisma.fund.findUnique({ where: { id: fundId } });
   }
 
+  /**
+   * ADR-094 (Sprint 29) — `initialBalance` is never written directly to
+   * `Fund.balance`; when positive, this posts a real `OPENING_BALANCE`
+   * LedgerEntry in the same transaction and lets the balance update follow
+   * the same `affectsFundBalance`-gated path every other cash movement
+   * uses, keeping the Ledger the actual source of truth.
+   */
   createFund(params: {
     buildingId: string;
     name: string;
     type: FundType;
     description?: string;
     isDefault?: boolean;
+    initialBalance?: number;
+    accountLinkType?: FundAccountLinkType;
+    accountReference?: string;
+    actorId?: string;
+    requestId?: string;
   }) {
-    return this.prisma.fund.create({ data: params });
+    const { initialBalance, actorId, requestId, ...fundData } = params;
+
+    return this.prisma.$transaction(async (tx) => {
+      const fund = await tx.fund.create({ data: fundData });
+
+      if (initialBalance && initialBalance > 0) {
+        await tx.ledgerEntry.create({
+          data: {
+            buildingId: params.buildingId,
+            fundId: fund.id,
+            entryType: 'OPENING_BALANCE',
+            direction: 'CREDIT',
+            amount: initialBalance,
+            referenceType: 'Fund',
+            referenceId: fund.id,
+            description: 'موجودی اولیه صندوق',
+            actorId,
+            requestId,
+          },
+        });
+
+        return tx.fund.update({
+          where: { id: fund.id },
+          data: { balance: { increment: initialBalance } },
+        });
+      }
+
+      return fund;
+    });
+  }
+
+  updateFund(
+    fundId: string,
+    params: {
+      name?: string;
+      type?: FundType;
+      description?: string;
+      accountLinkType?: FundAccountLinkType;
+      accountReference?: string;
+    },
+  ) {
+    return this.prisma.fund.update({ where: { id: fundId }, data: params });
+  }
+
+  setFundActive(fundId: string, isActive: boolean) {
+    return this.prisma.fund.update({ where: { id: fundId }, data: { isActive } });
   }
 
   /**
