@@ -215,6 +215,153 @@ describe('Auth (e2e) — OTP request', () => {
   });
 });
 
+// Phone Number Input & Normalization task — Persian (۰-۹) / Arabic-Indic
+// (٠-٩) digit test helpers, the mirror image of the backend's own
+// `toAsciiDigits` in `phone.util.ts`, used only to build test input.
+const PERSIAN_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+const ARABIC_INDIC_DIGITS = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+
+function toPersianDigits(asciiDigits: string): string {
+  return asciiDigits.replace(/[0-9]/g, (d) => PERSIAN_DIGITS[Number(d)]);
+}
+
+function toArabicIndicDigits(asciiDigits: string): string {
+  return asciiDigits.replace(/[0-9]/g, (d) => ARABIC_INDIC_DIGITS[Number(d)]);
+}
+
+describe('Auth (e2e) — OTP request: Phone Number Input & Normalization (accepted forms)', () => {
+  // Budget: 4 calls to POST /auth/otp/request — 09..., 9..., 989..., and a
+  // Persian-digit 09... form, all of the SAME underlying number, each
+  // asserted to resolve to the ONE SAME canonical +989... Person rather
+  // than creating a duplicate.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+  });
+
+  afterAll(async () => {
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('accepts 09XXXXXXXXX, 9XXXXXXXXX, 989XXXXXXXXX, and Persian-digit 09XXXXXXXXX, all normalizing to the SAME canonical phone', async () => {
+    const canonical = nextPhone(); // e.g. +989121234XX
+    createdPhones.push(canonical);
+    const local10 = canonical.slice(3); // 9XXXXXXXXX (10 digits)
+
+    // `POST /auth/otp/request` only ever writes an `OtpRequest` row — it
+    // does NOT create the `Person` (that happens on `verifyOtp`, per
+    // `AuthService.verifyOtp` -> `issueTokenPair`). So the correctness
+    // signal here is `OtpRequest.phone`, which the DTO's `@Transform`
+    // (via `@IsIranianMobilePhone()`) has already normalized by the time
+    // the repository writes it — not `Person`.
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/request')
+      .send({ phone: `0${local10}`, purpose: 'LOGIN' })
+      .expect(200);
+    expect(
+      await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } }),
+    ).toBe(1);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/request')
+      .send({ phone: local10, purpose: 'LOGIN' })
+      .expect(200);
+    expect(
+      await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } }),
+    ).toBe(2);
+
+    // Regression: this form (989XXXXXXXXX, no leading +) must resolve to
+    // the SAME canonical +989XXXXXXXXX, never to a double-prefixed
+    // +98989XXXXXXXXX — an earlier client-side formatter bug did exactly
+    // that for this specific shape.
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/request')
+      .send({ phone: `98${local10}`, purpose: 'LOGIN' })
+      .expect(200);
+    expect(
+      await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } }),
+    ).toBe(3);
+    expect(
+      await prisma.otpRequest.count({ where: { phone: `+98${canonical}`, purpose: 'LOGIN' } }),
+    ).toBe(0);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/request')
+      .send({ phone: toPersianDigits(`0${local10}`), purpose: 'LOGIN' })
+      .expect(200);
+    expect(
+      await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } }),
+    ).toBe(4);
+  });
+});
+
+describe('Auth (e2e) — OTP request: Phone Number Input & Normalization (Arabic-Indic digits + rejections)', () => {
+  // Budget: 4 calls to POST /auth/otp/request — 1 Arabic-Indic success +
+  // 3 rejections (letters embedded, landline shape, explicit 0098 non-
+  // scope form).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+  });
+
+  afterAll(async () => {
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('accepts Arabic-Indic digits and normalizes to +989XXXXXXXXX', async () => {
+    const canonical = nextPhone();
+    createdPhones.push(canonical);
+    const local10 = canonical.slice(3);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/request')
+      .send({ phone: toArabicIndicDigits(`0${local10}`), purpose: 'LOGIN' })
+      .expect(200);
+
+    // Same rationale as the sibling describe block above: check the
+    // `OtpRequest` row's normalized phone, not `Person` (not created yet).
+    const otpRequest = await prisma.otpRequest.findFirst({
+      where: { phone: canonical, purpose: 'LOGIN' },
+    });
+    expect(otpRequest).not.toBeNull();
+  });
+
+  it('rejects a phone with letters embedded rather than silently stripping them (VALIDATION_ERROR)', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/request')
+      .send({ phone: '0912abc1234567', purpose: 'LOGIN' })
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects an Iranian landline (non-mobile) number (VALIDATION_ERROR)', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/request')
+      .send({ phone: '02112345678', purpose: 'LOGIN' })
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects the 0098 international-prefix form (explicitly out of scope for this task)', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/request')
+      .send({ phone: '00989121234567', purpose: 'LOGIN' })
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+});
+
 describe('Auth (e2e) — OTP verify: registration and login', () => {
   // Budget: 3 calls to POST /auth/otp/request (1 + 2).
   let app: INestApplication;

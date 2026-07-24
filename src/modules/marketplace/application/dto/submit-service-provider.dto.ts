@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import type { ServiceProviderCategory } from '@prisma/client';
 import { IsEmail, IsEnum, IsOptional, IsString } from 'class-validator';
+import { IsIranianMobilePhone } from '../../../../common/decorators/is-iranian-mobile-phone.decorator';
 
 /** ADR-030 — any authenticated Person may submit a listing; it starts PENDING. */
 export class SubmitServiceProviderDto {
@@ -17,9 +18,19 @@ export class SubmitServiceProviderDto {
   @IsString()
   description?: string;
 
-  @ApiProperty({ required: false })
+  /**
+   * Phone Number Input & Normalization task — tightens this field's
+   * contract from free-form text (previously plain `@IsString()`, no
+   * phone-shape validation at all) to the same Iranian-mobile-only rule
+   * every other phone field in this API now enforces, for MVP
+   * consistency (this product has no non-Iranian phone numbers anywhere
+   * else). Accepts 09..., 9..., 989..., +989..., and Persian/Arabic-Indic
+   * digit equivalents; normalized to +989XXXXXXXXX. No other Marketplace
+   * behavior changes.
+   */
+  @ApiProperty({ required: false, example: '09121234567' })
   @IsOptional()
-  @IsString()
+  @IsIranianMobilePhone()
   contactPhone?: string;
 
   @ApiProperty({ required: false })

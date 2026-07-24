@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsPhoneNumber, IsString, MinLength } from 'class-validator';
+import { IsString, MinLength } from 'class-validator';
+import { IsIranianMobilePhone } from '../../../../common/decorators/is-iranian-mobile-phone.decorator';
 
 /**
  * "Invite owner" — per the product decision, name + phone are the two
@@ -12,7 +13,8 @@ export class InviteOwnerDto {
   @MinLength(2)
   ownerFullName!: string;
 
-  @ApiProperty({ example: '+989121234567' })
-  @IsPhoneNumber(undefined)
+  /** Phone Number Input & Normalization task — see RequestOtpDto.phone's own comment. */
+  @ApiProperty({ example: '09121234567' })
+  @IsIranianMobilePhone()
   ownerPhone!: string;
 }

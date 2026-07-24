@@ -384,7 +384,14 @@ describe('Marketplace Foundation (e2e) — Submission & Own-Scoped Visibility (A
         name: 'Acme Plumbing',
         category: 'MAINTENANCE',
         description: 'Residential plumbing repair and maintenance.',
-        contactPhone: '02112345678',
+        // Phone Number Input & Normalization task: this task tightened
+        // `contactPhone` from free-form text to the same Iranian-mobile
+        // rule every other phone field uses (see `SubmitServiceProviderDto`
+        // on the backend) — the landline number this fixture used to send
+        // is now correctly rejected (400), so it's replaced with a real
+        // mobile-shaped number via the same `nextPhone()` helper the rest
+        // of this file already uses for `Person.phone`.
+        contactPhone: nextPhone(),
         contactEmail: 'contact@acmeplumbing.example',
         city: 'Tehran',
       })

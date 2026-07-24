@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsNumber, IsOptional, IsPhoneNumber, IsString } from 'class-validator';
+import { IsIn, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsIranianMobilePhone } from '../../../../common/decorators/is-iranian-mobile-phone.decorator';
 
 /**
  * "Configure Units" (06_User_Flows > Building Setup Assistant) — fills in
@@ -38,8 +39,9 @@ export class UpdateUnitDto {
   @IsString()
   ownerFullName?: string;
 
-  @ApiProperty({ required: false, example: '+989121234567' })
+  /** Phone Number Input & Normalization task — see RequestOtpDto.phone's own comment. */
+  @ApiProperty({ required: false, example: '09121234567' })
   @IsOptional()
-  @IsPhoneNumber(undefined)
+  @IsIranianMobilePhone()
   ownerPhone?: string;
 }

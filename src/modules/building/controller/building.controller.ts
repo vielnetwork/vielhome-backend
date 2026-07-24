@@ -13,6 +13,7 @@ import { TransferOwnershipDto } from '../application/dto/transfer-ownership.dto'
 import { CreateTenancyDto } from '../application/dto/create-tenancy.dto';
 import { EndTenancyDto } from '../application/dto/end-tenancy.dto';
 import { UpdateBuildingSettingsDto } from '../application/dto/update-building-settings.dto';
+import { LookupMemberQueryDto } from '../application/dto/lookup-member.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
@@ -320,7 +321,7 @@ export class BuildingController {
   // Address step's own `lookup` route needed protecting).
   @Get(':id/members/lookup')
   @UseGuards(MembershipGuard)
-  lookupMemberByPhone(@Param('id') id: string, @Query('phone') phone: string) {
-    return this.buildings.lookupMemberByPhone(id, phone);
+  lookupMemberByPhone(@Param('id') id: string, @Query() query: LookupMemberQueryDto) {
+    return this.buildings.lookupMemberByPhone(id, query.phone);
   }
 }

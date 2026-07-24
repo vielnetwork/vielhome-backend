@@ -76,6 +76,21 @@ function nextPostalCode(): string {
   return `${RUN_ID}${postalCodeCounter.toString().padStart(4, '0')}`;
 }
 
+// Phone Number Input & Normalization task — mirrors the identical helpers in
+// `auth.e2e-spec.ts`. Duplicated rather than imported: these two files each
+// boot their own fresh `INestApplication`/Prisma connection and intentionally
+// share no runtime module graph, per this file's own header comment above.
+const PERSIAN_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+const ARABIC_INDIC_DIGITS = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+
+function toPersianDigits(asciiDigits: string): string {
+  return asciiDigits.replace(/[0-9]/g, (d) => PERSIAN_DIGITS[Number(d)]);
+}
+
+function toArabicIndicDigits(asciiDigits: string): string {
+  return asciiDigits.replace(/[0-9]/g, (d) => ARABIC_INDIC_DIGITS[Number(d)]);
+}
+
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
   const moduleFixture: TestingModule = await Test.createTestingModule({
     imports: [AppModule],
@@ -673,6 +688,115 @@ describe('Building (e2e) — Ownership Transfer (21_ADRs > ADR-035)', () => {
       .set('Authorization', `Bearer ${founder.accessToken}`)
       .expect(200);
     expect(historyRes.body.data.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('Building (e2e) — Phone Number Input & Normalization (Invite Owner / Ownership Transfer / Members Lookup)', () => {
+  // Budget: 3 calls to POST /auth/otp/request (founder + local-form invited
+  // owner's own verify + Persian-digit-form transferred owner's own verify).
+  // The `members/lookup` assertions make no `otp/request` calls of their own.
+  //
+  // These tests prove the same normalization guarantee at three different
+  // phone-bearing Building endpoints: `invite-owner` (sets
+  // `Unit.ownerPhone`), `ownership/transfer` (repoints `Unit.ownerPhone`),
+  // and `members/lookup` (reads back by phone via the new
+  // `LookupMemberQueryDto`). Each accepts a non-canonical input form and
+  // asserts the value actually persisted/matched is canonical `+989...`.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let founder: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+  let currentOwner: RegisteredPerson;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    founder = await registerPerson(app);
+    createdPhones.push(founder.phone);
+    buildingId = await createBuilding(app, founder.accessToken, { totalUnits: 2 });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('normalizes a local 09XXXXXXXXX invite-owner phone to canonical +98 form', async () => {
+    const canonical = nextPhone();
+    const local = `0${canonical.slice(3)}`;
+    createdPhones.push(canonical);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/invite-owner`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send({ ownerFullName: 'e2e Normalized Owner', ownerPhone: local })
+      .expect(201);
+
+    const unit = await prisma.unit.findUnique({ where: { id: unitId } });
+    expect(unit?.ownerPhone).toBe(canonical);
+
+    // Auto-link on OTP verify must still resolve via the canonical form —
+    // proves normalization happened at write time, not just at read time.
+    const code = await requestOtpAndCaptureCode(app, canonical);
+    const res = await verifyOtp(app, { phone: canonical, code }).expect(200);
+    currentOwner = {
+      phone: canonical,
+      personId: res.body.data.personId,
+      accessToken: res.body.data.accessToken,
+    };
+
+    const ownership = await prisma.ownership.findFirst({
+      where: { unitId, personId: currentOwner.personId, isCurrent: true },
+    });
+    expect(ownership).not.toBeNull();
+  });
+
+  it('normalizes a Persian-digit ownership/transfer newOwnerPhone to canonical +98 form', async () => {
+    const canonical = nextPhone();
+    const persianLocal = toPersianDigits(`0${canonical.slice(3)}`);
+    createdPhones.push(canonical);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/ownership/transfer`)
+      .set('Authorization', `Bearer ${currentOwner.accessToken}`)
+      .send({ newOwnerPhone: persianLocal })
+      .expect(201);
+
+    const unitAfter = await prisma.unit.findUnique({ where: { id: unitId } });
+    expect(unitAfter?.ownerPhone).toBe(canonical);
+  });
+
+  it('members/lookup resolves a Persian-digit query to the matching member (proves whole-object @Query() DTO transform works)', async () => {
+    const persianFounderPhone = toPersianDigits(founder.phone.replace('+98', '0'));
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/members/lookup`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .query({ phone: persianFounderPhone })
+      .expect(200);
+
+    expect(res.body.data.personId).toBe(founder.personId);
+  });
+
+  it('members/lookup rejects a malformed phone with 400 VALIDATION_ERROR instead of a silent not-found', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/members/lookup`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .query({ phone: '0912abc1234567' })
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
   });
 });
 

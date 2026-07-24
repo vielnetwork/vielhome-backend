@@ -1,10 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsNotEmpty, IsOptional, IsPhoneNumber, IsString, Length } from 'class-validator';
+import { IsIn, IsNotEmpty, IsOptional, IsString, Length } from 'class-validator';
 import { OtpPurpose } from '@prisma/client';
+import { IsIranianMobilePhone } from '../../../../../common/decorators/is-iranian-mobile-phone.decorator';
 
 export class VerifyOtpDto {
-  @ApiProperty({ example: '+989121234567' })
-  @IsPhoneNumber(undefined)
+  /** Phone Number Input & Normalization task — see RequestOtpDto.phone's own comment. */
+  @ApiProperty({ example: '09121234567' })
+  @IsIranianMobilePhone()
   phone!: string;
 
   @ApiProperty({ example: '12345' })
