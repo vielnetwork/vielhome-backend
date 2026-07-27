@@ -13,6 +13,7 @@ import { NotificationProvidersModule } from './common/notification-providers/not
 import { RequestContextMiddleware } from './common/middleware/request-context.middleware';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/foundation/auth/auth.module';
+import { ProfileModule } from './modules/foundation/profile/profile.module';
 import { BuildingModule } from './modules/building/building.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { GovernanceModule } from './modules/governance/governance.module';
@@ -73,6 +74,7 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     NotificationProvidersModule,
     HealthModule,
     AuthModule,
+    ProfileModule,
     BuildingModule,
     FinanceModule,
     GovernanceModule,
