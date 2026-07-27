@@ -4,6 +4,7 @@ import { SUPPORTED_COUNTRIES, isSupportedCountryCode } from '../../../../common/
 import { isValidIranProvinceCode } from '../../../../common/location/iran-provinces';
 import { isValidIranCityForProvince } from '../../../../common/location/iran-cities';
 import { normalizePostalCode } from '../../../../common/postal-code/postal-code.util';
+import type { MembershipRole } from '@prisma/client';
 
 /**
  * Official wizard steps, in order (06_User_Flows > Building Onboarding,
@@ -82,6 +83,32 @@ export class BuildingSetupPolicy {
     if (missing.length > 0) {
       throw new BusinessRuleViolationError(
         `Cannot submit an incomplete building setup. Missing: ${missing.join(', ')}`,
+      );
+    }
+  }
+
+  /**
+   * Product Rule 1 (Building Setup Refinement Phase 3) — a pure TENANT may
+   * not create a Building. "Pure" is deliberately narrow, per the approved
+   * product decision: blocked only when the caller's CURRENT roles, across
+   * every building they belong to, are non-empty and consist entirely of
+   * TENANT. A brand-new person with zero memberships anywhere may still
+   * create a Building (this is most people's very first building). A
+   * person who is TENANT in one building but OWNER/MANAGER in another is
+   * NOT blocked — holding a real OWNER/MANAGER role anywhere already shows
+   * they aren't "just a tenant" for this purpose. Checked in
+   * `BuildingSetupService.submit`, the hard boundary — `setup/*` routes are
+   * deliberately guard-free at the controller level (see
+   * `MembershipGuard`'s own doc comment), so this is the actual
+   * enforcement point, not just UI hiding.
+   */
+  assertCanCreateBuilding(currentRolesAcrossAllBuildings: MembershipRole[]): void {
+    const isPureTenant =
+      currentRolesAcrossAllBuildings.length > 0 &&
+      currentRolesAcrossAllBuildings.every((role) => role === 'TENANT');
+    if (isPureTenant) {
+      throw new BusinessRuleViolationError(
+        'A Tenant cannot create a new Building. Contact the building manager if you believe this is a mistake.',
       );
     }
   }

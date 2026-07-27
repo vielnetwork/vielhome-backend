@@ -8,6 +8,7 @@ import { BuildingSetupPolicy } from './domain/policies/building-setup.policy';
 import { ManagerAssignmentPolicy } from './domain/policies/manager-assignment.policy';
 import { OwnershipTransferPolicy } from './domain/policies/ownership-transfer.policy';
 import { TenancyPolicy } from './domain/policies/tenancy.policy';
+import { OwnershipClaimPolicy } from './domain/policies/ownership-claim.policy';
 import { MembershipGuard } from '../../common/guards/membership.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 
@@ -22,6 +23,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
     ManagerAssignmentPolicy,
     OwnershipTransferPolicy,
     TenancyPolicy,
+    OwnershipClaimPolicy,
     MembershipGuard,
     RolesGuard,
   ],

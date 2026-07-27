@@ -860,6 +860,18 @@ describe('Building (e2e) — Tenancy (21_ADRs > ADR-035)', () => {
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
     unitId = unitsRes.body.data[0].id;
+
+    // Building Setup Refinement Phase 3 (Product Rule 2) —
+    // `TenancyPolicy.assertUnitHasOwner` now requires a current Ownership
+    // row before ANY tenancy can be created. Seeded directly against
+    // `Ownership`, same precedent finance.e2e-spec.ts already established
+    // for fixtures that aren't specifically testing the owner-link flow
+    // itself (that flow is exercised end-to-end in the Ownership Transfer
+    // describe above). Reuses `manager`'s own personId — this describe
+    // doesn't test WHO the owner is, only that one exists.
+    await prisma.ownership.create({
+      data: { unitId, personId: manager.personId, isCurrent: true },
+    });
   });
 
   afterAll(async () => {
@@ -1025,6 +1037,17 @@ describe('Building (e2e) — Unit Authorization Hardening (Building Setup Refine
     owner = await registerPerson(app);
     createdPhones.push(owner.phone);
     await joinBuildingAsApprovedMember(app, buildingId, owner.accessToken, manager.accessToken, 'OWNER');
+
+    // Building Setup Refinement Phase 3 (Product Rule 2) —
+    // `TenancyPolicy.assertUnitHasOwner` now requires a current Ownership
+    // row on `unitId` before a tenancy can be created here. `owner`'s own
+    // Membership row above is building-scoped, not a real unit-scoped
+    // Ownership row — seeded directly, same precedent finance.e2e-spec.ts
+    // already established for fixtures not specifically testing the
+    // owner-link flow itself.
+    await prisma.ownership.create({
+      data: { unitId, personId: owner.personId, isCurrent: true },
+    });
 
     // Real TENANT membership via the legitimate manager-driven Tenancy flow
     // (`TenancyPolicy.assertCanCreate`) — not a fixture shortcut.
@@ -1542,5 +1565,546 @@ describe('Building (e2e) — Address Hierarchy & Postal Code (Building Setup Ref
     // ever runs (see the address-hierarchy `it.each` above). That lenient
     // path is therefore verified at the unit level only
     // (building-setup.policy.spec.ts > normalizePostalCodeOrThrow), not here.
+  });
+});
+
+describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (Building Setup Refinement, Phase 3)', () => {
+  // Budget: ~12 calls to POST /auth/otp/request across the sub-describes
+  // below (each sub-describe registers its own small fixture set).
+
+  // --- B. Owner Self-Claim -------------------------------------------------
+  describe('Owner Self-Claim', () => {
+    let app: INestApplication;
+    let prisma: PrismaService;
+    const createdPhones: string[] = [];
+    const createdBuildingIds: string[] = [];
+
+    let manager: RegisteredPerson;
+    let buildingId: string;
+    let unitId: string;
+    let invitedOwnerPhone: string;
+    let invitedOwner: RegisteredPerson;
+
+    let mismatchedPerson: RegisteredPerson;
+
+    beforeAll(async () => {
+      ({ app, prisma } = await bootstrapTestApp());
+      manager = await registerPerson(app);
+      createdPhones.push(manager.phone);
+      buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 2 });
+      createdBuildingIds.push(buildingId);
+
+      const unitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      unitId = unitsRes.body.data[0].id;
+
+      // Register/login the future owner FIRST — an active session BEFORE
+      // any invite exists — then invite that exact phone afterward. Order
+      // matters: `AuthService.verifyOtp` unconditionally runs
+      // `linkOwnerAccountByPhone` (the reactive auto-link) on EVERY
+      // verify, so if the invite happened first and this person verified
+      // OTP afterward, the auto-link would already complete the Ownership
+      // link with nothing left for self-claim to do. Registering first
+      // means no further verify ever happens for this phone in this
+      // describe — self-claim, using the ALREADY-ISSUED access token, is
+      // the only way this person ever gets the Ownership link. This is
+      // exactly the real gap self-claim closes: a person already logged
+      // in when the Manager invites them afterward.
+      invitedOwner = await registerPerson(app);
+      invitedOwnerPhone = invitedOwner.phone;
+      createdPhones.push(invitedOwner.phone);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/invite-owner`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ ownerFullName: 'e2e Invited Owner', ownerPhone: invitedOwnerPhone })
+        .expect(201);
+
+      mismatchedPerson = await registerPerson(app);
+      createdPhones.push(mismatchedPerson.phone);
+    });
+
+    afterAll(async () => {
+      await cleanupBuildings(prisma, createdBuildingIds);
+      await cleanupPhones(prisma, createdPhones);
+      await app.close();
+    });
+
+    it('rejects self-claim by someone whose phone does not match Unit.ownerPhone (403, no cold claim)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/claim-ownership`)
+        .set('Authorization', `Bearer ${mismatchedPerson.accessToken}`)
+        .send({})
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+
+      const ownership = await prisma.ownership.findFirst({ where: { unitId, isCurrent: true } });
+      expect(ownership).toBeNull();
+    });
+
+    it('ignores any client-supplied body — identity/eligibility come only from the server', async () => {
+      // Uses the invited owner's EXISTING access token from `beforeAll` —
+      // no re-login needed, and re-verifying here would be the exact
+      // auto-link race the `beforeAll` comment above avoids. Tries to
+      // smuggle a different owner identity in the body — must be
+      // completely ignored (no `@Body()` DTO is even bound on this route).
+      const claimRes = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/claim-ownership`)
+        .set('Authorization', `Bearer ${invitedOwner.accessToken}`)
+        .send({ ownerPhone: '+989120009999', ownerFullName: 'Someone Else' } as Record<string, unknown>)
+        .expect(201);
+
+      const ownership = await prisma.ownership.findFirst({
+        where: { unitId, isCurrent: true },
+      });
+      expect(ownership?.personId).toBe(invitedOwner.personId);
+      expect(claimRes.status).toBe(201);
+    });
+
+    it('claim is idempotent / safely rejected on repeat (already-owned, 422)', async () => {
+      const repeat = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/claim-ownership`)
+        .set('Authorization', `Bearer ${invitedOwner.accessToken}`)
+        .send({})
+        .expect(422);
+      expect(repeat.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+    });
+
+    it('rejects a different member trying to claim an already-owned unit (422)', async () => {
+      const outsider = await registerPerson(app);
+      createdPhones.push(outsider.phone);
+      await joinBuildingAsApprovedMember(app, buildingId, outsider.accessToken, manager.accessToken);
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/claim-ownership`)
+        .set('Authorization', `Bearer ${outsider.accessToken}`)
+        .send({})
+        .expect((res) => expect([403, 422]).toContain(res.status));
+      expect(['AUTHORIZATION_ERROR', 'BUSINESS_RULE_VIOLATION']).toContain(res.body.errors[0].code);
+    });
+
+    it('a current TENANT of a DIFFERENT unclaimed unit who happens to be the exact invited owner may still self-claim (gains OWNER alongside TENANT, no membership terminated)', async () => {
+      const secondUnitId = (
+        await request(app.getHttpServer())
+          .get(`/api/v1/buildings/${buildingId}/units`)
+          .set('Authorization', `Bearer ${manager.accessToken}`)
+          .expect(200)
+      ).body.data[1].id as string;
+
+      const tenantOwnerPhone = nextPhone();
+      const tenantOwner = await registerPerson(app);
+      createdPhones.push(tenantOwner.phone);
+
+      // Manager registers this same person as the TENANT of the first
+      // unit (already-claimed above) — real tenancy, must have an owner
+      // first, which it does from the earlier tests.
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/tenancy`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ tenantPersonId: tenantOwner.personId })
+        .expect(201);
+
+      // Now the manager invites this exact same phone as the owner of the
+      // second, still-unclaimed unit.
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${secondUnitId}/invite-owner`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ ownerFullName: 'Tenant-Owner', ownerPhone: tenantOwner.phone })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${secondUnitId}/claim-ownership`)
+        .set('Authorization', `Bearer ${tenantOwner.accessToken}`)
+        .send({})
+        .expect(201);
+
+      const tenantMembership = await prisma.membership.findFirst({
+        where: { unitId, personId: tenantOwner.personId, role: 'TENANT', isCurrent: true },
+      });
+      expect(tenantMembership).not.toBeNull(); // untouched, still current
+
+      const ownerMembership = await prisma.membership.findFirst({
+        where: { unitId: secondUnitId, personId: tenantOwner.personId, role: 'OWNER', isCurrent: true },
+      });
+      expect(ownerMembership).not.toBeNull(); // additional, simultaneous role
+    });
+  });
+
+  // --- D. Tenant Occupancy (must have an Owner) -----------------------------
+  describe('Tenant occupancy requires an Owner', () => {
+    let app: INestApplication;
+    let prisma: PrismaService;
+    const createdPhones: string[] = [];
+    const createdBuildingIds: string[] = [];
+
+    let manager: RegisteredPerson;
+    let buildingId: string;
+    let unclaimedUnitId: string;
+
+    beforeAll(async () => {
+      ({ app, prisma } = await bootstrapTestApp());
+      manager = await registerPerson(app);
+      createdPhones.push(manager.phone);
+      buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+      createdBuildingIds.push(buildingId);
+
+      const unitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      unclaimedUnitId = unitsRes.body.data[0].id;
+    });
+
+    afterAll(async () => {
+      await cleanupBuildings(prisma, createdBuildingIds);
+      await cleanupPhones(prisma, createdPhones);
+      await app.close();
+    });
+
+    it('rejects legacy tenantPersonId tenancy creation when the unit has no owner (422)', async () => {
+      const tenant = await registerPerson(app);
+      createdPhones.push(tenant.phone);
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unclaimedUnitId}/tenancy`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ tenantPersonId: tenant.personId })
+        .expect(422);
+      expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+    });
+
+    it('rejects tenancy/register when the unit has no owner (422)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unclaimedUnitId}/tenancy/register`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ tenantFirstName: 'Sara', tenantLastName: 'Ahmadi', tenantPhone: nextPhone() })
+        .expect(422);
+      expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+    });
+
+    it('succeeds once an owner is registered — tenancy/register creates a brand-new Person with firstName/lastName', async () => {
+      const ownerPhone = nextPhone();
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unclaimedUnitId}/invite-owner/v2`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ ownerFirstName: 'Reza', ownerLastName: 'Karimi', ownerPhone })
+        .expect(201);
+
+      const code = await requestOtpAndCaptureCode(app, ownerPhone);
+      await verifyOtp(app, { phone: ownerPhone, code }).expect(200);
+      createdPhones.push(ownerPhone);
+
+      const unit = await prisma.unit.findUnique({ where: { id: unclaimedUnitId } });
+      expect(unit?.ownerFirstName).toBe('Reza');
+      expect(unit?.ownerLastName).toBe('Karimi');
+      expect(unit?.ownerFullName).toBe('Reza Karimi');
+
+      const tenantPhone = nextPhone();
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unclaimedUnitId}/tenancy/register`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ tenantFirstName: 'Sara', tenantLastName: 'Ahmadi', tenantPhone })
+        .expect(201);
+      createdPhones.push(tenantPhone);
+      expect(res.body.data.status).toBe('ACTIVE');
+
+      const tenantPerson = await prisma.person.findUnique({ where: { phone: tenantPhone } });
+      expect(tenantPerson?.firstName).toBe('Sara');
+      expect(tenantPerson?.lastName).toBe('Ahmadi');
+
+      const unitAfter = await prisma.unit.findUnique({ where: { id: unclaimedUnitId } });
+      expect(unitAfter?.occupancyStatus).toBe('TENANT_OCCUPIED');
+    });
+
+    it('registering an ALREADY-registered tenant by phone never overwrites their existing firstName/lastName', async () => {
+      const existing = await registerPerson(app);
+      createdPhones.push(existing.phone);
+      await prisma.person.update({
+        where: { id: existing.personId },
+        data: { firstName: 'AlreadySet', lastName: 'DoNotTouch' },
+      });
+
+      const buildingId2 = await createBuilding(app, manager.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 2,
+      });
+      createdBuildingIds.push(buildingId2);
+      const unitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId2}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      const otherUnitId = unitsRes.body.data[0].id;
+
+      const ownerPhone = nextPhone();
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId2}/units/${otherUnitId}/invite-owner/v2`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ ownerFirstName: 'X', ownerLastName: 'Y', ownerPhone })
+        .expect(201);
+      const ownerCode = await requestOtpAndCaptureCode(app, ownerPhone);
+      await verifyOtp(app, { phone: ownerPhone, code: ownerCode }).expect(200);
+      createdPhones.push(ownerPhone);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId2}/units/${otherUnitId}/tenancy/register`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ tenantFirstName: 'Overwrite', tenantLastName: 'Attempt', tenantPhone: existing.phone })
+        .expect(201);
+
+      const untouched = await prisma.person.findUnique({ where: { id: existing.personId } });
+      expect(untouched?.firstName).toBe('AlreadySet');
+      expect(untouched?.lastName).toBe('DoNotTouch');
+    });
+  });
+
+  // --- E. Tenant Building Creation Block -------------------------------------
+  describe('Pure-TENANT Building creation block', () => {
+    let app: INestApplication;
+    let prisma: PrismaService;
+    const createdPhones: string[] = [];
+    const createdBuildingIds: string[] = [];
+
+    beforeAll(async () => {
+      ({ app, prisma } = await bootstrapTestApp());
+    });
+
+    afterAll(async () => {
+      await cleanupBuildings(prisma, createdBuildingIds);
+      await cleanupPhones(prisma, createdPhones);
+      await app.close();
+    });
+
+    it('a brand-new person with zero memberships MAY create a building', async () => {
+      const founder = await registerPerson(app);
+      createdPhones.push(founder.phone);
+      const buildingId = await createBuilding(app, founder.accessToken, { role: 'OWNER' });
+      createdBuildingIds.push(buildingId);
+      expect(buildingId).toBeTruthy();
+    });
+
+    it('a person whose ONLY current role anywhere is TENANT cannot create a building (422)', async () => {
+      const manager = await registerPerson(app);
+      createdPhones.push(manager.phone);
+      const hostBuildingId = await createBuilding(app, manager.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 1,
+      });
+      createdBuildingIds.push(hostBuildingId);
+      // Fixture setup only (this test is about the building-CREATION
+      // policy, not the units-listing endpoint) — read the just-created
+      // unit directly via `prisma`, the same established pattern this
+      // test already uses one line below for seeding Ownership, rather
+      // than an extra HTTP round trip through `GET .../units` (guard +
+      // interceptor) that adds no coverage value here.
+      const [unit] = await prisma.unit.findMany({
+        where: { buildingId: hostBuildingId },
+        orderBy: { unitNumber: 'asc' },
+      });
+      const unitId = unit.id;
+      await prisma.ownership.create({ data: { unitId, personId: manager.personId, isCurrent: true } });
+
+      const pureTenant = await registerPerson(app);
+      createdPhones.push(pureTenant.phone);
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${hostBuildingId}/units/${unitId}/tenancy`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ tenantPersonId: pureTenant.personId })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/buildings/setup/draft')
+        .set('Authorization', `Bearer ${pureTenant.accessToken}`)
+        .send({ step: 'review', payload: reviewPayload({ role: 'OWNER' }) })
+        .expect(201);
+
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/buildings/setup/submit')
+        .set('Authorization', `Bearer ${pureTenant.accessToken}`)
+        .expect(422);
+      expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+    });
+
+    it('a person who is TENANT in one building but OWNER/MANAGER in another MAY still create a new building', async () => {
+      const manager = await registerPerson(app);
+      createdPhones.push(manager.phone);
+      const hostBuildingId = await createBuilding(app, manager.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 1,
+      });
+      createdBuildingIds.push(hostBuildingId);
+      const unitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${hostBuildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      const unitId = unitsRes.body.data[0].id;
+      await prisma.ownership.create({ data: { unitId, personId: manager.personId, isCurrent: true } });
+
+      const dualRole = await registerPerson(app);
+      createdPhones.push(dualRole.phone);
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${hostBuildingId}/units/${unitId}/tenancy`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ tenantPersonId: dualRole.personId })
+        .expect(201);
+
+      // Same person is also MANAGER of a second, PRE-EXISTING building —
+      // seeded directly via prisma (mirroring this file's established
+      // Ownership-seeding precedent elsewhere in this describe/file). The
+      // only in-app paths to acquire a MANAGER role are (a) self-creating
+      // a building, which a pure TENANT is correctly blocked from doing —
+      // that's the exact rule under test, so using it here to bootstrap
+      // the "dual role" fixture would be circular — or (b) the existing
+      // `changeManager` handoff endpoint, which itself requires the
+      // candidate to already hold some membership on that building first.
+      // `assertCanCreateBuilding` only cares whether a real, current
+      // MANAGER/OWNER Membership row exists somewhere, not how it was
+      // assigned, so seeding it directly is a faithful fixture for this
+      // policy check.
+      //
+      // The second building's founder is `manager` (already registered
+      // above), NOT a fresh `secondFounder` — `manager` already holds a
+      // real, current MANAGER role on `hostBuildingId`, so
+      // `assertCanCreateBuilding` does not block them from creating a
+      // second building either, and nothing prevents one person managing
+      // two buildings. Reusing them instead of minting another Person
+      // saves one `registerPerson` call (2 OTP request/verify HTTP round
+      // trips), keeping this describe's total `POST /auth/otp/request`
+      // volume at 5 across its 3 tests (1 + 2 + 2) rather than 6.
+      // `AuthController.requestOtp` is hard-throttled to 5 requests per
+      // 60s (`@Throttle({ default: { limit: 5, ttl: 60_000 } })`), keyed
+      // by IP — every request in this describe shares one fresh Nest
+      // app/one fresh in-memory `ThrottlerStorage` (one per describe) but
+      // also the SAME loopback IP, so a 6th OTP request anywhere in this
+      // describe's run window intermittently tipped this test into a 429
+      // before ever reaching the business-rule assertion below.
+      const secondBuildingId = await createBuilding(app, manager.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 1,
+      });
+      createdBuildingIds.push(secondBuildingId);
+      await prisma.membership.create({
+        data: {
+          personId: dualRole.personId,
+          buildingId: secondBuildingId,
+          role: 'MANAGER',
+          isCurrent: true,
+        },
+      });
+
+      // Still allowed to create a THIRD building — not "pure" tenant.
+      const thirdBuildingId = await createBuilding(app, dualRole.accessToken, { role: 'OWNER' });
+      createdBuildingIds.push(thirdBuildingId);
+      expect(thirdBuildingId).toBeTruthy();
+    });
+  });
+
+  // --- Response enrichment (myRoles / isCurrentOwner / isCurrentTenant / canClaimOwnership) ---
+  describe('Response enrichment', () => {
+    let app: INestApplication;
+    let prisma: PrismaService;
+    const createdPhones: string[] = [];
+    const createdBuildingIds: string[] = [];
+
+    let manager: RegisteredPerson;
+    let buildingId: string;
+    let unitId: string;
+
+    beforeAll(async () => {
+      ({ app, prisma } = await bootstrapTestApp());
+      manager = await registerPerson(app);
+      createdPhones.push(manager.phone);
+      buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+      createdBuildingIds.push(buildingId);
+      const unitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      unitId = unitsRes.body.data[0].id;
+    });
+
+    afterAll(async () => {
+      await cleanupBuildings(prisma, createdBuildingIds);
+      await cleanupPhones(prisma, createdPhones);
+      await app.close();
+    });
+
+    it('GET /buildings and GET /buildings/:id include myRoles', async () => {
+      const listRes = await request(app.getHttpServer())
+        .get('/api/v1/buildings')
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      const mine = listRes.body.data.find((b: { id: string }) => b.id === buildingId);
+      expect(mine.myRoles).toEqual(expect.arrayContaining(['MANAGER']));
+
+      const oneRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      expect(oneRes.body.data.myRoles).toEqual(expect.arrayContaining(['MANAGER']));
+    });
+
+    it('GET unit detail: canClaimOwnership is true only for the exact invited phone, false otherwise; flips after claim', async () => {
+      // Register/login the future owner FIRST (existing session) — same
+      // ordering reason as the Owner Self-Claim describe above: inviting
+      // BEFORE this person's only verify would let the reactive OTP
+      // auto-link complete the Ownership link on its own, leaving nothing
+      // for this test's explicit claim-ownership call to do.
+      const futureOwner = await registerPerson(app);
+      createdPhones.push(futureOwner.phone);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/invite-owner`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ ownerFullName: 'Claimable Owner', ownerPhone: futureOwner.phone })
+        .expect(201);
+
+      // Manager itself is not the invited phone — canClaimOwnership false.
+      const managerView = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      expect(managerView.body.data.canClaimOwnership).toBe(false);
+      expect(managerView.body.data.isCurrentOwner).toBe(false);
+      expect(managerView.body.data.isCurrentTenant).toBe(false);
+
+      const ownerViewBeforeClaim = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${futureOwner.accessToken}`)
+        .expect(200);
+      expect(ownerViewBeforeClaim.body.data.canClaimOwnership).toBe(true);
+      expect(ownerViewBeforeClaim.body.data.isCurrentOwner).toBe(false);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/claim-ownership`)
+        .set('Authorization', `Bearer ${futureOwner.accessToken}`)
+        .send({})
+        .expect(201);
+
+      const ownerViewAfterClaim = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${futureOwner.accessToken}`)
+        .expect(200);
+      expect(ownerViewAfterClaim.body.data.isCurrentOwner).toBe(true);
+      expect(ownerViewAfterClaim.body.data.canClaimOwnership).toBe(false);
+
+      // C. Post-claim editing — OWNER still cannot generic-PATCH the unit
+      // (updateUnit stays MANAGER-only, unchanged from Phase 1); MANAGER
+      // retains full correction ability.
+      const ownerPatchAttempt = await request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${futureOwner.accessToken}`)
+        .send({ areaSqm: 999 })
+        .expect(403);
+      expect(ownerPatchAttempt.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+
+      await request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ areaSqm: 42 })
+        .expect(200);
+      const unit = await prisma.unit.findUnique({ where: { id: unitId } });
+      expect(unit?.areaSqm).toBe(42);
+    });
   });
 });

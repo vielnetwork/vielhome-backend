@@ -6,9 +6,12 @@ import { BuildingSetupPolicy } from '../domain/policies/building-setup.policy';
 import { ManagerAssignmentPolicy } from '../domain/policies/manager-assignment.policy';
 import { OwnershipTransferPolicy } from '../domain/policies/ownership-transfer.policy';
 import { TenancyPolicy } from '../domain/policies/tenancy.policy';
+import { OwnershipClaimPolicy } from '../domain/policies/ownership-claim.policy';
 import { CreateUnitDto } from './dto/create-unit.dto';
 import { UpdateUnitDto } from './dto/update-unit.dto';
 import { InviteOwnerDto } from './dto/invite-owner.dto';
+import { InviteOwnerV2Dto } from './dto/invite-owner-v2.dto';
+import { RegisterTenantDto } from './dto/register-tenant.dto';
 import { CreateMembershipRequestDto } from './dto/create-membership-request.dto';
 import { UpdateBuildingSettingsDto } from './dto/update-building-settings.dto';
 import { AuditService } from '../../../common/audit/audit.service';
@@ -26,6 +29,7 @@ export class BuildingService {
     private readonly managerPolicy: ManagerAssignmentPolicy,
     private readonly ownershipTransferPolicy: OwnershipTransferPolicy,
     private readonly tenancyPolicy: TenancyPolicy,
+    private readonly ownershipClaimPolicy: OwnershipClaimPolicy,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
   ) {}
@@ -36,8 +40,39 @@ export class BuildingService {
     return building;
   }
 
+  /**
+   * Response enrichment (Building Setup Refinement Phase 3, item E) — the
+   * `GET /buildings/:id` shape used by the controller route, additive over
+   * `getById` above (which stays unchanged and is still used internally by
+   * every other method below purely for its 404-if-missing check). Adds
+   * `myRoles`, computed at request time from the existing Membership table
+   * — no schema column.
+   */
+  async getBuildingForPerson(buildingId: string, personId: string) {
+    const building = await this.getById(buildingId);
+    const myRoles = await this.buildings.getRoles(personId, buildingId);
+    return { ...building, myRoles };
+  }
+
   listForPerson(personId: string) {
     return this.buildings.listForPerson(personId);
+  }
+
+  /**
+   * Response enrichment (Building Setup Refinement Phase 3, item E) — the
+   * `GET /buildings` shape used by the controller route. Batches one
+   * `getRolesForBuildings` call instead of N+1 `getRoles` calls. Not folded
+   * into the plain `listForPerson` above since `AuthService.verifyOtp`
+   * calls that one too, only to check `.length > 0` — no need to pay for
+   * role enrichment there.
+   */
+  async listForPersonEnriched(personId: string) {
+    const buildings = await this.buildings.listForPerson(personId);
+    const rolesByBuilding = await this.buildings.getRolesForBuildings(
+      personId,
+      buildings.map((b) => b.id),
+    );
+    return buildings.map((b) => ({ ...b, myRoles: rolesByBuilding[b.id] ?? [] }));
   }
 
   /**
@@ -128,6 +163,84 @@ export class BuildingService {
     return this.getOwnUnit(buildingId, unitId);
   }
 
+  /**
+   * Response enrichment (Building Setup Refinement Phase 3, item E) — the
+   * `GET /buildings/:id/units/:unitId` shape used by the controller route.
+   * `isCurrentOwner`/`isCurrentTenant` are simple existence checks against
+   * Ownership/Tenancy; `canClaimOwnership` is the ONLY signal Mobile is
+   * allowed to use to decide whether to show the self-claim CTA — it must
+   * never compare `ownerPhone` against its own phone itself. Computed
+   * exclusively from: this unit has no current Ownership, the caller isn't
+   * already the current owner, and `Unit.ownerPhone` matches the caller's
+   * own server-side `Person.phone` — the identical eligibility rule
+   * `OwnershipClaimPolicy.assertEligible` enforces at claim time, just
+   * previewed here read-only.
+   */
+  async getUnitForPerson(buildingId: string, unitId: string, personId: string) {
+    const unit = await this.getOwnUnit(buildingId, unitId);
+    const [isCurrentOwner, currentTenancy, hasCurrentOwnership, caller] = await Promise.all([
+      this.buildings.isCurrentOwnerOfUnit(unitId, personId),
+      this.buildings.findCurrentTenancyForUnit(unitId),
+      this.buildings.hasCurrentOwnership(unitId),
+      this.buildings.findPersonById(personId),
+    ]);
+
+    const isCurrentTenant = currentTenancy?.personId === personId;
+    const canClaimOwnership =
+      !isCurrentOwner &&
+      !hasCurrentOwnership &&
+      !!unit.ownerPhone &&
+      !!caller?.phone &&
+      unit.ownerPhone === caller.phone;
+
+    return { ...unit, isCurrentOwner, isCurrentTenant, canClaimOwnership };
+  }
+
+  /**
+   * Owner Self-Claim (Building Setup Refinement Phase 3) — "trigger the
+   * same Ownership+Membership link `linkOwnerAccountByPhone` would
+   * otherwise only apply on this person's next OTP verify, right now."
+   * Empty request body by design: identity comes exclusively from
+   * `req.user.sub` -> this method's own `personId` param -> the caller's
+   * own server-verified `Person.phone`, never from anything the client
+   * submits. No `MembershipGuard`/`RolesGuard` on this route (see the
+   * controller) — the caller may not be a member of this unit/building at
+   * all yet, same precedent as `requestMembership`.
+   */
+  async claimOwnership(buildingId: string, unitId: string, personId: string, requestId: string) {
+    const unit = await this.getOwnUnit(buildingId, unitId);
+    const [hasCurrentOwnership, caller] = await Promise.all([
+      this.buildings.hasCurrentOwnership(unitId),
+      this.buildings.findPersonById(personId),
+    ]);
+    if (!caller) throw new NotFoundAppError('Person not found.');
+
+    this.ownershipClaimPolicy.assertEligible({
+      hasCurrentOwnership,
+      unitOwnerPhone: unit.ownerPhone,
+      callerPhone: caller.phone,
+    });
+
+    const membership = await this.buildings.linkOwnerToUnit({
+      unitId,
+      buildingId,
+      personId,
+      pendingOwnerFirstName: unit.ownerFirstName,
+      pendingOwnerLastName: unit.ownerLastName,
+    });
+
+    await this.audit.record({
+      actorId: personId,
+      buildingId,
+      action: 'OwnerSelfClaimed',
+      entityType: 'Unit',
+      entityId: unitId,
+      requestId,
+    });
+
+    return membership;
+  }
+
   /** "Configure Units" — fills in a skeleton unit's details after the fact. */
   async updateUnit(
     buildingId: string,
@@ -173,6 +286,52 @@ export class BuildingService {
 
     // eslint-disable-next-line no-console
     console.log(`[UnitOwnerInvite] ${dto.ownerPhone} (${dto.ownerFullName}) -> unit ${unitId}`);
+
+    const updated = await this.buildings.markOwnerInviteSent(unitId);
+
+    await this.audit.record({
+      actorId: personId,
+      buildingId,
+      action: 'UnitOwnerInvited',
+      entityType: 'Unit',
+      entityId: unitId,
+      requestId,
+      metadata: { ownerPhone: dto.ownerPhone },
+    });
+
+    return updated;
+  }
+
+  /**
+   * Additive sibling of `inviteOwner` above (Building Setup Refinement
+   * Phase 3) — the frozen `invite-owner` route/DTO stays untouched; this
+   * backs the new `invite-owner/v2` route. Stores `ownerFirstName`/
+   * `ownerLastName` as the canonical pending-invite fields, per the
+   * approved product decision that Owner identity must be discrete fields
+   * going forward. Also writes a computed `ownerFullName` (`firstName +
+   * " " + lastName`) so anything still reading the legacy field (e.g. the
+   * mobile Unit Edit screen's current display) keeps working without
+   * needing to change in lockstep with this endpoint.
+   */
+  async inviteOwnerV2(
+    buildingId: string,
+    unitId: string,
+    dto: InviteOwnerV2Dto,
+    personId: string,
+    requestId: string,
+  ) {
+    await this.getOwnUnit(buildingId, unitId);
+    await this.buildings.updateUnit(unitId, {
+      ownerFirstName: dto.ownerFirstName,
+      ownerLastName: dto.ownerLastName,
+      ownerFullName: `${dto.ownerFirstName} ${dto.ownerLastName}`,
+      ownerPhone: dto.ownerPhone,
+    });
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[UnitOwnerInvite] ${dto.ownerPhone} (${dto.ownerFirstName} ${dto.ownerLastName}) -> unit ${unitId}`,
+    );
 
     const updated = await this.buildings.markOwnerInviteSent(unitId);
 
@@ -460,6 +619,14 @@ export class BuildingService {
     await this.getOwnUnit(buildingId, unitId);
     await this.assertManagesUnit(buildingId, unitId, actorPersonId, true);
 
+    // Product Rule 2 (Building Setup Refinement Phase 3) — a tenant-occupied
+    // unit must have a registered Owner. Checked here so BOTH tenancy-
+    // creation paths (this legacy `tenantPersonId` route and the new
+    // `tenancy/register` phone-based route below, which delegates straight
+    // into this same method) share one enforcement point.
+    const hasOwner = await this.buildings.hasCurrentOwnership(unitId);
+    this.tenancyPolicy.assertUnitHasOwner(hasOwner);
+
     const existing = await this.buildings.findCurrentTenancyForUnit(unitId);
     this.tenancyPolicy.assertUnitAvailableForTenancy(existing);
 
@@ -485,6 +652,38 @@ export class BuildingService {
     );
 
     return tenancy;
+  }
+
+  /**
+   * Building Setup Refinement Phase 3 — additive sibling of `createTenancy`
+   * above, backing the new `tenancy/register` route. Mobile never sends a
+   * `tenantPersonId`; it collects a name + phone, exactly like an owner
+   * invite. Resolves (or creates) the Person from `dto.tenantPhone` under
+   * the approved identity-ownership rule — an existing Person's own
+   * non-null `firstName`/`lastName` is never overwritten, only missing
+   * fields are filled — then delegates straight into the existing,
+   * unchanged `createTenancy` (so the owner-required gate above and every
+   * other check run exactly once, for both tenancy-creation paths).
+   */
+  async registerTenant(
+    buildingId: string,
+    unitId: string,
+    dto: RegisterTenantDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    let person = await this.buildings.findPersonByPhone(dto.tenantPhone);
+    if (!person) {
+      person = await this.buildings.createPersonWithName({
+        phone: dto.tenantPhone,
+        firstName: dto.tenantFirstName,
+        lastName: dto.tenantLastName,
+      });
+    } else {
+      await this.buildings.fillMissingPersonName(person.id, dto.tenantFirstName, dto.tenantLastName);
+    }
+
+    return this.createTenancy(buildingId, unitId, person.id, actorPersonId, requestId);
   }
 
   private async getOwnTenancy(buildingId: string, tenancyId: string) {

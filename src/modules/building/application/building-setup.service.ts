@@ -59,6 +59,15 @@ export class BuildingSetupService {
       throw new NotFoundAppError('No draft found to submit. Start the wizard first.');
     }
 
+    // Product Rule 1 (Building Setup Refinement Phase 3) — a pure TENANT
+    // (current roles, across every building, are non-empty and entirely
+    // TENANT) may not create a new Building. Checked here, the hard
+    // boundary, since `setup/*` routes are deliberately guard-free at the
+    // controller level (see `MembershipGuard`'s own doc comment) — Mobile
+    // hiding the Create Building entry point is UX only, not the real gate.
+    const currentRoles = await this.buildings.getCurrentRolesAcrossBuildings(personId);
+    this.policy.assertCanCreateBuilding(currentRoles);
+
     const payload = draft.payload as Record<string, unknown>;
     this.policy.assertCanSubmit(draft.step, payload);
 

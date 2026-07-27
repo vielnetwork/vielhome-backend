@@ -5,6 +5,7 @@ import {
   ManagerAssignmentType,
   MembershipRequestStatus,
   MembershipRole,
+  Person,
   UnitOccupancyStatus,
   UnitType,
 } from '@prisma/client';
@@ -66,6 +67,77 @@ export class BuildingRepository {
     return this.prisma.unit.count({ where: { buildingId, id: { in: unitIds } } });
   }
 
+  // --- Person resolution (Building Setup Refinement Phase 3) -------------
+  // Deliberately lives here, not in AuthRepository/AuthModule: BuildingModule
+  // must not import AuthModule (AuthService already depends on
+  // BuildingService — importing the other way would be circular), and
+  // Prisma access to `Person` is not exclusive to Auth's own module. Every
+  // method below only ever reads/writes `phone`/`firstName`/`lastName` — no
+  // parallel identity model, same `Person` table `AuthRepository.createPerson`
+  // already writes to.
+
+  findPersonByPhone(phone: string): Promise<Person | null> {
+    return this.prisma.person.findUnique({ where: { phone } });
+  }
+
+  findPersonById(personId: string): Promise<Person | null> {
+    return this.prisma.person.findUnique({ where: { id: personId } });
+  }
+
+  createPersonWithName(params: {
+    phone: string;
+    firstName: string;
+    lastName: string;
+  }): Promise<Person> {
+    return this.prisma.person.create({
+      data: { phone: params.phone, firstName: params.firstName, lastName: params.lastName },
+    });
+  }
+
+  /**
+   * Identity-ownership rule (Building Setup Refinement Phase 3, confirmed
+   * product decision): a Manager/Owner entering someone else's name — for a
+   * new Tenant registration or a pending Owner invite — must NEVER overwrite
+   * that Person's own already-set `firstName`/`lastName`. Only ever fills a
+   * field that is currently null. A no-op (no query at all beyond the
+   * initial read) when both fields are already set.
+   */
+  async fillMissingPersonName(
+    personId: string,
+    firstName: string | null | undefined,
+    lastName: string | null | undefined,
+  ): Promise<void> {
+    const person = await this.prisma.person.findUnique({
+      where: { id: personId },
+      select: { firstName: true, lastName: true },
+    });
+    if (!person) return;
+
+    const data: { firstName?: string; lastName?: string } = {};
+    if (person.firstName === null && firstName) data.firstName = firstName;
+    if (person.lastName === null && lastName) data.lastName = lastName;
+    if (Object.keys(data).length === 0) return;
+
+    await this.prisma.person.update({ where: { id: personId }, data });
+  }
+
+  /**
+   * Product Rule 1 (Building Setup Refinement Phase 3) — every CURRENT role
+   * this person holds, across every building they belong to (not scoped to
+   * one buildingId, unlike `getRoles` above). Used only by
+   * `BuildingSetupService.submit`'s new pure-TENANT create-block; distinct
+   * so a person who is e.g. OWNER of one building and TENANT of two others
+   * still only contributes 'OWNER' and 'TENANT' once each.
+   */
+  async getCurrentRolesAcrossBuildings(personId: string): Promise<MembershipRole[]> {
+    const rows = await this.prisma.membership.findMany({
+      where: { personId, isCurrent: true },
+      select: { role: true },
+      distinct: ['role'],
+    });
+    return rows.map((r) => r.role);
+  }
+
   /**
    * Owner-invite auto-linking (06_User_Flows > Building Setup Assistant:
    * "reconciliation is a fast-follow" — this is that fast-follow). Finds
@@ -89,10 +161,33 @@ export class BuildingRepository {
    * Atomically creates the Ownership row (Property First — 04_Product_
    * Architecture) and the corresponding OWNER Membership for a person who
    * just signed up (or logged in) with a phone number that matches a
-   * pending owner invite.
+   * pending owner invite. Reused verbatim by BOTH the reactive OTP
+   * auto-link path (`AuthService.verifyOtp` -> `linkOwnerAccountByPhone`)
+   * and the new on-demand Owner Self-Claim endpoint (Building Setup
+   * Refinement Phase 3) — claiming is exactly "trigger this same link
+   * right now instead of waiting for the next OTP verify."
+   *
+   * `pendingOwnerFirstName`/`pendingOwnerLastName` (Phase 3, optional —
+   * absent on the pre-Phase-3 auto-link callers that never captured them)
+   * are applied to the resolved Person under the same fill-missing-only
+   * identity-ownership rule as `fillMissingPersonName` — never overwriting
+   * a name the Person's own account already has. A Person who was already
+   * a member of this unit under a different role (e.g. an existing TENANT
+   * who turns out to be the exact invited Owner by phone) simply gains this
+   * additional current OWNER Membership row alongside their existing one;
+   * nothing about their existing Membership row is touched or ended — the
+   * schema already supports multiple simultaneous current roles per person
+   * per building/unit (no uniqueness constraint beyond `id`), the same way
+   * an OWNER who is also a BOARD_MEMBER already works today.
    */
-  linkOwnerToUnit(params: { unitId: string; buildingId: string; personId: string }) {
-    return this.prisma.$transaction(async (tx) => {
+  async linkOwnerToUnit(params: {
+    unitId: string;
+    buildingId: string;
+    personId: string;
+    pendingOwnerFirstName?: string | null;
+    pendingOwnerLastName?: string | null;
+  }) {
+    const membership = await this.prisma.$transaction(async (tx) => {
       await tx.ownership.create({
         data: { unitId: params.unitId, personId: params.personId },
       });
@@ -105,6 +200,16 @@ export class BuildingRepository {
         },
       });
     });
+
+    if (params.pendingOwnerFirstName || params.pendingOwnerLastName) {
+      await this.fillMissingPersonName(
+        params.personId,
+        params.pendingOwnerFirstName,
+        params.pendingOwnerLastName,
+      );
+    }
+
+    return membership;
   }
 
   /**
@@ -204,6 +309,8 @@ export class BuildingRepository {
       storageCount?: number;
       occupancyStatus?: UnitOccupancyStatus;
       ownerFullName?: string;
+      ownerFirstName?: string;
+      ownerLastName?: string;
       ownerPhone?: string;
     },
   ) {
@@ -269,6 +376,27 @@ export class BuildingRepository {
       select: { role: true },
     });
     return rows.map((r) => r.role);
+  }
+
+  /**
+   * Response enrichment (Building Setup Refinement Phase 3, item E) — the
+   * batched version of `getRoles` above, for `GET /buildings`
+   * (`listForPerson`): one query for every building the person belongs to,
+   * instead of N+1 `getRoles` calls in a loop.
+   */
+  async getRolesForBuildings(
+    personId: string,
+    buildingIds: string[],
+  ): Promise<Record<string, MembershipRole[]>> {
+    if (buildingIds.length === 0) return {};
+    const rows = await this.prisma.membership.findMany({
+      where: { personId, buildingId: { in: buildingIds }, isCurrent: true },
+      select: { buildingId: true, role: true },
+    });
+    const result: Record<string, MembershipRole[]> = {};
+    for (const id of buildingIds) result[id] = [];
+    for (const row of rows) result[row.buildingId].push(row.role);
+    return result;
   }
 
   /**
@@ -539,6 +667,52 @@ export class BuildingRepository {
       where: { unitId, personId, isCurrent: true },
     });
     return count > 0;
+  }
+
+  /**
+   * Whether a unit has ANY current owner at all (not scoped to one
+   * person) — used by two independent Phase 3 checks: `TenancyPolicy.
+   * assertUnitHasOwner` (a tenant-occupied unit must have an owner) and
+   * `OwnershipClaimPolicy.assertEligible` (self-claim requires NO current
+   * Ownership yet).
+   */
+  async hasCurrentOwnership(unitId: string): Promise<boolean> {
+    const count = await this.prisma.ownership.count({
+      where: { unitId, isCurrent: true },
+    });
+    return count > 0;
+  }
+
+  /**
+   * `UnitDetailAccessGuard`'s eligibility test (Building Setup Refinement
+   * Phase 3) — whether `personId` is the exact invited-but-not-yet-claimed
+   * owner of `unitId`, scoped to `buildingId` so a caller can't reference
+   * a unit belonging to a different building via a mismatched URL. Same
+   * comparison `BuildingService.getUnitForPerson`'s `canClaimOwnership`
+   * and `OwnershipClaimPolicy.assertEligible` already use: the unit has no
+   * current Ownership yet, and its stored `ownerPhone` matches the
+   * caller's own server-verified `Person.phone` — never anything the
+   * client supplies.
+   */
+  async isInvitedOwnerForUnit(
+    buildingId: string,
+    unitId: string,
+    personId: string,
+  ): Promise<boolean> {
+    const unit = await this.prisma.unit.findUnique({ where: { id: unitId } });
+    if (!unit || unit.buildingId !== buildingId || !unit.ownerPhone) {
+      return false;
+    }
+
+    const [hasOwnership, person] = await Promise.all([
+      this.hasCurrentOwnership(unitId),
+      this.findPersonById(personId),
+    ]);
+    if (hasOwnership) {
+      return false;
+    }
+
+    return !!person?.phone && person.phone === unit.ownerPhone;
   }
 
   listOwnershipHistoryForUnit(unitId: string) {

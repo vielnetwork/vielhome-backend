@@ -6,6 +6,8 @@ import { SaveDraftDto } from '../application/dto/save-draft.dto';
 import { CreateUnitDto } from '../application/dto/create-unit.dto';
 import { UpdateUnitDto } from '../application/dto/update-unit.dto';
 import { InviteOwnerDto } from '../application/dto/invite-owner.dto';
+import { InviteOwnerV2Dto } from '../application/dto/invite-owner-v2.dto';
+import { RegisterTenantDto } from '../application/dto/register-tenant.dto';
 import { CreateMembershipRequestDto } from '../application/dto/create-membership-request.dto';
 import { ResolveMembershipRequestDto } from '../application/dto/resolve-membership-request.dto';
 import { ChangeManagerDto } from '../application/dto/change-manager.dto';
@@ -16,6 +18,7 @@ import { UpdateBuildingSettingsDto } from '../application/dto/update-building-se
 import { LookupMemberQueryDto } from '../application/dto/lookup-member.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
+import { UnitDetailAccessGuard } from '../../../common/guards/unit-detail-access.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -64,13 +67,13 @@ export class BuildingController {
 
   @Get()
   listMine(@CurrentUser() user: JwtPayload) {
-    return this.buildings.listForPerson(user.sub);
+    return this.buildings.listForPersonEnriched(user.sub);
   }
 
   @Get(':id')
   @UseGuards(MembershipGuard)
-  getOne(@Param('id') id: string) {
-    return this.buildings.getById(id);
+  getOne(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.buildings.getBuildingForPerson(id, user.sub);
   }
 
   @Get(':id/units')
@@ -79,10 +82,15 @@ export class BuildingController {
     return this.buildings.listUnits(id);
   }
 
+  // Building Setup Refinement Phase 3 (Owner Self-Claim) — this route uses
+  // `UnitDetailAccessGuard`, NOT `MembershipGuard`, so the exact
+  // phone-matched invited-but-not-yet-claimed future owner can read this
+  // unit's detail (and see `canClaimOwnership: true`) before claiming.
+  // Every other unit-scoped route below keeps `MembershipGuard` unchanged.
   @Get(':id/units/:unitId')
-  @UseGuards(MembershipGuard)
-  getUnit(@Param('id') id: string, @Param('unitId') unitId: string) {
-    return this.buildings.getUnit(id, unitId);
+  @UseGuards(UnitDetailAccessGuard)
+  getUnit(@Param('id') id: string, @Param('unitId') unitId: string, @CurrentUser() user: JwtPayload) {
+    return this.buildings.getUnitForPerson(id, unitId, user.sub);
   }
 
   // Security hardening (Building Setup Refinement + Access/Membership
@@ -149,6 +157,39 @@ export class BuildingController {
     @RequestId() requestId: string,
   ) {
     return this.buildings.inviteOwner(id, unitId, dto, user.sub, requestId);
+  }
+
+  // Building Setup Refinement Phase 3 — additive sibling; the route above
+  // (`invite-owner` + `InviteOwnerDto`) stays completely untouched (frozen
+  // v1.0 contract). Same MANAGER-only guard.
+  @Post(':id/units/:unitId/invite-owner/v2')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
+  inviteOwnerV2(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: InviteOwnerV2Dto,
+    @RequestId() requestId: string,
+  ) {
+    return this.buildings.inviteOwnerV2(id, unitId, dto, user.sub, requestId);
+  }
+
+  // Owner Self-Claim (Building Setup Refinement Phase 3). Deliberately NO
+  // `MembershipGuard`/`RolesGuard` — the caller may not be a member of this
+  // unit/building at all yet, the same precedent `requestMembership` below
+  // already establishes. Empty request body: identity is derived
+  // exclusively from `user.sub` (the JWT's authenticated personId) inside
+  // `BuildingService.claimOwnership` — never from anything the client
+  // submits.
+  @Post(':id/units/:unitId/claim-ownership')
+  claimOwnership(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.buildings.claimOwnership(id, unitId, user.sub, requestId);
   }
 
   // --- Membership Requests (postal-code conflict escape hatch) ------------
@@ -295,6 +336,25 @@ export class BuildingController {
     @RequestId() requestId: string,
   ) {
     return this.buildings.createTenancy(id, unitId, dto.tenantPersonId, user.sub, requestId);
+  }
+
+  // Building Setup Refinement Phase 3 — additive sibling; the route above
+  // (`tenancy` + `CreateTenancyDto.tenantPersonId`) stays completely
+  // untouched (frozen v1.0 contract). Mobile never sends a `tenantPersonId`
+  // through this one — it collects a name + phone, the same way an owner
+  // invite already works. Same guard as the legacy route; the actual
+  // owner-or-manager authorization check happens inside the shared
+  // `createTenancy` this delegates to.
+  @Post(':id/units/:unitId/tenancy/register')
+  @UseGuards(MembershipGuard)
+  registerTenant(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: RegisterTenantDto,
+    @RequestId() requestId: string,
+  ) {
+    return this.buildings.registerTenant(id, unitId, dto, user.sub, requestId);
   }
 
   @Post(':id/tenancies/:tenancyId/notice')

@@ -50,6 +50,23 @@ export class TenancyPolicy {
     }
   }
 
+  /**
+   * Product Rule 2 (Building Setup Refinement Phase 3) — a tenant-occupied
+   * unit must have BOTH a Tenant and an Owner registered; this repository-
+   * agnostic check runs inside `BuildingService.createTenancy` right
+   * alongside the existing `assertUnitAvailableForTenancy`/`assertCanCreate`
+   * checks, before either `createTenancy` code path (legacy
+   * `tenantPersonId` or the new `tenancy/register` phone-based route)
+   * writes anything.
+   */
+  assertUnitHasOwner(hasCurrentOwnership: boolean): void {
+    if (!hasCurrentOwnership) {
+      throw new BusinessRuleViolationError(
+        'This unit must have a registered owner before a tenancy can be created.',
+      );
+    }
+  }
+
   /** A notice can only be given on a still-ACTIVE tenancy. */
   assertCanGiveNotice(status: TenancyStatus): void {
     if (status !== 'ACTIVE') {

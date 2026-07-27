@@ -541,7 +541,27 @@ describe('Manager Verification (e2e) — Owner Approval: blocks & threshold (06.
     for (const owner of owners) {
       await joinBuildingAsApprovedMember(app, buildingId, owner.accessToken, founder.accessToken);
     }
-  });
+    // Explicit per-hook timeout below, matching this exact file's own
+    // established precedent (the sibling `beforeAll` at line ~700 already
+    // uses 20000 for a comparable multi-actor setup) — NOT a change to
+    // Jest's global `testTimeout`. This hook does 5 `registerPerson` calls
+    // (10 real HTTP OTP request+verify round trips) + 1 `createBuilding`
+    // (2 more) + 1 `waitForInitialCase` poll (BackOfficeEventListener's
+    // async `onBuildingCreated` handler, up to 10x100ms) + 4
+    // `joinBuildingAsApprovedMember` calls (8 more), all sequential — 20+
+    // real HTTP round trips plus a polling wait, on top of
+    // `bootstrapTestApp`'s own full Nest application compile. Comfortably
+    // fits under Jest's 5000ms default in isolation, but under full-suite
+    // parallel load (many worker processes each compiling their own app
+    // and competing for the same real Postgres instance) this hook alone
+    // was observed exceeding 5000ms, failing all 6 of this describe's
+    // tests via the same hook timeout. No production code, business
+    // logic, or global Jest config changed — this is the same
+    // narrowly-scoped, per-hook timeout pattern already used elsewhere in
+    // this file and in `auth.e2e-spec.ts` /
+    // `building-verification.e2e-spec.ts` / `fraud-case.e2e-spec.ts` for
+    // comparably heavy setup hooks.
+  }, 20000);
 
   afterAll(async () => {
     await cleanupBuildings(prisma, createdBuildingIds);

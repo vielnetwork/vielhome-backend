@@ -674,7 +674,25 @@ describe('Notifications (e2e) — Listing, Filtering & Category Diversity', () =
         where: { recipientId: member.personId, category: 'DOCUMENT', referenceId: documentId },
       }),
     );
-  });
+    // Explicit per-hook timeout below — NOT a change to Jest's global
+    // `testTimeout`. This hook does 2 `registerPerson` calls (4 real HTTP
+    // OTP request+verify round trips) + `createBuilding` + `joinBuilding
+    // AsApprovedMember` + `createDocument` + `createCase` +
+    // `issueFixedChargeBatch` (several more real HTTP round trips), THEN
+    // 8 separate `waitFor`-based polls (registration x2, building-founder,
+    // financial x2, case, document x2 — each up to 10 attempts x 100ms),
+    // on top of `bootstrapTestApp`'s own full Nest application compile.
+    // Comfortably fits under Jest's 5000ms default in isolation, but
+    // under full-suite parallel load (many worker processes competing for
+    // the same real Postgres instance, and for the event-emitter/queue
+    // processing each `waitFor` is polling on) this hook alone was
+    // observed exceeding 5000ms, failing all 5 of this describe's tests
+    // via the same hook timeout. No production code, business logic, or
+    // global Jest config changed — matches the same narrowly-scoped,
+    // per-hook timeout convention already used for comparably heavy setup
+    // hooks in `auth.e2e-spec.ts` / `building-verification.e2e-spec.ts` /
+    // `fraud-case.e2e-spec.ts` / `manager-verification.e2e-spec.ts`.
+  }, 20000);
 
   afterAll(async () => {
     await cleanupBuildings(prisma, createdBuildingIds);

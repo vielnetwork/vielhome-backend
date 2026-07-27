@@ -36,7 +36,9 @@ model Person {
   id          String   @id @default(cuid())
   phone       String   @unique
   email       String?  @unique
-  fullName    String?
+  fullName    String?  // deprecated — retained for backward compatibility; no code writes this going forward (Building Setup Refinement Phase 3, see firstName/lastName below)
+  firstName   String?
+  lastName    String?
   locale      String   @default("fa")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -412,7 +414,9 @@ model Unit {
   // (no SMS gateway yet, same as OTP) and does NOT yet auto-link to a
   // Person/Membership on signup — that linking is a follow-up, not built
   // here (see BuildingService.inviteOwner).
-  ownerFullName   String?
+  ownerFullName   String?  // deprecated — retained for backward compatibility; the frozen v1 invite-owner endpoint still writes it; the new invite-owner/v2 endpoint writes ownerFirstName/ownerLastName plus a computed ownerFullName for compatibility (Building Setup Refinement Phase 3)
+  ownerFirstName  String?
+  ownerLastName   String?
   ownerPhone      String?
   ownerInviteSentAt DateTime?
   createdAt  DateTime @default(now())
