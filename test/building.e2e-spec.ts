@@ -69,11 +69,15 @@ function nextPhone(): string {
   return `+98912${RUN_ID}${phoneCounter.toString().padStart(2, '0')}`;
 }
 
-/** `Building.postalCode` is `@unique` — no format validation (it lives inside
- * the wizard's loosely-typed draft `payload`), so any unique string works. */
+/** `Building.postalCode` is `@unique`. Building Setup Refinement Phase 2
+ * now enforces exactly 10 ASCII digits for country IR (see
+ * `postal-code.util.ts`) — `RUN_ID` (5 chars: 3-digit Date.now() tail +
+ * 2-digit pid tail) + a 5-digit zero-padded counter = exactly 10 digits,
+ * still unique per the same collision-avoidance scheme the header comment
+ * above describes. */
 function nextPostalCode(): string {
   postalCodeCounter += 1;
-  return `${RUN_ID}${postalCodeCounter.toString().padStart(4, '0')}`;
+  return `${RUN_ID}${postalCodeCounter.toString().padStart(5, '0')}`;
 }
 
 // Phone Number Input & Normalization task — mirrors the identical helpers in
@@ -262,12 +266,21 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
 }
 
+/** Building Setup Refinement Phase 2 (Country -> Province -> City + Postal
+ * Code Normalization): `country`/`province`/`city` default to a real,
+ * dataset-valid Iran combination (Tehran province / Tehran city) rather
+ * than the pre-Phase-2 free-text `country: 'Iran', city: 'Tehran'` —
+ * `assertValidAddressHierarchy` now rejects display names and requires a
+ * real province+city relationship for country IR. Every existing describe
+ * in this file that creates a building through `createBuilding` relies on
+ * these defaults still validating successfully. */
 function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     role: 'OWNER',
     totalUnits: 2,
-    country: 'Iran',
-    city: 'Tehran',
+    country: 'IR',
+    province: 'IR-TEHRAN',
+    city: 'IR-TEHRAN-TEHRAN',
     district: 'District 1',
     mainStreet: 'Valiasr',
     plateNumber: '12',
@@ -1236,5 +1249,298 @@ describe('Building (e2e) — Unit Authorization Hardening (Building Setup Refine
       expect(after?.ownerPhone).toBeNull();
       expect(after?.ownerFullName).toBeNull();
     });
+  });
+});
+
+describe('Building (e2e) — Address Hierarchy & Postal Code (Building Setup Refinement Phase 2)', () => {
+  // Budget: 2 calls to POST /auth/otp/request for this ENTIRE describe
+  // block (1 shared actor for almost every case below, + 1 dedicated
+  // fresh actor for the single "missing city" case — see that `it`'s own
+  // comment for why). Every other case below submits from the SAME
+  // registered actor, reusing its access token — not a fresh
+  // `registerPerson()` per `it` as this file originally did.
+  // `POST /auth/otp/request` is throttled to 5 requests/60s per
+  // `AuthController.requestOtp`'s `@Throttle` (keyed by IP, so every
+  // request from this same e2e process shares one bucket); this describe
+  // block has grown to ~20 cases across the corrected-round
+  // address-hierarchy and postal-code tests, which blew through that
+  // budget and 429'd when each case registered its own person. Reusing
+  // one actor is safe here: a submit that fails validation never marks
+  // the shared draft submitted (`DraftRepository.markSubmitted` only runs
+  // on the success path), so `findActiveForPerson` still finds it on the
+  // next case, and `reviewPayload()` always supplies every key with a
+  // real value so the merge in `upsertForPerson` never leaks stale state
+  // from a previous case — with one deliberate exception: a case that
+  // sets a key to `undefined` (to test that field's absence) does NOT
+  // actually clear it from the shared draft, because `JSON.stringify`
+  // drops undefined-valued keys before the request ever leaves this
+  // process, so `upsertForPerson`'s merge sees no such key at all and
+  // keeps whatever the existing draft already had. The "missing city"
+  // case below is the one place this matters (a still-active draft left
+  // over from the immediately-preceding "missing province" case already
+  // has a valid city on it), so it uses its own fresh actor instead of
+  // the shared one. A submit that DOES succeed (the 201 cases) is also
+  // safe to repeat for the same person — Building Setup has no
+  // one-building-per-person restriction — as long as each keeps using a
+  // fresh, unique postal code, which `nextPostalCode()` already guarantees.
+
+  async function draftAndSubmit(
+    app: INestApplication,
+    accessToken: string,
+    payload: Record<string, unknown>,
+  ) {
+    await request(app.getHttpServer())
+      .post('/api/v1/buildings/setup/draft')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ step: 'review', payload })
+      .expect(201);
+
+    return request(app.getHttpServer())
+      .post('/api/v1/buildings/setup/submit')
+      .set('Authorization', `Bearer ${accessToken}`);
+  }
+
+  let app: INestApplication;
+  let prisma: PrismaService;
+  let accessToken: string;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    // The single shared actor for every case in this describe block (see
+    // the budget comment above) — one OTP request total, not one per case.
+    const shared = await registerPerson(app);
+    accessToken = shared.accessToken;
+    createdPhones.push(shared.phone);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  describe('Country/Province/City address relationship', () => {
+    it('accepts a valid Iran country + province + city combination', async () => {
+      const res = await draftAndSubmit(
+        app,
+        accessToken,
+        reviewPayload({ country: 'IR', province: 'IR-FARS', city: 'IR-FARS-SHIRAZ' }),
+      );
+      expect(res.status).toBe(201);
+      createdBuildingIds.push(res.body.data.building.id);
+      expect(res.body.data.building.country).toBe('IR');
+      expect(res.body.data.building.province).toBe('IR-FARS');
+      expect(res.body.data.building.city).toBe('IR-FARS-SHIRAZ');
+    });
+
+    it('rejects country IR with a missing province (VALIDATION_ERROR)', async () => {
+      const res = await draftAndSubmit(
+        app,
+        accessToken,
+        reviewPayload({ province: undefined }),
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects country IR with a missing city (BUSINESS_RULE_VIOLATION — city is in the unconditional required-field list)', async () => {
+      // Deliberately does NOT use the describe's shared `accessToken`.
+      // `reviewPayload({ city: undefined })` only removes `city` from the
+      // JSON this specific request sends (JSON.stringify drops
+      // undefined-valued keys) — it says nothing about what the draft
+      // this person already has on file looks like. `DraftRepository
+      // .upsertForPerson` merges `{...existing.payload, ...params.payload}`,
+      // so a key genuinely absent from the incoming payload does NOT
+      // clear it — it just leaves whatever the existing active draft
+      // already had (correct PATCH semantics, not a bug). The shared
+      // actor's immediately-preceding case ("missing province") submits,
+      // gets rejected with 400, and — since a failed submit never calls
+      // `markSubmitted` — leaves its own active draft behind with a
+      // perfectly valid `city` already on it. Reusing the shared actor
+      // here would silently inherit that valid city and this request
+      // would actually submit successfully (201), which is exactly the
+      // false-201 this test exists to catch. A brand-new actor has no
+      // draft history at all, so `upsertForPerson` takes the `create`
+      // branch with this request's payload verbatim — city genuinely
+      // absent — and the 422 is real.
+      const freshActor = await registerPerson(app);
+      createdPhones.push(freshActor.phone);
+      const res = await draftAndSubmit(
+        app,
+        freshActor.accessToken,
+        reviewPayload({ city: undefined }),
+      );
+      expect(res.status).toBe(422);
+      expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+    });
+
+    it('rejects a city that belongs to a DIFFERENT Iranian province rather than silently repairing it (VALIDATION_ERROR)', async () => {
+      // IR-FARS-SHIRAZ is a real city, but not in IR-TEHRAN.
+      const res = await draftAndSubmit(
+        app,
+        accessToken,
+        reviewPayload({ province: 'IR-TEHRAN', city: 'IR-FARS-SHIRAZ' }),
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects an unsupported country code (VALIDATION_ERROR)', async () => {
+      const res = await draftAndSubmit(
+        app,
+        accessToken,
+        reviewPayload({ country: 'US', province: undefined, city: 'Anywhere' }),
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects a display name ("Iran") submitted in place of the ISO country code', async () => {
+      const res = await draftAndSubmit(
+        app,
+        accessToken,
+        reviewPayload({ country: 'Iran', province: undefined, city: 'Tehran' }),
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    });
+
+    // --- Correction round: only Iran (IR) has an implemented
+    // province/city dataset this phase. TR/AZ/AM/TM/AF/PK/IQ/OM may be
+    // *selected* as a country, but Building Setup cannot be completed
+    // end-to-end for them — the backend must not silently accept
+    // free-text city data for them, and must not silently drop/ignore a
+    // submitted Iranian province code either. Every non-IR submission
+    // that reaches `assertValidAddressHierarchy` is rejected with the
+    // project's normal 400 VALIDATION_ERROR — never repaired, never
+    // silently downgraded to a 201. See `assertValidAddressHierarchy`'s
+    // doc comment (building-setup.policy.ts) for the full rationale.
+
+    it('rejects a supported non-Iran country outright — no free-text city fallback exists this phase (VALIDATION_ERROR)', async () => {
+      const res = await draftAndSubmit(
+        app,
+        accessToken,
+        reviewPayload({
+          country: 'TR',
+          province: undefined,
+          city: 'Istanbul',
+          postalCode: `AB${nextPostalCode().slice(-6)}`,
+        }),
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects country TR with Iranian province IR-WEST_AZERBAIJAN — the exact stale/tampered-state example from the correction spec (VALIDATION_ERROR)', async () => {
+      const res = await draftAndSubmit(
+        app,
+        accessToken,
+        reviewPayload({
+          country: 'TR',
+          province: 'IR-WEST_AZERBAIJAN',
+          city: 'Some City',
+          postalCode: `EF${nextPostalCode().slice(-6)}`,
+        }),
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects a non-Iran country carrying stale/tampered Iranian province AND city state, rather than silently ignoring or repairing it (VALIDATION_ERROR)', async () => {
+      const res = await draftAndSubmit(
+        app,
+        accessToken,
+        reviewPayload({
+          country: 'AZ',
+          province: 'IR-TEHRAN',
+          city: 'IR-TEHRAN-TEHRAN',
+          postalCode: `CD${nextPostalCode().slice(-6)}`,
+        }),
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    });
+
+    it.each(['TR', 'AZ', 'AM', 'TM', 'AF', 'PK', 'IQ', 'OM'])(
+      'rejects %s (a supported country with no implemented address dataset) even with an ordinary free-text city (VALIDATION_ERROR)',
+      async (country) => {
+        const res = await draftAndSubmit(
+          app,
+          accessToken,
+          reviewPayload({
+            country,
+            province: undefined,
+            city: 'Some City',
+            postalCode: `GH${nextPostalCode().slice(-6)}`,
+          }),
+        );
+        expect(res.status).toBe(400);
+        expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+      },
+    );
+  });
+
+  describe('Postal code normalization + validation', () => {
+    it('normalizes a Persian-digit Iranian postal code to canonical ASCII at submit time', async () => {
+      const canonical = nextPostalCode();
+      const persian = toPersianDigits(canonical);
+
+      const res = await draftAndSubmit(app, accessToken, reviewPayload({ postalCode: persian }));
+      expect(res.status).toBe(201);
+      createdBuildingIds.push(res.body.data.building.id);
+      expect(res.body.data.building.postalCode).toBe(canonical);
+    });
+
+    it('normalizes a mixed Persian/Arabic-Indic/ASCII Iranian postal code to canonical ASCII', async () => {
+      const canonical = nextPostalCode();
+      // First 3 chars Persian, next 3 Arabic-Indic, rest ASCII.
+      const mixed =
+        toPersianDigits(canonical.slice(0, 3)) +
+        toArabicIndicDigits(canonical.slice(3, 6)) +
+        canonical.slice(6);
+
+      const res = await draftAndSubmit(app, accessToken, reviewPayload({ postalCode: mixed }));
+      expect(res.status).toBe(201);
+      createdBuildingIds.push(res.body.data.building.id);
+      expect(res.body.data.building.postalCode).toBe(canonical);
+    });
+
+    it('rejects an Iranian postal code that is too short (VALIDATION_ERROR)', async () => {
+      const res = await draftAndSubmit(app, accessToken, reviewPayload({ postalCode: '123' }));
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects an Iranian postal code that is too long (VALIDATION_ERROR)', async () => {
+      const res = await draftAndSubmit(
+        app,
+        accessToken,
+        reviewPayload({ postalCode: '12345678901' }),
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects an Iranian postal code with embedded letters rather than guessing (VALIDATION_ERROR)', async () => {
+      const res = await draftAndSubmit(
+        app,
+        accessToken,
+        reviewPayload({ postalCode: '12345ABC90' }),
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    });
+
+    // Correction round: the lenient generic postal-code rule for non-Iran
+    // countries is still real (see BuildingSetupPolicy.normalizePostalCodeOrThrow
+    // and its unit tests below), but it is no longer reachable through a
+    // full end-to-end `submit()` call, because `assertValidAddressHierarchy`
+    // now rejects every non-Iran country before `normalizePostalCodeOrThrow`
+    // ever runs (see the address-hierarchy `it.each` above). That lenient
+    // path is therefore verified at the unit level only
+    // (building-setup.policy.spec.ts > normalizePostalCodeOrThrow), not here.
   });
 });

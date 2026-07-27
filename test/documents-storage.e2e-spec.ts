@@ -59,7 +59,7 @@ function nextPhone(): string {
 
 function nextPostalCode(): string {
   postalCodeCounter += 1;
-  return `${RUN_ID}${postalCodeCounter.toString().padStart(4, '0')}`;
+  return `${RUN_ID}${postalCodeCounter.toString().padStart(5, '0')}`;
 }
 
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
@@ -231,8 +231,9 @@ function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, 
   return {
     role: 'OWNER',
     totalUnits: 2,
-    country: 'Iran',
-    city: 'Tehran',
+    country: 'IR',
+    province: 'IR-TEHRAN',
+    city: 'IR-TEHRAN-TEHRAN',
     district: 'District 1',
     mainStreet: 'Valiasr',
     plateNumber: '12',

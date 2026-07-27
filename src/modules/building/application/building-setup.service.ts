@@ -7,6 +7,7 @@ import { SaveDraftDto } from './dto/save-draft.dto';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
 import { BuildingCreatedEvent } from '../events/building-created.event';
+import { normalizePostalCodeDigitsOnly } from '../../../common/postal-code/postal-code.util';
 
 /**
  * Orchestrates the resumable Building Setup Wizard (06_User_Flows >
@@ -61,11 +62,21 @@ export class BuildingSetupService {
     const payload = draft.payload as Record<string, unknown>;
     this.policy.assertCanSubmit(draft.step, payload);
 
+    // Building Setup Refinement Phase 2 (Country -> Province -> City +
+    // Postal Code Normalization): validate/normalize the address
+    // hierarchy and postal code BEFORE the duplicate check below, so a
+    // malformed or unsupported submission never reaches the DB at all.
+    const address = this.policy.assertValidAddressHierarchy(
+      payload.country,
+      payload.province,
+      payload.city,
+    );
+    const postalCode = this.policy.normalizePostalCodeOrThrow(address.country, payload.postalCode);
+
     // Defense in depth: the client already checked via `lookupPostalCode`
     // on the Address step, but re-check here against a race (two people
     // registering the same postal code at once) — the DB unique
     // constraint is the final backstop either way.
-    const postalCode = String(payload.postalCode);
     const conflicting = await this.buildings.findByPostalCode(postalCode);
     this.policy.assertPostalCodeAvailable(conflicting);
 
@@ -89,9 +100,9 @@ export class BuildingSetupService {
       buildingType:
         (payload.buildingType as 'RESIDENTIAL' | 'COMMERCIAL' | 'MIXED') ?? 'RESIDENTIAL',
       description: payload.description ? String(payload.description) : undefined,
-      country: String(payload.country),
-      province: payload.province ? String(payload.province) : undefined,
-      city: String(payload.city),
+      country: address.country,
+      province: address.province,
+      city: address.city,
       district: String(payload.district),
       mainStreet,
       subStreet,
@@ -132,9 +143,16 @@ export class BuildingSetupService {
    * Live duplicate check for the Address step — called as the person
    * finishes typing a postal code, before they can advance to Review.
    * Read-only; the authoritative check happens again in `submit`.
+   *
+   * Building Setup Refinement Phase 2: digit-normalizes (Persian/
+   * Arabic-Indic -> ASCII) before looking up, so a partially-typed
+   * non-ASCII postal code still matches its canonical stored form. Does
+   * NOT apply the full per-country shape validation `submit` does —
+   * this runs before the person may have even picked a country yet.
    */
   async lookupPostalCode(postalCode: string) {
-    const existing = await this.buildings.findByPostalCode(postalCode);
+    const normalized = normalizePostalCodeDigitsOnly(postalCode);
+    const existing = await this.buildings.findByPostalCode(normalized);
     return { exists: existing !== null, building: existing };
   }
 }

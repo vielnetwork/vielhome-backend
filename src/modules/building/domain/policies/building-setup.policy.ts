@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { BusinessRuleViolationError, DuplicateError } from '../../../../common/errors/app-error';
+import { BusinessRuleViolationError, DuplicateError, ValidationError } from '../../../../common/errors/app-error';
+import { SUPPORTED_COUNTRIES, isSupportedCountryCode } from '../../../../common/location/countries';
+import { isValidIranProvinceCode } from '../../../../common/location/iran-provinces';
+import { isValidIranCityForProvince } from '../../../../common/location/iran-cities';
+import { normalizePostalCode } from '../../../../common/postal-code/postal-code.util';
 
 /**
  * Official wizard steps, in order (06_User_Flows > Building Onboarding,
@@ -21,6 +25,19 @@ export type BuildingSetupStep = (typeof BUILDING_SETUP_STEPS)[number];
 export interface ConflictingBuilding {
   id: string;
   name: string;
+  city: string;
+}
+
+const SUPPORTED_COUNTRY_CODES_LIST = SUPPORTED_COUNTRIES.map((c) => c.code).join(', ');
+
+/** Result of {@link BuildingSetupPolicy.assertValidAddressHierarchy} — the
+ * normalized/validated values `BuildingSetupService.submit` should
+ * actually persist. Only Iran (IR) can successfully produce this result
+ * this phase (see the method's doc comment) — `province` is therefore
+ * always present, never optional. */
+export interface ValidatedAddressHierarchy {
+  country: string;
+  province: string;
   city: string;
 }
 
@@ -47,7 +64,10 @@ export class BuildingSetupPolicy {
       );
     }
     // `name` is intentionally optional (05_Business_Rules is silent on it;
-    // product decision: "نام ساختمان: اختیاری یا پیشنهادی").
+    // product decision: "نام ساختمان: اختیاری یا پیشنهادی"). `province` is
+    // intentionally NOT in this flat list — it's only required for Iran,
+    // a conditional rule enforced by `assertValidAddressHierarchy` below,
+    // not by this unconditional presence check.
     const required = [
       'role',
       'totalUnits',
@@ -89,5 +109,92 @@ export class BuildingSetupPolicy {
         },
       );
     }
+  }
+
+  /**
+   * Country/Province/City address-hierarchy validation (Building Setup
+   * Refinement Phase 2 — Country -> Province -> City + Postal Code
+   * Normalization, corrected round). `country` must be one of the
+   * supported ISO 3166-1 alpha-2 codes (`common/location/countries.ts`).
+   *
+   * Iran (IR) is the ONLY country with an implemented Province/City
+   * dataset this phase. It requires `province` and `city`, each
+   * validated against the Iran dataset (`common/location/
+   * iran-provinces.ts` / `iran-cities.ts`), and `city` must belong to
+   * the submitted `province` — a city code that exists but belongs to a
+   * DIFFERENT province is rejected outright, never silently "repaired"
+   * to the right province.
+   *
+   * Every other supported country has NO Province/City dataset this
+   * phase, and — per explicit product correction — a submission for one
+   * of them must not pretend otherwise: submitting ANY `province` value
+   * for a non-Iran country is rejected (this also catches stale/tampered
+   * Iranian province state left over from a Country change that a
+   * client failed to clear), and since `city` is an unconditionally
+   * required field (see `assertCanSubmit`), any non-Iran submission that
+   * reaches this method necessarily carries a non-empty `city` value
+   * that cannot be validated against any dataset — it is rejected too,
+   * rather than being accepted as free text or silently dropped. In
+   * effect, Building Setup cannot be completed end-to-end for a non-Iran
+   * country this phase; the country is still selectable (and appears in
+   * the supported-country list) so the UI/API contract does not need to
+   * change again once that country's dataset is implemented.
+   */
+  assertValidAddressHierarchy(
+    country: unknown,
+    province: unknown,
+    city: unknown,
+  ): ValidatedAddressHierarchy {
+    if (!isSupportedCountryCode(country)) {
+      throw new ValidationError(
+        `"${String(country)}" is not a supported country. Supported countries: ${SUPPORTED_COUNTRY_CODES_LIST}.`,
+      );
+    }
+
+    if (country !== 'IR') {
+      if (province !== undefined && province !== null) {
+        throw new ValidationError(
+          `Province is not supported for country "${String(country)}" — no province/city dataset is implemented for this country yet. Only Iran (IR) has an implemented address dataset this phase.`,
+        );
+      }
+      throw new ValidationError(
+        `Address details (province/city) are not yet supported for country "${String(country)}" — no province/city dataset is implemented for this country yet. Only Iran (IR) has an implemented address dataset this phase.`,
+      );
+    }
+
+    if (!isValidIranProvinceCode(province)) {
+      throw new ValidationError('A valid Iranian province is required when country is Iran (IR).');
+    }
+    if (!isValidIranCityForProvince(city, province)) {
+      throw new ValidationError(
+        'The submitted city does not belong to the submitted Iranian province.',
+      );
+    }
+
+    return { country, province, city };
+  }
+
+  /**
+   * Postal-code normalization + validation (Building Setup Refinement
+   * Phase 2). Delegates the actual normalization rule to
+   * `common/postal-code/postal-code.util.ts` (Iran: exactly 10 digits
+   * after Persian/Arabic-Indic -> ASCII normalization; every other
+   * supported country: a temporary generic rule — see that module's own
+   * doc comment; this is deliberately NOT a claim that every supported
+   * country's real postal standard has been implemented). Returns the
+   * canonical value to store; throws `ValidationError` — the project's
+   * normal validation error response — for anything malformed rather
+   * than guessing.
+   */
+  normalizePostalCodeOrThrow(country: string, rawPostalCode: unknown): string {
+    const normalized = normalizePostalCode(rawPostalCode, country);
+    if (normalized === null) {
+      throw new ValidationError(
+        country === 'IR'
+          ? 'Iranian postal code must contain exactly 10 digits.'
+          : 'Postal code is invalid.',
+      );
+    }
+    return normalized;
   }
 }

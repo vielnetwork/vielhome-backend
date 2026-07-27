@@ -115,7 +115,7 @@ function nextPhone(): string {
 /** `Building.postalCode` is `@unique` — no format validation, any unique string works. */
 function nextPostalCode(): string {
   postalCodeCounter += 1;
-  return `${RUN_ID}${postalCodeCounter.toString().padStart(4, '0')}`;
+  return `${RUN_ID}${postalCodeCounter.toString().padStart(5, '0')}`;
 }
 
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
@@ -331,9 +331,45 @@ const PLATFORM_REVIEWER_PHONE = '+989120000001';
  * seeded staff account.
  */
 async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const code = await requestOtpAndCaptureCode(app, phone);
-  const res = await verifyOtp(app, { phone, code }).expect(200);
-  return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
+  // `PLATFORM_ADMIN_PHONE`/`PLATFORM_REVIEWER_PHONE` are shared, hardcoded
+  // PlatformStaff fixtures that ~9 other e2e files also log into the same
+  // way (grep the repo for either constant). `npm run test:e2e` runs spec
+  // files as separate concurrent Jest worker processes with no
+  // coordination between them, so another file's `beforeAll` (a fresh OTP
+  // request for this same phone) or `afterAll`
+  // (`otpRequest.deleteMany({ where: { phone } })`) can land in the gap
+  // between this function's own `requestOtp` and `verifyOtp` calls.
+  // `AuthRepository.consumeOtp` then throws P2025 ("Record to update not
+  // found") because the specific OtpRequest row it just read via
+  // `findLatestActiveOtp` was deleted out from under it by the other
+  // process — surfacing here as a 500. This is a genuine cross-suite
+  // fixture race, not an `AuthService`/`AuthRepository` bug: real users
+  // never share a login phone number across concurrent unrelated
+  // sessions this way. One bounded retry of the whole request -> verify
+  // cycle (a brand-new OTP row + brand-new code) absorbs the transient
+  // collision without touching production auth code, and stays within
+  // this describe's own 5-per-60s throttle budget (see the "Budget"
+  // comment above the describe block) even in the worst case.
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const code = await requestOtpAndCaptureCode(app, phone);
+      const res = await verifyOtp(app, { phone, code }).expect(200);
+      return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response?.status;
+      // Only retry the specific cross-suite-collision symptom (a 500 from
+      // the deleted-row race above) — anything else (a real 4xx
+      // auth/validation failure) rethrows immediately rather than masking
+      // a genuine bug behind a retry.
+      if (status !== 500 || attempt === 2) {
+        lastError = error;
+        throw lastError;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+  throw lastError;
 }
 
 /**
@@ -357,8 +393,9 @@ function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, 
   return {
     role: 'OWNER',
     totalUnits: 2,
-    country: 'Iran',
-    city: 'Tehran',
+    country: 'IR',
+    province: 'IR-TEHRAN',
+    city: 'IR-TEHRAN-TEHRAN',
     district: 'District 1',
     mainStreet: 'Valiasr',
     plateNumber: '12',
@@ -1195,8 +1232,11 @@ describe('Notifications (e2e) — Preferences', () => {
 });
 
 describe('Notifications (e2e) — NotificationTemplate Staff CRUD (ADR-060)', () => {
-  // Budget: 3 calls to POST /auth/otp/request (seeded PLATFORM_ADMIN login
-  // + seeded REVIEWER login + one brand-new regularMember registration).
+  // Budget: 3-5 calls to POST /auth/otp/request (seeded PLATFORM_ADMIN
+  // login + seeded REVIEWER login, each with up to one retry against the
+  // cross-suite OTP race documented on `loginAsSeededStaff` above, + one
+  // brand-new regularMember registration) — worst case 5, still within
+  // this describe's own fresh 5-per-60s throttle bucket.
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];

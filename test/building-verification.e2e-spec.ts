@@ -123,7 +123,7 @@ function nextPhone(): string {
 /** `Building.postalCode` is `@unique` — no format validation, any unique string works. */
 function nextPostalCode(): string {
   postalCodeCounter += 1;
-  return `${RUN_ID}${postalCodeCounter.toString().padStart(4, '0')}`;
+  return `${RUN_ID}${postalCodeCounter.toString().padStart(5, '0')}`;
 }
 
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
@@ -440,8 +440,9 @@ function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, 
   return {
     role: 'OWNER',
     totalUnits: 2,
-    country: 'Iran',
-    city: 'Tehran',
+    country: 'IR',
+    province: 'IR-TEHRAN',
+    city: 'IR-TEHRAN-TEHRAN',
     district: 'District 1',
     mainStreet: 'Valiasr',
     plateNumber: '12',
@@ -517,9 +518,18 @@ describe('Building Verification (e2e) — Auto-Evaluation & Risk-Based Routing (
   let buildingA: string;
   let buildingB: string;
 
+  // Building Setup Refinement Phase 2 correction round: `city` must now
+  // be a real Iranian city code (`assertValidAddressHierarchy` rejects
+  // free text), so it can no longer carry the RUN_ID that made this
+  // shared address unique per test run — `district` carries that
+  // uniqueness instead. The 07.01 similarity check keys on the exact
+  // (city, district, mainStreet) tuple (see `BuildingVerificationService`),
+  // so buildingA/buildingB still need to share the SAME tuple as each
+  // other while staying distinct from any other run's leftover data.
   const sharedAddress = {
-    city: `RiskCity${RUN_ID}`,
-    district: 'D1',
+    province: 'IR-TEHRAN',
+    city: 'IR-TEHRAN-TEHRAN',
+    district: `RiskDistrict${RUN_ID}`,
     mainStreet: 'SharedStreet',
   };
 
@@ -607,9 +617,12 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
   let case2Id: string;
   let case3Id: string;
 
+  // Same reasoning as the other `sharedAddress` fixture above: `city` is
+  // now a real Iranian city code, so RUN_ID uniqueness moves to `district`.
   const sharedAddress = {
-    city: `StaffQueueCity${RUN_ID}`,
-    district: 'D2',
+    province: 'IR-TEHRAN',
+    city: 'IR-TEHRAN-TEHRAN',
+    district: `StaffQueueDistrict${RUN_ID}`,
     mainStreet: 'StaffQueueStreet',
   };
 

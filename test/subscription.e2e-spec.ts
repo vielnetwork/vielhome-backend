@@ -125,7 +125,7 @@ function nextPhone(): string {
 /** `Building.postalCode` is `@unique` — no format validation, any unique string works. */
 function nextPostalCode(): string {
   postalCodeCounter += 1;
-  return `${RUN_ID}${postalCodeCounter.toString().padStart(4, '0')}`;
+  return `${RUN_ID}${postalCodeCounter.toString().padStart(5, '0')}`;
 }
 
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
@@ -402,8 +402,9 @@ function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, 
   return {
     role: 'OWNER',
     totalUnits: 2,
-    country: 'Iran',
-    city: 'Tehran',
+    country: 'IR',
+    province: 'IR-TEHRAN',
+    city: 'IR-TEHRAN-TEHRAN',
     district: 'District 1',
     mainStreet: 'Valiasr',
     plateNumber: '12',
@@ -496,9 +497,14 @@ describe('Subscription Management (e2e) — Auto-Init, Reads & Features (07.04/0
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
 
-    buildingId = await createBuilding(app, founder.accessToken, {
-      city: `SubAutoCity${RUN_ID}`,
-    });
+    // Building Setup Refinement Phase 2 correction round: `city` is now a
+    // real Iranian city code, not free text, so the old
+    // `SubAutoCity${RUN_ID}` label can no longer be used here — it served
+    // no functional purpose (nothing downstream asserts on it; the unique
+    // postal code from `reviewPayload()`'s default already gives this
+    // building its own identity), so it's simply dropped in favor of the
+    // default valid address.
+    buildingId = await createBuilding(app, founder.accessToken, {});
     createdBuildingIds.push(buildingId);
 
     await waitForSubscription(prisma, buildingId);
@@ -589,9 +595,9 @@ describe('Subscription Management (e2e) — Plan & Status Changes, History (07.0
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
 
-    buildingId = await createBuilding(app, founder.accessToken, {
-      city: `SubPlanCity${RUN_ID}`,
-    });
+    // See the correction-round note above `SubAutoCity` earlier in this
+    // file — same reasoning, dropped in favor of the default address.
+    buildingId = await createBuilding(app, founder.accessToken, {});
     createdBuildingIds.push(buildingId);
 
     await waitForSubscription(prisma, buildingId);
@@ -713,9 +719,9 @@ describe('Subscription Management (e2e) — Feature Grants (07.04 Rule 008/009/0
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
 
-    buildingId = await createBuilding(app, founder.accessToken, {
-      city: `SubGrantCity${RUN_ID}`,
-    });
+    // See the correction-round note above `SubAutoCity` earlier in this
+    // file — same reasoning, dropped in favor of the default address.
+    buildingId = await createBuilding(app, founder.accessToken, {});
     createdBuildingIds.push(buildingId);
 
     await waitForSubscription(prisma, buildingId);
@@ -845,13 +851,13 @@ describe('Subscription Management (e2e) — Time-Based Lifecycle (07.04 Rule 007
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
 
-    buildingX = await createBuilding(app, founder.accessToken, {
-      city: `SubExpiryCityX${RUN_ID}`,
-    });
+    // See the correction-round note above `SubAutoCity` earlier in this
+    // file — same reasoning, dropped in favor of the default address for
+    // both buildingX and buildingY (their unique postal codes already
+    // give each its own identity).
+    buildingX = await createBuilding(app, founder.accessToken, {});
     createdBuildingIds.push(buildingX);
-    buildingY = await createBuilding(app, founder.accessToken, {
-      city: `SubExpiryCityY${RUN_ID}`,
-    });
+    buildingY = await createBuilding(app, founder.accessToken, {});
     createdBuildingIds.push(buildingY);
 
     await waitForSubscription(prisma, buildingX);
