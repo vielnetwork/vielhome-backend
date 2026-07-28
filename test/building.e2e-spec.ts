@@ -2108,3 +2108,708 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Building Access Refinement Phase 4 (Privacy / Data Visibility / Membership
+// Access). Proves `UnitVisibilityPolicy`'s redaction end-to-end through the
+// real HTTP routes — the unit-test file
+// (`unit-visibility.policy.spec.ts`) already proves the policy class's own
+// logic in isolation; these describes prove `BuildingService`/
+// `BuildingController` actually wire real Ownership/Tenancy/Membership rows
+// through it correctly, for every role and every cross-unit boundary the
+// approved audit called out.
+//
+// Fixture discipline: identity content (previous vs current owner/tenant,
+// BOARD_MEMBER/ACCOUNTANT membership) is seeded directly via Prisma wherever
+// a describe isn't specifically testing HOW that row got created — the same
+// precedent the "Unit Authorization Hardening" and "Tenancy" describes above
+// already established (no invite/claim/transfer flow re-proven here; that's
+// covered in full elsewhere in this file). The one exception is the
+// "invited-but-unclaimed future owner" fixture, which MUST go through the
+// real invite-owner endpoint (register the phone first, invite it
+// afterward, never verify OTP again) — that ordering IS the thing under
+// test (Product Rule 6 / decision item 6), and there is no Prisma shortcut
+// that reproduces the same server-computed `canClaimOwnership`/context.
+//
+// `Person.fullName` is deprecated but still the ONLY field
+// `listOwnershipHistoryForUnit`/`listTenanciesForUnit` select for their
+// nested `person` object (see `BuildingRepository`) — so every named
+// fixture below sets `firstName`/`lastName` (read by the new
+// `CurrentPersonSummary` unit list/detail path) AND `fullName` (read by the
+// history path) to get meaningful, non-null assertions on both.
+
+describe('Building (e2e) — Phase 4 Privacy: Unit List & Detail Visibility', () => {
+  // Budget: 5 calls to POST /auth/otp/request (manager + ownerA + tenantA +
+  // ownerB + boardMember).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let ownerA: RegisteredPerson;
+  let tenantA: RegisteredPerson;
+  let ownerB: RegisteredPerson;
+  let boardMember: RegisteredPerson;
+  let buildingId: string;
+  let unit1Id: string; // ownerA's unit, occupied by tenantA
+  let unit2Id: string; // ownerB's unit, unrelated to unit1
+  let unit3Id: string; // unclaimed, has a pending owner invite (never claimed)
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 3,
+    });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unit1Id = unitsRes.body.data[0].id;
+    unit2Id = unitsRes.body.data[1].id;
+    unit3Id = unitsRes.body.data[2].id;
+
+    ownerA = await registerPerson(app);
+    createdPhones.push(ownerA.phone);
+    await joinBuildingAsApprovedMember(app, buildingId, ownerA.accessToken, manager.accessToken, 'OWNER');
+    await prisma.ownership.create({ data: { unitId: unit1Id, personId: ownerA.personId, isCurrent: true } });
+    await prisma.person.update({
+      where: { id: ownerA.personId },
+      data: { firstName: 'Ada', lastName: 'OwnerA', fullName: 'Ada OwnerA' },
+    });
+
+    ownerB = await registerPerson(app);
+    createdPhones.push(ownerB.phone);
+    await joinBuildingAsApprovedMember(app, buildingId, ownerB.accessToken, manager.accessToken, 'OWNER');
+    await prisma.ownership.create({ data: { unitId: unit2Id, personId: ownerB.personId, isCurrent: true } });
+    await prisma.person.update({
+      where: { id: ownerB.personId },
+      data: { firstName: 'Bob', lastName: 'OwnerB', fullName: 'Bob OwnerB' },
+    });
+
+    // Real Tenancy flow (manager-driven, unit1 already has ownerA's
+    // Ownership row so `TenancyPolicy.assertUnitHasOwner` passes) — not a
+    // fixture shortcut, this endpoint isn't otherwise exercised by this
+    // describe.
+    tenantA = await registerPerson(app);
+    createdPhones.push(tenantA.phone);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unit1Id}/tenancy`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ tenantPersonId: tenantA.personId })
+      .expect(201);
+    await prisma.person.update({
+      where: { id: tenantA.personId },
+      data: { firstName: 'Tina', lastName: 'TenantA', fullName: 'Tina TenantA' },
+    });
+
+    // No public API creates BOARD_MEMBER memberships today — same
+    // precedent the "Unit Authorization Hardening" describe above
+    // established.
+    boardMember = await registerPerson(app);
+    createdPhones.push(boardMember.phone);
+    await prisma.membership.create({
+      data: { personId: boardMember.personId, buildingId, role: 'BOARD_MEMBER', isCurrent: true },
+    });
+
+    // unit3 stays unclaimed forever in this describe — only its pending
+    // owner-invite bucket matters here (the identical top-priority leak
+    // the audit flagged: `ownerFullName`/`ownerFirstName`/`ownerLastName`/
+    // `ownerPhone` reaching a member unrelated to this unit). The invited
+    // phone is never registered — nobody needs to authenticate as this
+    // pending owner in THIS describe (that flow is covered in full by its
+    // own describe further below).
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unit3Id}/invite-owner`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ ownerFullName: 'Pending Owner', ownerPhone: nextPhone() })
+      .expect(201);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('MANAGER sees full unit list: every unit’s pending owner identity + live currentOwner/currentTenant summaries', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const byId = new Map(res.body.data.map((u: { id: string }) => [u.id, u]));
+    const unit1 = byId.get(unit1Id) as Record<string, unknown>;
+    const unit2 = byId.get(unit2Id) as Record<string, unknown>;
+    const unit3 = byId.get(unit3Id) as Record<string, unknown>;
+
+    expect((unit1.currentOwner as { personId: string }).personId).toBe(ownerA.personId);
+    expect((unit1.currentOwner as { firstName: string }).firstName).toBe('Ada');
+    expect((unit1.currentTenant as { personId: string }).personId).toBe(tenantA.personId);
+
+    expect((unit2.currentOwner as { personId: string }).personId).toBe(ownerB.personId);
+    expect(unit2.currentTenant).toBeNull();
+
+    expect(unit3.currentOwner).toBeNull();
+    expect(unit3.ownerFullName).toBe('Pending Owner');
+    expect(unit3.ownerPhone).toBeTruthy();
+  });
+
+  it('OWNER of unit1 sees own unit’s owner/tenant identity, but NOT unit2’s owner identity nor unit3’s pending invite identity', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .expect(200);
+
+    const byId = new Map(res.body.data.map((u: { id: string }) => [u.id, u]));
+    const unit1 = byId.get(unit1Id) as Record<string, unknown>;
+    const unit2 = byId.get(unit2Id) as Record<string, unknown>;
+    const unit3 = byId.get(unit3Id) as Record<string, unknown>;
+
+    // Own unit: sees own identity as currentOwner, and the unit's tenant.
+    expect((unit1.currentOwner as { personId: string }).personId).toBe(ownerA.personId);
+    expect((unit1.currentTenant as { personId: string }).personId).toBe(tenantA.personId);
+
+    // Unrelated unit2: structural data only, no identity — even though
+    // ownerA IS an OWNER (of a different unit) and ownerB's Ownership row
+    // is real and current.
+    expect(unit2.currentOwner).toBeNull();
+    expect(unit2.currentTenant).toBeNull();
+    expect(unit2).toHaveProperty('unitNumber');
+    expect(unit2).toHaveProperty('occupancyStatus');
+
+    // Unit3's pending-invite bucket is private to MANAGER/the unit's own
+    // current owner/the exact invited candidate — ownerA is none of those.
+    expect(unit3).not.toHaveProperty('ownerFullName');
+    expect(unit3).not.toHaveProperty('ownerFirstName');
+    expect(unit3).not.toHaveProperty('ownerLastName');
+    expect(unit3).not.toHaveProperty('ownerPhone');
+    expect(unit3).not.toHaveProperty('ownerInviteSentAt');
+    expect(unit3.currentOwner).toBeNull();
+    // Structural existence of unit3 is still visible building-wide
+    // (Product Rule 3 — do not hide the unit itself).
+    expect(unit3).toHaveProperty('unitNumber');
+  });
+
+  it('TENANT of unit1 sees the CURRENT OWNER’s firstName/lastName/phone for their own unit only — never the pending invite bucket, never another unit’s identity', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${tenantA.accessToken}`)
+      .expect(200);
+
+    const byId = new Map(res.body.data.map((u: { id: string }) => [u.id, u]));
+    const unit1 = byId.get(unit1Id) as Record<string, unknown>;
+    const unit2 = byId.get(unit2Id) as Record<string, unknown>;
+    const unit3 = byId.get(unit3Id) as Record<string, unknown>;
+
+    // Decision item 2: TENANT sees the CURRENT OWNER of their own occupied
+    // unit's firstName/lastName/phone.
+    const unit1Owner = unit1.currentOwner as { personId: string; firstName: string; lastName: string; phone: string };
+    expect(unit1Owner.personId).toBe(ownerA.personId);
+    expect(unit1Owner.firstName).toBe('Ada');
+    expect(unit1Owner.lastName).toBe('OwnerA');
+    expect(unit1Owner.phone).toBe(ownerA.phone);
+    // Own identity as currentTenant.
+    expect((unit1.currentTenant as { personId: string }).personId).toBe(tenantA.personId);
+    // The tenant never gets the (potentially-stale) pending-invite bucket,
+    // even for their own unit — only the live currentOwner summary.
+    expect(unit1).not.toHaveProperty('ownerFullName');
+    expect(unit1).not.toHaveProperty('ownerPhone');
+
+    // Does NOT extend to another unit's owner.
+    expect(unit2.currentOwner).toBeNull();
+    expect(unit2.currentTenant).toBeNull();
+
+    // Does not gain unit3's pending invite identity either.
+    expect(unit3).not.toHaveProperty('ownerFullName');
+    expect(unit3.currentOwner).toBeNull();
+  });
+
+  it('BOARD_MEMBER sees structural data for every unit but no owner/tenant identity anywhere (least privilege, not Manager-equivalent)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${boardMember.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data).toHaveLength(3);
+    for (const unit of res.body.data as Array<Record<string, unknown>>) {
+      expect(unit.currentOwner).toBeNull();
+      expect(unit.currentTenant).toBeNull();
+      expect(unit).not.toHaveProperty('ownerFullName');
+      expect(unit).not.toHaveProperty('ownerFirstName');
+      expect(unit).not.toHaveProperty('ownerLastName');
+      expect(unit).not.toHaveProperty('ownerPhone');
+      expect(unit).toHaveProperty('unitNumber');
+      expect(unit).toHaveProperty('occupancyStatus');
+    }
+  });
+
+  it('GET /buildings/:id embeds the same redacted units array as GET /buildings/:id/units', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .expect(200);
+
+    const byId = new Map(res.body.data.units.map((u: { id: string }) => [u.id, u]));
+    const unit1 = byId.get(unit1Id) as Record<string, unknown>;
+    const unit2 = byId.get(unit2Id) as Record<string, unknown>;
+    const unit3 = byId.get(unit3Id) as Record<string, unknown>;
+
+    expect((unit1.currentOwner as { personId: string }).personId).toBe(ownerA.personId);
+    expect(unit2.currentOwner).toBeNull();
+    expect(unit3).not.toHaveProperty('ownerFullName');
+    expect(res.body.data.myRoles).toEqual(expect.arrayContaining(['OWNER']));
+  });
+
+  it('GET unit detail preserves isCurrentOwner/isCurrentTenant/canClaimOwnership alongside the same redaction rules', async () => {
+    const ownUnit = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unit1Id}`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .expect(200);
+    expect(ownUnit.body.data.isCurrentOwner).toBe(true);
+    expect(ownUnit.body.data.isCurrentTenant).toBe(false);
+    expect(ownUnit.body.data.canClaimOwnership).toBe(false);
+    expect(ownUnit.body.data.currentOwner.personId).toBe(ownerA.personId);
+    expect(ownUnit.body.data.currentTenant.personId).toBe(tenantA.personId);
+
+    const otherUnit = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unit2Id}`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .expect(200);
+    expect(otherUnit.body.data.isCurrentOwner).toBe(false);
+    expect(otherUnit.body.data.isCurrentTenant).toBe(false);
+    expect(otherUnit.body.data.currentOwner).toBeNull();
+    expect(otherUnit.body.data.currentTenant).toBeNull();
+
+    const boardView = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unit1Id}`)
+      .set('Authorization', `Bearer ${boardMember.accessToken}`)
+      .expect(200);
+    expect(boardView.body.data.currentOwner).toBeNull();
+    expect(boardView.body.data.currentTenant).toBeNull();
+    expect(boardView.body.data).not.toHaveProperty('ownerFullName');
+  });
+});
+
+describe('Building (e2e) — Phase 4 Privacy: Ownership/Tenancy History Redaction', () => {
+  // Budget: 5 calls to POST /auth/otp/request (manager2 + ownerA1 + ownerA2
+  // + tenantOld + tenantNew).
+  //
+  // Previous-owner/previous-tenant rows are seeded directly via Prisma
+  // (isCurrent: false) rather than exercised through the real transfer/end
+  // flows — those flows are already proven end-to-end by the Ownership
+  // Transfer and Tenancy describes above; this describe tests the
+  // PRIVACY POLICY applied to history rows, which is orthogonal to how a
+  // row became non-current.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager2: RegisteredPerson;
+  let ownerA1: RegisteredPerson; // previous owner
+  let ownerA2: RegisteredPerson; // current owner
+  let tenantOld: RegisteredPerson; // previous tenant
+  let tenantNew: RegisteredPerson; // current tenant
+  let buildingId: string;
+  let unitXId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    manager2 = await registerPerson(app);
+    createdPhones.push(manager2.phone);
+    buildingId = await createBuilding(app, manager2.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager2.accessToken}`)
+      .expect(200);
+    unitXId = unitsRes.body.data[0].id;
+
+    ownerA1 = await registerPerson(app);
+    createdPhones.push(ownerA1.phone);
+    ownerA2 = await registerPerson(app);
+    createdPhones.push(ownerA2.phone);
+    tenantOld = await registerPerson(app);
+    createdPhones.push(tenantOld.phone);
+    tenantNew = await registerPerson(app);
+    createdPhones.push(tenantNew.phone);
+
+    await prisma.person.update({
+      where: { id: ownerA1.personId },
+      data: { firstName: 'Prev', lastName: 'Owner1', fullName: 'Prev Owner1' },
+    });
+    await prisma.person.update({
+      where: { id: ownerA2.personId },
+      data: { firstName: 'Curr', lastName: 'Owner2', fullName: 'Curr Owner2' },
+    });
+    await prisma.person.update({
+      where: { id: tenantOld.personId },
+      data: { firstName: 'Old', lastName: 'Tenant1', fullName: 'Old Tenant1' },
+    });
+    await prisma.person.update({
+      where: { id: tenantNew.personId },
+      data: { firstName: 'New', lastName: 'Tenant2', fullName: 'New Tenant2' },
+    });
+
+    await prisma.ownership.create({
+      data: { unitId: unitXId, personId: ownerA1.personId, isCurrent: false, endDate: new Date() },
+    });
+    await prisma.ownership.create({
+      data: { unitId: unitXId, personId: ownerA2.personId, isCurrent: true },
+    });
+    await prisma.tenancy.create({
+      data: {
+        unitId: unitXId,
+        personId: tenantOld.personId,
+        isCurrent: false,
+        status: 'ENDED',
+        endDate: new Date(),
+      },
+    });
+    await prisma.tenancy.create({
+      data: { unitId: unitXId, personId: tenantNew.personId, isCurrent: true, status: 'ACTIVE' },
+    });
+
+    // Real-toolchain fix — `MembershipGuard` (still the route-level
+    // precondition on every one of these read routes; Phase 4 only adds
+    // FINER-GRAINED redaction/denial on top of it, it never bypasses it)
+    // checks the `Membership` table, not `Ownership`/`Tenancy` directly.
+    // In real production a current Ownership row never exists without a
+    // paired current OWNER Membership row, and a current Tenancy row
+    // never exists without a paired current TENANT Membership row —
+    // `BuildingRepository.linkOwnerToUnit`/`transferOwnership` and
+    // `createTenancy`/`endTenancy` always write both together, in the
+    // same transaction (see each method's own comment). Seeding only the
+    // Ownership/Tenancy rows above and skipping the Membership half was a
+    // fixture bug, not a guard incompatibility — it left ownerA2/
+    // tenantNew in a state no real user can ever be in (a unit's current
+    // owner/tenant with zero building memberships), which is exactly why
+    // `MembershipGuard` correctly 403'd them before `BuildingService`/
+    // `UnitVisibilityPolicy` ever ran. Mirrored here to match each
+    // person's real Ownership/Tenancy `isCurrent` state exactly:
+    // ownerA1/tenantOld (no longer current) get an ENDED Membership row,
+    // the same end-state `transferOwnership`/`endTenancy` leave behind;
+    // ownerA2/tenantNew get a current one.
+    await prisma.membership.create({
+      data: {
+        personId: ownerA1.personId,
+        buildingId,
+        unitId: unitXId,
+        role: 'OWNER',
+        isCurrent: false,
+        endedAt: new Date(),
+      },
+    });
+    await prisma.membership.create({
+      data: { personId: ownerA2.personId, buildingId, unitId: unitXId, role: 'OWNER', isCurrent: true },
+    });
+    await prisma.membership.create({
+      data: {
+        personId: tenantOld.personId,
+        buildingId,
+        unitId: unitXId,
+        role: 'TENANT',
+        isCurrent: false,
+        endedAt: new Date(),
+      },
+    });
+    await prisma.membership.create({
+      data: { personId: tenantNew.personId, buildingId, unitId: unitXId, role: 'TENANT', isCurrent: true },
+    });
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('ownership/history — MANAGER sees full identity on every row', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitXId}/ownership/history`)
+      .set('Authorization', `Bearer ${manager2.accessToken}`)
+      .expect(200);
+
+    const rows = res.body.data as Array<{ personId: string | null; person: { fullName: string } | null }>;
+    expect(rows).toHaveLength(2);
+    const prevRow = rows.find((r) => r.personId === ownerA1.personId);
+    const currRow = rows.find((r) => r.personId === ownerA2.personId);
+    expect(prevRow?.person?.fullName).toBe('Prev Owner1');
+    expect(currRow?.person?.fullName).toBe('Curr Owner2');
+  });
+
+  it('ownership/history — current OWNER sees own row in full but the PREVIOUS owner’s identity is redacted, including personId (strict — decision item 1)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitXId}/ownership/history`)
+      .set('Authorization', `Bearer ${ownerA2.accessToken}`)
+      .expect(200);
+
+    const rows = res.body.data as Array<{ personId: string | null; person: unknown }>;
+    expect(rows).toHaveLength(2);
+    const ownRow = rows.find((r) => r.personId === ownerA2.personId);
+    expect(ownRow).toBeDefined();
+    expect(ownRow?.person).not.toBeNull();
+
+    const redactedRow = rows.find((r) => r.personId === null);
+    expect(redactedRow).toBeDefined();
+    expect(redactedRow?.person).toBeNull();
+
+    // personId itself must not leak anywhere in the redacted row, and the
+    // previous owner's name must not appear anywhere in the payload.
+    const raw = JSON.stringify(res.body.data);
+    expect(raw).not.toContain(ownerA1.personId);
+    expect(raw).not.toContain('Prev Owner1');
+  });
+
+  it('ownership/history — a PREVIOUS owner (no longer current) is denied access entirely (403)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitXId}/ownership/history`)
+      .set('Authorization', `Bearer ${ownerA1.accessToken}`)
+      .expect(403);
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+
+  it('tenancy/history — current TENANT sees own row in full but the PREVIOUS tenant’s identity is redacted, including personId', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitXId}/tenancy/history`)
+      .set('Authorization', `Bearer ${tenantNew.accessToken}`)
+      .expect(200);
+
+    const rows = res.body.data as Array<{ personId: string | null; person: unknown }>;
+    const ownRow = rows.find((r) => r.personId === tenantNew.personId);
+    expect(ownRow).toBeDefined();
+    const redactedRow = rows.find((r) => r.personId === null);
+    expect(redactedRow).toBeDefined();
+    expect(redactedRow?.person).toBeNull();
+
+    const raw = JSON.stringify(res.body.data);
+    expect(raw).not.toContain(tenantOld.personId);
+    expect(raw).not.toContain('Old Tenant1');
+  });
+
+  it('tenancy/history — current OWNER never matches a tenancy row’s personId, so every row (current AND previous tenant) is redacted', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitXId}/tenancy/history`)
+      .set('Authorization', `Bearer ${ownerA2.accessToken}`)
+      .expect(200);
+
+    const rows = res.body.data as Array<{ personId: string | null; person: unknown }>;
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.personId).toBeNull();
+      expect(row.person).toBeNull();
+    }
+  });
+
+  it('tenancy/history — a PREVIOUS tenant (no longer current) is denied access entirely (403)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitXId}/tenancy/history`)
+      .set('Authorization', `Bearer ${tenantOld.accessToken}`)
+      .expect(403);
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+
+  it('current tenancy (single) read — current TENANT sees own identity, current OWNER gets it redacted, previous tenant is denied, MANAGER sees it in full', async () => {
+    const asTenant = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitXId}/tenancy`)
+      .set('Authorization', `Bearer ${tenantNew.accessToken}`)
+      .expect(200);
+    expect(asTenant.body.data.personId).toBe(tenantNew.personId);
+
+    const asOwner = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitXId}/tenancy`)
+      .set('Authorization', `Bearer ${ownerA2.accessToken}`)
+      .expect(200);
+    expect(asOwner.body.data.personId).toBeNull();
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitXId}/tenancy`)
+      .set('Authorization', `Bearer ${tenantOld.accessToken}`)
+      .expect(403);
+
+    const asManager = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitXId}/tenancy`)
+      .set('Authorization', `Bearer ${manager2.accessToken}`)
+      .expect(200);
+    expect(asManager.body.data.personId).toBe(tenantNew.personId);
+  });
+
+  it('unit list/detail never surface previous owner/tenant identity at all — defense in depth beyond the history endpoints', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${ownerA2.accessToken}`)
+      .expect(200);
+
+    const unit = (res.body.data as Array<{ id: string }>).find((u) => u.id === unitXId) as Record<
+      string,
+      unknown
+    >;
+    expect((unit.currentOwner as { personId: string }).personId).toBe(ownerA2.personId);
+    expect((unit.currentTenant as { personId: string }).personId).toBe(tenantNew.personId);
+
+    const raw = JSON.stringify(res.body.data);
+    expect(raw).not.toContain(ownerA1.personId);
+    expect(raw).not.toContain(tenantOld.personId);
+    expect(raw).not.toContain('Prev Owner1');
+    expect(raw).not.toContain('Old Tenant1');
+  });
+});
+
+describe('Building (e2e) — Phase 4 Privacy: ACCOUNTANT Least Privilege & Invited Future Owner', () => {
+  // Budget: 3 calls to POST /auth/otp/request (manager3 + futureOwner +
+  // accountant).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager3: RegisteredPerson;
+  let accountant: RegisteredPerson;
+  let futureOwner: RegisteredPerson;
+  let futureOwnerPhone: string;
+  let buildingId: string;
+  let unitYId: string; // manager3 seeded as its current owner
+  let unitZId: string; // unclaimed, invited to futureOwner
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    manager3 = await registerPerson(app);
+    createdPhones.push(manager3.phone);
+    buildingId = await createBuilding(app, manager3.accessToken, { role: 'MANAGER', totalUnits: 2 });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager3.accessToken}`)
+      .expect(200);
+    unitYId = unitsRes.body.data[0].id;
+    unitZId = unitsRes.body.data[1].id;
+
+    // Reuses manager3's own personId as unitY's owner — this describe
+    // doesn't test WHO the owner is, only that ACCOUNTANT can't see it
+    // (same precedent the Tenancy describe above established).
+    await prisma.ownership.create({ data: { unitId: unitYId, personId: manager3.personId, isCurrent: true } });
+
+    // Register the future owner FIRST, invite their exact phone
+    // afterward, never verify OTP again — the identical ordering the
+    // "Owner Self-Claim" describe elsewhere in this file uses, and the
+    // only way to reach an authenticated-but-still-unclaimed state (see
+    // this describe's own header comment and that describe's).
+    futureOwner = await registerPerson(app);
+    futureOwnerPhone = futureOwner.phone;
+    createdPhones.push(futureOwner.phone);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitZId}/invite-owner`)
+      .set('Authorization', `Bearer ${manager3.accessToken}`)
+      .send({ ownerFullName: 'Future Owner', ownerPhone: futureOwnerPhone })
+      .expect(201);
+
+    // No public API creates ACCOUNTANT memberships today — fixture-seeded,
+    // same precedent as BOARD_MEMBER above.
+    accountant = await registerPerson(app);
+    createdPhones.push(accountant.phone);
+    await prisma.membership.create({
+      data: { personId: accountant.personId, buildingId, role: 'ACCOUNTANT', isCurrent: true },
+    });
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('ACCOUNTANT sees structural unit data building-wide but no owner/tenant identity and no pending invite fields (not Manager-equivalent)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${accountant.accessToken}`)
+      .expect(200);
+
+    const byId = new Map(res.body.data.map((u: { id: string }) => [u.id, u]));
+    const unitY = byId.get(unitYId) as Record<string, unknown>;
+    const unitZ = byId.get(unitZId) as Record<string, unknown>;
+
+    expect(unitY.currentOwner).toBeNull();
+    expect(unitY).toHaveProperty('unitNumber');
+    expect(unitZ.currentOwner).toBeNull();
+    expect(unitZ).not.toHaveProperty('ownerFullName');
+    expect(unitZ).not.toHaveProperty('ownerPhone');
+    expect(unitZ).toHaveProperty('unitNumber');
+  });
+
+  it('ACCOUNTANT is denied ownership/tenancy history entirely — no unit-specific relationship (403)', async () => {
+    const ownershipRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitYId}/ownership/history`)
+      .set('Authorization', `Bearer ${accountant.accessToken}`)
+      .expect(403);
+    expect(ownershipRes.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+
+    const tenancyRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitYId}/tenancy/history`)
+      .set('Authorization', `Bearer ${accountant.accessToken}`)
+      .expect(403);
+    expect(tenancyRes.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+
+  it('MANAGER operational visibility remains intact (regression)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager3.accessToken}`)
+      .expect(200);
+
+    const byId = new Map(res.body.data.map((u: { id: string }) => [u.id, u]));
+    const unitY = byId.get(unitYId) as Record<string, unknown>;
+    const unitZ = byId.get(unitZId) as Record<string, unknown>;
+    expect((unitY.currentOwner as { personId: string }).personId).toBe(manager3.personId);
+    expect(unitZ.ownerFullName).toBe('Future Owner');
+    expect(unitZ.ownerPhone).toBe(futureOwnerPhone);
+  });
+
+  it('invited-but-unclaimed future owner sees only claim-safe minimum on their own specific unit', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitZId}`)
+      .set('Authorization', `Bearer ${futureOwner.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data.canClaimOwnership).toBe(true);
+    expect(res.body.data.isCurrentOwner).toBe(false);
+    expect(res.body.data.isCurrentTenant).toBe(false);
+    // Their own pending invitation identity — decision item 6.
+    expect(res.body.data.ownerPhone).toBe(futureOwnerPhone);
+    expect(res.body.data.ownerFullName).toBe('Future Owner');
+    // No current owner/tenant exists yet on an unclaimed unit.
+    expect(res.body.data.currentOwner).toBeNull();
+    expect(res.body.data.currentTenant).toBeNull();
+  });
+
+  it('invited-but-unclaimed future owner gains NO building-wide access and NO access to a different unit or its history', async () => {
+    const listRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${futureOwner.accessToken}`)
+      .expect(403);
+    expect(listRes.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+
+    const otherUnitRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitYId}`)
+      .set('Authorization', `Bearer ${futureOwner.accessToken}`)
+      .expect(403);
+    expect(otherUnitRes.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+
+    const historyRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitZId}/ownership/history`)
+      .set('Authorization', `Bearer ${futureOwner.accessToken}`)
+      .expect(403);
+    expect(historyRes.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+});

@@ -715,6 +715,119 @@ export class BuildingRepository {
     return !!person?.phone && person.phone === unit.ownerPhone;
   }
 
+  // --- Building Access Refinement Phase 4 (Privacy / Data Visibility) ----
+  //
+  // Batch/single-unit helpers backing `UnitVisibilityPolicy`'s
+  // `UnitPrivacyContext`. Batched versions exist specifically so
+  // `listUnits`/`getBuildingForPerson` (which shape N units per request)
+  // stay N+1-free — one query per helper for the WHOLE unit list, not one
+  // per unit. `CurrentPersonSummary` sources identity from `Person` via
+  // the live current `Ownership`/`Tenancy` row, never from `Unit.owner
+  // FirstName/ownerLastName` — see that type's own doc comment for why.
+
+  /** Every unitId in this building where `personId` currently holds an Ownership row. */
+  async findCurrentOwnedUnitIdsForPerson(buildingId: string, personId: string): Promise<Set<string>> {
+    const rows = await this.prisma.ownership.findMany({
+      where: { personId, isCurrent: true, unit: { buildingId } },
+      select: { unitId: true },
+    });
+    return new Set(rows.map((r) => r.unitId));
+  }
+
+  /** Every unitId in this building where `personId` currently holds a Tenancy row. */
+  async findCurrentTenantUnitIdsForPerson(buildingId: string, personId: string): Promise<Set<string>> {
+    const rows = await this.prisma.tenancy.findMany({
+      where: { personId, isCurrent: true, unit: { buildingId } },
+      select: { unitId: true },
+    });
+    return new Set(rows.map((r) => r.unitId));
+  }
+
+  /** Every unitId in this building that currently has ANY owner at all (batched sibling of `hasCurrentOwnership`) — used to decide invited-candidate eligibility across a whole unit list without one query per unit. */
+  async findUnitIdsWithCurrentOwnership(buildingId: string): Promise<Set<string>> {
+    const rows = await this.prisma.ownership.findMany({
+      where: { isCurrent: true, unit: { buildingId } },
+      select: { unitId: true },
+    });
+    return new Set(rows.map((r) => r.unitId));
+  }
+
+  /** The live current-owner identity for ONE unit, or `null` if it has no current Ownership row yet (e.g. still-pending invite). */
+  async findCurrentOwnerSummaryForUnit(
+    unitId: string,
+  ): Promise<{ personId: string; firstName: string | null; lastName: string | null; phone: string } | null> {
+    const ownership = await this.prisma.ownership.findFirst({
+      where: { unitId, isCurrent: true },
+      select: { personId: true, person: { select: { firstName: true, lastName: true, phone: true } } },
+    });
+    if (!ownership) return null;
+    return {
+      personId: ownership.personId,
+      firstName: ownership.person.firstName,
+      lastName: ownership.person.lastName,
+      phone: ownership.person.phone,
+    };
+  }
+
+  /** The live current-tenant identity for ONE unit, or `null` if it has no current Tenancy row. */
+  async findCurrentTenantSummaryForUnit(
+    unitId: string,
+  ): Promise<{ personId: string; firstName: string | null; lastName: string | null; phone: string } | null> {
+    const tenancy = await this.prisma.tenancy.findFirst({
+      where: { unitId, isCurrent: true },
+      select: { personId: true, person: { select: { firstName: true, lastName: true, phone: true } } },
+    });
+    if (!tenancy) return null;
+    return {
+      personId: tenancy.personId,
+      firstName: tenancy.person.firstName,
+      lastName: tenancy.person.lastName,
+      phone: tenancy.person.phone,
+    };
+  }
+
+  /** Batched sibling of `findCurrentOwnerSummaryForUnit` — one query for every unit in `unitIds`, keyed by unitId. */
+  async findCurrentOwnerSummariesForUnits(
+    unitIds: string[],
+  ): Promise<Map<string, { personId: string; firstName: string | null; lastName: string | null; phone: string }>> {
+    if (unitIds.length === 0) return new Map();
+    const rows = await this.prisma.ownership.findMany({
+      where: { unitId: { in: unitIds }, isCurrent: true },
+      select: {
+        unitId: true,
+        personId: true,
+        person: { select: { firstName: true, lastName: true, phone: true } },
+      },
+    });
+    return new Map(
+      rows.map((r) => [
+        r.unitId,
+        { personId: r.personId, firstName: r.person.firstName, lastName: r.person.lastName, phone: r.person.phone },
+      ]),
+    );
+  }
+
+  /** Batched sibling of `findCurrentTenantSummaryForUnit` — one query for every unit in `unitIds`, keyed by unitId. */
+  async findCurrentTenantSummariesForUnits(
+    unitIds: string[],
+  ): Promise<Map<string, { personId: string; firstName: string | null; lastName: string | null; phone: string }>> {
+    if (unitIds.length === 0) return new Map();
+    const rows = await this.prisma.tenancy.findMany({
+      where: { unitId: { in: unitIds }, isCurrent: true },
+      select: {
+        unitId: true,
+        personId: true,
+        person: { select: { firstName: true, lastName: true, phone: true } },
+      },
+    });
+    return new Map(
+      rows.map((r) => [
+        r.unitId,
+        { personId: r.personId, firstName: r.person.firstName, lastName: r.person.lastName, phone: r.person.phone },
+      ]),
+    );
+  }
+
   listOwnershipHistoryForUnit(unitId: string) {
     return this.prisma.ownership.findMany({
       where: { unitId },

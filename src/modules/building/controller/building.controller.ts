@@ -78,8 +78,8 @@ export class BuildingController {
 
   @Get(':id/units')
   @UseGuards(MembershipGuard)
-  listUnits(@Param('id') id: string) {
-    return this.buildings.listUnits(id);
+  listUnits(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.buildings.listUnits(id, user.sub);
   }
 
   // Building Setup Refinement Phase 3 (Owner Self-Claim) — this route uses
@@ -209,8 +209,15 @@ export class BuildingController {
     return this.buildings.requestMembership(id, user.sub, dto, requestId);
   }
 
+  // Building Access Refinement Phase 4 (Privacy / Data Visibility) — was
+  // `MembershipGuard` only (any current member, any role, could browse
+  // every pending applicant's fullName+phone). Tightened to the same
+  // `@Roles('OWNER','MANAGER')` set `resolveMembershipRequest` below
+  // already requires to decide these requests — nobody without the
+  // ability to act on a request needs to read who's asking.
   @Get(':id/membership-requests')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('OWNER', 'MANAGER')
   listMembershipRequests(@Param('id') id: string) {
     return this.buildings.listMembershipRequests(id);
   }
@@ -293,10 +300,22 @@ export class BuildingController {
 
   // --- Ownership Transfer (10.07.02 — see 21_ADRs > ADR-035) --------------
 
+  // Building Access Refinement Phase 4 (Privacy / Data Visibility) —
+  // `MembershipGuard` still gates "is a member of this BUILDING at all";
+  // the finer "is this specifically this unit's own current Owner/
+  // Tenant, or the building's Manager" check now happens inside
+  // `BuildingService.getOwnershipHistory` via `UnitVisibilityPolicy`
+  // (a different unit's Owner/Tenant, or a BOARD_MEMBER/ACCOUNTANT with
+  // no relation to this unit, gets a 403 from that check, not a redacted
+  // 200).
   @Get(':id/units/:unitId/ownership/history')
   @UseGuards(MembershipGuard)
-  getOwnershipHistory(@Param('id') id: string, @Param('unitId') unitId: string) {
-    return this.buildings.getOwnershipHistory(id, unitId);
+  getOwnershipHistory(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.buildings.getOwnershipHistory(id, unitId, user.sub);
   }
 
   /** Self-service only — see `BuildingService.transferOwnership`'s own comment on why a manager can't call this. */
@@ -314,16 +333,26 @@ export class BuildingController {
 
   // --- Tenancy (10.07.03 — see 21_ADRs > ADR-035) --------------------------
 
+  // Building Access Refinement Phase 4 (Privacy / Data Visibility) — same
+  // unit-scoped tightening as `getOwnershipHistory` above.
   @Get(':id/units/:unitId/tenancy')
   @UseGuards(MembershipGuard)
-  getCurrentTenancy(@Param('id') id: string, @Param('unitId') unitId: string) {
-    return this.buildings.getCurrentTenancy(id, unitId);
+  getCurrentTenancy(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.buildings.getCurrentTenancy(id, unitId, user.sub);
   }
 
   @Get(':id/units/:unitId/tenancy/history')
   @UseGuards(MembershipGuard)
-  getTenancyHistory(@Param('id') id: string, @Param('unitId') unitId: string) {
-    return this.buildings.getTenancyHistory(id, unitId);
+  getTenancyHistory(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.buildings.getTenancyHistory(id, unitId, user.sub);
   }
 
   @Post(':id/units/:unitId/tenancy')

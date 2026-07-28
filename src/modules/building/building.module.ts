@@ -9,6 +9,7 @@ import { ManagerAssignmentPolicy } from './domain/policies/manager-assignment.po
 import { OwnershipTransferPolicy } from './domain/policies/ownership-transfer.policy';
 import { TenancyPolicy } from './domain/policies/tenancy.policy';
 import { OwnershipClaimPolicy } from './domain/policies/ownership-claim.policy';
+import { UnitVisibilityPolicy } from './domain/policies/unit-visibility.policy';
 import { MembershipGuard } from '../../common/guards/membership.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 
@@ -24,6 +25,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
     OwnershipTransferPolicy,
     TenancyPolicy,
     OwnershipClaimPolicy,
+    UnitVisibilityPolicy,
     MembershipGuard,
     RolesGuard,
   ],

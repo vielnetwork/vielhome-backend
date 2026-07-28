@@ -7,6 +7,10 @@ import { ManagerAssignmentPolicy } from '../domain/policies/manager-assignment.p
 import { OwnershipTransferPolicy } from '../domain/policies/ownership-transfer.policy';
 import { TenancyPolicy } from '../domain/policies/tenancy.policy';
 import { OwnershipClaimPolicy } from '../domain/policies/ownership-claim.policy';
+import {
+  UnitVisibilityPolicy,
+  type UnitPrivacyContext,
+} from '../domain/policies/unit-visibility.policy';
 import { CreateUnitDto } from './dto/create-unit.dto';
 import { UpdateUnitDto } from './dto/update-unit.dto';
 import { InviteOwnerDto } from './dto/invite-owner.dto';
@@ -30,6 +34,7 @@ export class BuildingService {
     private readonly ownershipTransferPolicy: OwnershipTransferPolicy,
     private readonly tenancyPolicy: TenancyPolicy,
     private readonly ownershipClaimPolicy: OwnershipClaimPolicy,
+    private readonly unitVisibility: UnitVisibilityPolicy,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
   ) {}
@@ -47,11 +52,77 @@ export class BuildingService {
    * every other method below purely for its 404-if-missing check). Adds
    * `myRoles`, computed at request time from the existing Membership table
    * — no schema column.
+   *
+   * Building Access Refinement Phase 4 (Privacy / Data Visibility) — the
+   * embedded `building.units` array (from `getById`'s own `include:
+   * { units: true }`) is the SAME raw-Unit leak `listUnits` had, just
+   * reachable through a different route; `shapeUnitsForCaller` below
+   * redacts it identically before it's returned here.
    */
   async getBuildingForPerson(buildingId: string, personId: string) {
     const building = await this.getById(buildingId);
     const myRoles = await this.buildings.getRoles(personId, buildingId);
-    return { ...building, myRoles };
+    const units = await this.shapeUnitsForCaller(building.units, buildingId, personId, myRoles);
+    return { ...building, units, myRoles };
+  }
+
+  /**
+   * Building Access Refinement Phase 4 (Privacy / Data Visibility) —
+   * shared by `getBuildingForPerson` (embedded `building.units`) and
+   * `listUnits` below, so both surfaces redact identically from one
+   * implementation rather than two. Batched (one query per helper for the
+   * WHOLE `units` array, not one per unit) — see each `BuildingRepository`
+   * method's own doc comment.
+   */
+  private async shapeUnitsForCaller(
+    units: Array<Record<string, unknown> & { id: string; ownerPhone: string | null }>,
+    buildingId: string,
+    personId: string,
+    roles: string[],
+  ) {
+    const [ownedUnitIds, tenantUnitIds, unitIdsWithOwnership, caller] = await Promise.all([
+      this.buildings.findCurrentOwnedUnitIdsForPerson(buildingId, personId),
+      this.buildings.findCurrentTenantUnitIdsForPerson(buildingId, personId),
+      this.buildings.findUnitIdsWithCurrentOwnership(buildingId),
+      this.buildings.findPersonById(personId),
+    ]);
+
+    const unitIds = units.map((u) => u.id);
+    const [currentOwners, currentTenants] = await Promise.all([
+      this.buildings.findCurrentOwnerSummariesForUnits(unitIds),
+      this.buildings.findCurrentTenantSummariesForUnits(unitIds),
+    ]);
+
+    const isManager = roles.includes('MANAGER');
+
+    return units.map((unit) => {
+      const isCurrentOwnerOfUnit = ownedUnitIds.has(unit.id);
+      const isCurrentTenantOfUnit = tenantUnitIds.has(unit.id);
+      // Same eligibility rule `canClaimOwnership`/`OwnershipClaimPolicy.
+      // assertEligible` use, batched: no current owner yet, and the
+      // unit's pending `ownerPhone` matches the caller's own
+      // server-verified phone.
+      const isInvitedOwnerCandidate =
+        !isCurrentOwnerOfUnit &&
+        !unitIdsWithOwnership.has(unit.id) &&
+        !!unit.ownerPhone &&
+        !!caller?.phone &&
+        unit.ownerPhone === caller.phone;
+
+      const ctx: UnitPrivacyContext = {
+        isManager,
+        isCurrentOwnerOfUnit,
+        isCurrentTenantOfUnit,
+        isInvitedOwnerCandidate,
+      };
+
+      return this.unitVisibility.shapeUnit(
+        unit,
+        ctx,
+        currentOwners.get(unit.id) ?? null,
+        currentTenants.get(unit.id) ?? null,
+      );
+    });
   }
 
   listForPerson(personId: string) {
@@ -146,8 +217,20 @@ export class BuildingService {
     return unit;
   }
 
-  listUnits(buildingId: string) {
-    return this.buildings.listUnits(buildingId);
+  /**
+   * Building Access Refinement Phase 4 (Privacy / Data Visibility) — was a
+   * raw passthrough of `BuildingRepository.listUnits` (every unit's
+   * pending-owner identity fields, leaked to any current building
+   * member regardless of role/unit). Now routes through the same
+   * `shapeUnitsForCaller` helper `getBuildingForPerson` uses, so both
+   * surfaces redact identically.
+   */
+  async listUnits(buildingId: string, personId: string) {
+    const [units, roles] = await Promise.all([
+      this.buildings.listUnits(buildingId),
+      this.buildings.getRoles(personId, buildingId),
+    ]);
+    return this.shapeUnitsForCaller(units, buildingId, personId, roles);
   }
 
   private async getOwnUnit(buildingId: string, unitId: string) {
@@ -178,12 +261,16 @@ export class BuildingService {
    */
   async getUnitForPerson(buildingId: string, unitId: string, personId: string) {
     const unit = await this.getOwnUnit(buildingId, unitId);
-    const [isCurrentOwner, currentTenancy, hasCurrentOwnership, caller] = await Promise.all([
-      this.buildings.isCurrentOwnerOfUnit(unitId, personId),
-      this.buildings.findCurrentTenancyForUnit(unitId),
-      this.buildings.hasCurrentOwnership(unitId),
-      this.buildings.findPersonById(personId),
-    ]);
+    const [isCurrentOwner, currentTenancy, hasCurrentOwnership, caller, roles, currentOwnerSummary, currentTenantSummary] =
+      await Promise.all([
+        this.buildings.isCurrentOwnerOfUnit(unitId, personId),
+        this.buildings.findCurrentTenancyForUnit(unitId),
+        this.buildings.hasCurrentOwnership(unitId),
+        this.buildings.findPersonById(personId),
+        this.buildings.getRoles(personId, buildingId),
+        this.buildings.findCurrentOwnerSummaryForUnit(unitId),
+        this.buildings.findCurrentTenantSummaryForUnit(unitId),
+      ]);
 
     const isCurrentTenant = currentTenancy?.personId === personId;
     const canClaimOwnership =
@@ -193,7 +280,21 @@ export class BuildingService {
       !!caller?.phone &&
       unit.ownerPhone === caller.phone;
 
-    return { ...unit, isCurrentOwner, isCurrentTenant, canClaimOwnership };
+    // Building Access Refinement Phase 4 (Privacy / Data Visibility) —
+    // `canClaimOwnership` doubles as `isInvitedOwnerCandidate`: both mean
+    // exactly "no current Ownership yet, and Unit.ownerPhone matches the
+    // caller's own verified phone" (the same rule `UnitDetailAccessGuard`
+    // itself enforces to let this caller reach this unit at all when
+    // they're not yet a building member).
+    const ctx: UnitPrivacyContext = {
+      isManager: roles.includes('MANAGER'),
+      isCurrentOwnerOfUnit: isCurrentOwner,
+      isCurrentTenantOfUnit: isCurrentTenant,
+      isInvitedOwnerCandidate: canClaimOwnership,
+    };
+
+    const shaped = this.unitVisibility.shapeUnit(unit, ctx, currentOwnerSummary, currentTenantSummary);
+    return { ...shaped, isCurrentOwner, isCurrentTenant, canClaimOwnership };
   }
 
   /**
@@ -530,9 +631,42 @@ export class BuildingService {
 
   // --- Ownership Transfer (10.07.02 — see 21_ADRs > ADR-035) ---------------
 
-  async getOwnershipHistory(buildingId: string, unitId: string) {
+  /**
+   * Building Access Refinement Phase 4 (Privacy / Data Visibility) —
+   * shared unit-scoped history-access context: MANAGER, or this specific
+   * unit's own current Owner/Tenant, may reach the ownership/tenancy
+   * history endpoints and the single current-tenancy read; anyone else
+   * (an unrelated OWNER/TENANT of a different unit, or a BOARD_MEMBER/
+   * ACCOUNTANT with no unit-specific relationship) is denied outright by
+   * `UnitVisibilityPolicy.assertCanAccessUnitHistory`. `isInvitedOwner
+   * Candidate` is irrelevant to history access (an unclaimed unit's
+   * invited-but-not-yet-claimed owner must NOT gain ownership/tenancy
+   * history per the Phase 4 decision) so it's always `false` here.
+   */
+  private async buildHistoryAccessContext(
+    buildingId: string,
+    unitId: string,
+    personId: string,
+  ): Promise<UnitPrivacyContext> {
+    const [roles, isCurrentOwnerOfUnit, currentTenancy] = await Promise.all([
+      this.buildings.getRoles(personId, buildingId),
+      this.buildings.isCurrentOwnerOfUnit(unitId, personId),
+      this.buildings.findCurrentTenancyForUnit(unitId),
+    ]);
+    return {
+      isManager: roles.includes('MANAGER'),
+      isCurrentOwnerOfUnit,
+      isCurrentTenantOfUnit: currentTenancy?.personId === personId,
+      isInvitedOwnerCandidate: false,
+    };
+  }
+
+  async getOwnershipHistory(buildingId: string, unitId: string, personId: string) {
     await this.getOwnUnit(buildingId, unitId); // 404s if the unit/building don't match
-    return this.buildings.listOwnershipHistoryForUnit(unitId);
+    const ctx = await this.buildHistoryAccessContext(buildingId, unitId, personId);
+    this.unitVisibility.assertCanAccessUnitHistory(ctx);
+    const history = await this.buildings.listOwnershipHistoryForUnit(unitId);
+    return history.map((entry) => this.unitVisibility.shapeHistoryEntry(entry, ctx, personId));
   }
 
   /**
@@ -578,14 +712,30 @@ export class BuildingService {
 
   // --- Tenancy (10.07.03 — see 21_ADRs > ADR-035) ---------------------------
 
-  async getCurrentTenancy(buildingId: string, unitId: string) {
+  async getCurrentTenancy(buildingId: string, unitId: string, personId: string) {
     await this.getOwnUnit(buildingId, unitId); // 404s if the unit/building don't match
-    return this.buildings.findCurrentTenancyForUnit(unitId);
+    const [roles, isCurrentOwnerOfUnit, tenancy] = await Promise.all([
+      this.buildings.getRoles(personId, buildingId),
+      this.buildings.isCurrentOwnerOfUnit(unitId, personId),
+      this.buildings.findCurrentTenancyForUnit(unitId),
+    ]);
+    const ctx: UnitPrivacyContext = {
+      isManager: roles.includes('MANAGER'),
+      isCurrentOwnerOfUnit,
+      isCurrentTenantOfUnit: tenancy?.personId === personId,
+      isInvitedOwnerCandidate: false,
+    };
+    this.unitVisibility.assertCanAccessUnitHistory(ctx);
+    if (!tenancy) return null;
+    return this.unitVisibility.shapeHistoryEntry(tenancy, ctx, personId);
   }
 
-  async getTenancyHistory(buildingId: string, unitId: string) {
+  async getTenancyHistory(buildingId: string, unitId: string, personId: string) {
     await this.getOwnUnit(buildingId, unitId); // 404s if the unit/building don't match
-    return this.buildings.listTenanciesForUnit(unitId);
+    const ctx = await this.buildHistoryAccessContext(buildingId, unitId, personId);
+    this.unitVisibility.assertCanAccessUnitHistory(ctx);
+    const history = await this.buildings.listTenanciesForUnit(unitId);
+    return history.map((entry) => this.unitVisibility.shapeHistoryEntry(entry, ctx, personId));
   }
 
   private async assertManagesUnit(
