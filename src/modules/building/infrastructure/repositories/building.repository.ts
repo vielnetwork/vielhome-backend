@@ -153,7 +153,17 @@ export class BuildingRepository {
         ownerPhone: phone,
         ownerships: { none: { isCurrent: true } },
       },
-      select: { id: true, buildingId: true, ownerFullName: true },
+      // `ownerFirstName`/`ownerLastName` added alongside the pre-existing
+      // `ownerFullName` (Members Lookup Hardening, Phase 4B follow-up) so
+      // `BuildingService.linkOwnerAccountByPhone` can pass the STRUCTURED
+      // pending-invite name through to `linkOwnerToUnit`'s own
+      // `pendingOwnerFirstName`/`pendingOwnerLastName` params, exactly the
+      // way `claimOwnership` already does — see that method's own call
+      // site. Previously this only selected `ownerFullName`, which the
+      // caller never even used, leaving an auto-linked owner's
+      // `Person.firstName`/`lastName` permanently null even when the
+      // invite carried a real structured name (`invite-owner/v2`).
+      select: { id: true, buildingId: true, ownerFirstName: true, ownerLastName: true },
     });
   }
 
@@ -420,26 +430,50 @@ export class BuildingRepository {
   }
 
   /**
-   * Mobile Governance UI catch-up (21_ADRs > ADR-092) — resolves a phone
-   * number to a CURRENT member of this specific building, so the Grant
-   * Vote Proxy screen can offer the same phone-based selection UX Transfer
-   * Ownership already established (`TransferOwnershipDto.newOwnerPhone`),
-   * rather than requiring a resident to type another member's raw
-   * `personId` (`GrantVoteProxyDto.proxyPersonId` — ADR-089 Alternative
-   * F). `Person.phone` is globally unique, so at most one Membership row
-   * can match; returns `null` (a normal "no such member," not an error)
-   * if nobody with that phone currently belongs to this building.
+   * Governance / Standing Proxy Voting (21_ADRs > ADR-089, Members Lookup
+   * Hardening) — resolves a phone number to a CURRENT member of this
+   * specific building, so `VoteProxyService.lookupCandidateByPhone` can
+   * offer the same phone-based selection UX Transfer Ownership already
+   * established (`TransferOwnershipDto.newOwnerPhone`), rather than
+   * requiring a resident to type another member's raw `personId`
+   * (`GrantVoteProxyDto.proxyPersonId` — ADR-089 Alternative F).
+   * `Person.phone` is globally unique, so at most one Membership row can
+   * match; returns `null` (a normal "no such member," not an error) if
+   * nobody with that phone currently belongs to this building.
+   *
+   * Members Lookup Hardening (Phase 4B): this used to also back a generic
+   * `BuildingController` `GET :id/members/lookup` route reachable by any
+   * current member of any role, returning `role` alongside `fullName` —
+   * that route is now removed (its only real consumer was Vote Proxy);
+   * the selection here was narrowed to `firstName`/`lastName`/`fullName`
+   * (dropping `role`, which no remaining caller needs) so
+   * `VoteProxyService` can compute a minimal `displayName` without
+   * over-fetching membership metadata this method's sole caller has no
+   * use for.
    */
   async findMemberByPhone(
     buildingId: string,
     phone: string,
-  ): Promise<{ personId: string; fullName: string | null; role: MembershipRole } | null> {
+  ): Promise<{
+    personId: string;
+    firstName: string | null;
+    lastName: string | null;
+    fullName: string | null;
+  } | null> {
     const membership = await this.prisma.membership.findFirst({
       where: { buildingId, isCurrent: true, person: { phone } },
-      select: { personId: true, role: true, person: { select: { fullName: true } } },
+      select: {
+        personId: true,
+        person: { select: { firstName: true, lastName: true, fullName: true } },
+      },
     });
     if (!membership) return null;
-    return { personId: membership.personId, fullName: membership.person.fullName, role: membership.role };
+    return {
+      personId: membership.personId,
+      firstName: membership.person.firstName,
+      lastName: membership.person.lastName,
+      fullName: membership.person.fullName,
+    };
   }
 
   // --- Notification recipient resolution (21_ADRs > ADR-027) --------------

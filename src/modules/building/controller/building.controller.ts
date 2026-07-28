@@ -15,7 +15,6 @@ import { TransferOwnershipDto } from '../application/dto/transfer-ownership.dto'
 import { CreateTenancyDto } from '../application/dto/create-tenancy.dto';
 import { EndTenancyDto } from '../application/dto/end-tenancy.dto';
 import { UpdateBuildingSettingsDto } from '../application/dto/update-building-settings.dto';
-import { LookupMemberQueryDto } from '../application/dto/lookup-member.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
 import { UnitDetailAccessGuard } from '../../../common/guards/unit-detail-access.guard';
@@ -429,19 +428,16 @@ export class BuildingController {
     return this.buildings.updateSettings(id, dto, user.sub, requestId);
   }
 
-  // --- Mobile Governance UI catch-up (21_ADRs > ADR-092) -------------------
-  //
-  // Phone-based member lookup, scoped to this building — see
-  // `BuildingService.lookupMemberByPhone`'s own doc comment for why this
-  // exists (resolving `GrantVoteProxyDto.proxyPersonId` from a phone
-  // number, the same way Transfer Ownership's `newOwnerPhone` already
-  // works, since no other endpoint lets a resident find another member's
-  // raw personId). Must stay ABOVE `:id` is not a concern here (nested
-  // under `:id/members/lookup`, not a bare top-level path the way the
-  // Address step's own `lookup` route needed protecting).
-  @Get(':id/members/lookup')
-  @UseGuards(MembershipGuard)
-  lookupMemberByPhone(@Param('id') id: string, @Query() query: LookupMemberQueryDto) {
-    return this.buildings.lookupMemberByPhone(id, query.phone);
-  }
+  // Members Lookup Hardening (Phase 4B) — the generic `GET :id/members/
+  // lookup` route that used to live here was removed: it let any current
+  // member of any role resolve any other member's identity (fullName,
+  // role, personId) building-wide by phone, with no Manager use-case ever
+  // built against it (confirmed by full grep before removal — its only
+  // real consumer was the Vote Proxy phone-lookup flow). Replaced by a
+  // purpose-specific, unit-scoped, eligibility-gated equivalent:
+  // `POST :id/units/:unitId/vote-proxy/lookup` on `VotingController`
+  // (`VoteProxyService.lookupCandidateByPhone`). `BuildingRepository
+  // .findMemberByPhone` itself was kept — Governance still calls it
+  // directly — only this controller's route and `BuildingService`'s
+  // unrestricted wrapper around it were removed.
 }

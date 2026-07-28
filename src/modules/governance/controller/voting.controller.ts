@@ -7,6 +7,7 @@ import { CreateVoteDto } from '../application/dto/create-vote.dto';
 import { CastBallotDto } from '../application/dto/cast-ballot.dto';
 import { CancelVoteDto } from '../application/dto/cancel-vote.dto';
 import { GrantVoteProxyDto } from '../application/dto/grant-vote-proxy.dto';
+import { LookupVoteProxyCandidateDto } from '../application/dto/lookup-vote-proxy-candidate.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
 import { VerifiedRolesGuard } from '../../../common/guards/verified-roles.guard';
@@ -143,6 +144,24 @@ export class VotingController {
   @UseGuards(MembershipGuard)
   getCurrentProxy(@Param('id') id: string, @Param('unitId') unitId: string) {
     return this.voteProxies.getCurrent(id, unitId);
+  }
+
+  // Members Lookup Hardening (Phase 4B) — replaces the removed generic
+  // `BuildingController` `GET :id/members/lookup` route. `MembershipGuard`
+  // here is only the outer "is a current member at all" gate, same as
+  // every other route on this controller; the real, unit-specific
+  // authorization (only THIS unit's live eligible voter may look up a
+  // candidate) happens inside `VoteProxyService.lookupCandidateByPhone`
+  // itself, same posture `grant`/`revoke` below already establish.
+  @Post(':id/units/:unitId/vote-proxy/lookup')
+  @UseGuards(MembershipGuard)
+  lookupProxyCandidate(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: LookupVoteProxyCandidateDto,
+  ) {
+    return this.voteProxies.lookupCandidateByPhone(id, unitId, dto.phone, user.sub);
   }
 
   @Post(':id/units/:unitId/vote-proxy')

@@ -154,6 +154,21 @@ export class BuildingService {
    * building's dashboard instead of the empty-state "register a building"
    * wizard. Safe to call every login — findUnlinkedOwnerUnitsByPhone only
    * ever returns units that aren't linked yet.
+   *
+   * Members Lookup Hardening (Phase 4B follow-up) — now passes the pending
+   * invite's structured `ownerFirstName`/`ownerLastName` through to
+   * `linkOwnerToUnit`'s own `pendingOwnerFirstName`/`pendingOwnerLastName`
+   * params, exactly the way `claimOwnership` already does for the Owner
+   * Self-Claim path. Previously this never passed them at all, so an
+   * owner who only ever auto-linked via OTP verify (never self-claimed)
+   * kept a permanently-null `Person.firstName`/`lastName` even after a
+   * real `invite-owner/v2` invite — a pre-existing gap between these two
+   * owner-linking paths, not something this phase's own vote-proxy
+   * display-name work introduced, but surfaced by it (nothing previously
+   * read an auto-linked owner's name back in an assertion). Safe by
+   * construction: `fillMissingPersonName` (called inside `linkOwnerToUnit`)
+   * only ever fills a currently-null field, never overwrites a name the
+   * person already set themselves.
    */
   async linkOwnerAccountByPhone(
     personId: string,
@@ -168,6 +183,8 @@ export class BuildingService {
         unitId: unit.id,
         buildingId: unit.buildingId,
         personId,
+        pendingOwnerFirstName: unit.ownerFirstName,
+        pendingOwnerLastName: unit.ownerLastName,
       });
       linkedBuildingIds.push(unit.buildingId);
 
@@ -958,20 +975,11 @@ export class BuildingService {
     return updated;
   }
 
-  /**
-   * Mobile Governance UI catch-up (21_ADRs > ADR-092) — any current member
-   * may look up a fellow member by phone, scoped to THIS building only
-   * (`BuildingRepository.findMemberByPhone`'s own `buildingId` filter).
-   * Exists specifically so the Grant Vote Proxy screen can resolve a phone
-   * number to the `personId` `GrantVoteProxyDto` requires, without a
-   * resident needing to know it directly — see that repository method's
-   * own doc comment. Returns `null` (not a 404) when nobody with that
-   * phone currently belongs to this building, mirroring
-   * `BuildingSetupService.lookupPostalCode`'s own "not found is a normal
-   * result, not an error" shape.
-   */
-  async lookupMemberByPhone(buildingId: string, phone: string) {
-    await this.getById(buildingId); // 404s if the building doesn't exist
-    return this.buildings.findMemberByPhone(buildingId, phone);
-  }
+  // Members Lookup Hardening (Phase 4B) — `lookupMemberByPhone` (the
+  // unrestricted wrapper this generic route used) was removed along with
+  // `BuildingController`'s `GET :id/members/lookup` route itself; see
+  // that controller's own comment. `BuildingRepository.findMemberByPhone`
+  // stays — `VoteProxyService.lookupCandidateByPhone` (Governance) now
+  // calls it directly, with its own unit-scoped eligibility gate in
+  // front of it instead of this building-wide, any-role wrapper.
 }

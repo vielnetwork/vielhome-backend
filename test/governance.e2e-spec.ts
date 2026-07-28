@@ -86,6 +86,18 @@ function nextPostalCode(): string {
   return `${RUN_ID}${postalCodeCounter.toString().padStart(5, '0')}`;
 }
 
+// Members Lookup Hardening (Phase 4B) — mirrors `building.e2e-spec.ts`'s
+// own identical helper verbatim (duplicated rather than imported: each e2e
+// file boots its own fresh `INestApplication`/Prisma connection and
+// intentionally shares no runtime module graph, per this file's own header
+// comment). Used by the new Vote Proxy lookup describe below to migrate
+// that describe's own Persian-digit phone normalization coverage.
+const PERSIAN_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+
+function toPersianDigits(asciiDigits: string): string {
+  return asciiDigits.replace(/[0-9]/g, (d) => PERSIAN_DIGITS[Number(d)]);
+}
+
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
   const moduleFixture: TestingModule = await Test.createTestingModule({
     imports: [AppModule],
@@ -185,6 +197,17 @@ async function deleteBuildingsOnceBatch(
   prisma: PrismaService,
   buildingIds: string[],
 ): Promise<void> {
+  // Members Lookup Hardening (Phase 4B) — `VoteProxy` carries required FKs
+  // to both `Unit` (`vote_proxies_unitId_fkey`) and `Building`, and (like
+  // every other table in this function) has no `onDelete` directive in
+  // `schema.prisma`, so it defaults to RESTRICT. No prior Governance ADR
+  // ever exercised Vote Proxy end-to-end (this file's own top-of-document
+  // comment), so this table was never actually populated by an e2e run
+  // before the Vote Proxy Lookup Hardening describe below — the gap
+  // existed from ADR-089 itself, just never triggered. Deleted first,
+  // alongside the other Governance tables, since it must precede both
+  // `Unit` and `Building` deletion further down.
+  await prisma.voteProxy.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.ballot.deleteMany({ where: { vote: { buildingId: { in: buildingIds } } } });
   await prisma.voteEligibilitySnapshot.deleteMany({
     where: { vote: { buildingId: { in: buildingIds } } },
@@ -355,19 +378,40 @@ async function joinBuildingAsApprovedMember(
 /** Establishes a real unit owner on `unitId` via invite + auto-link on OTP
  * verify — the exact same real, already-shipped path `building.e2e-
  * spec.ts`'s own Ownership Transfer describe exercises, reused here rather
- * than a direct Prisma shortcut. */
+ * than a direct Prisma shortcut.
+ *
+ * `structuredName` is optional and additive: every existing call site
+ * (Voting Lifecycle, Manager Election, Meetings via
+ * `establishVerifiedManagerBuilding`) keeps using the legacy
+ * `POST .../invite-owner` (`ownerFullName` only) exactly as before when
+ * omitted. When provided, invites via `POST .../invite-owner/v2` instead
+ * (`ownerFirstName`/`ownerLastName`) so the resulting Person's structured
+ * name is actually populated on auto-link — needed by the Vote Proxy
+ * lookup describe below, whose `displayName` assertion requires a real,
+ * non-null name (see `BuildingService.linkOwnerAccountByPhone`'s own
+ * updated doc comment for why the legacy path alone leaves both
+ * `firstName`/`lastName` null). */
 async function establishRealOwner(
   app: INestApplication,
   buildingId: string,
   unitId: string,
   inviterAccessToken: string,
+  structuredName?: { ownerFirstName: string; ownerLastName: string },
 ): Promise<RegisteredPerson> {
   const ownerPhone = nextPhone();
-  await request(app.getHttpServer())
-    .post(`/api/v1/buildings/${buildingId}/units/${unitId}/invite-owner`)
-    .set('Authorization', `Bearer ${inviterAccessToken}`)
-    .send({ ownerFullName: 'e2e Owner', ownerPhone })
-    .expect(201);
+  if (structuredName) {
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/invite-owner/v2`)
+      .set('Authorization', `Bearer ${inviterAccessToken}`)
+      .send({ ...structuredName, ownerPhone })
+      .expect(201);
+  } else {
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/invite-owner`)
+      .set('Authorization', `Bearer ${inviterAccessToken}`)
+      .send({ ownerFullName: 'e2e Owner', ownerPhone })
+      .expect(201);
+  }
 
   const code = await requestOtpAndCaptureCode(app, ownerPhone);
   const res = await verifyOtp(app, { phone: ownerPhone, code }).expect(200);
@@ -1031,5 +1075,229 @@ describe('Governance (e2e) — Meetings (04.06 Rules 11-13/20 — ADR-049)', () 
       .expect(422);
 
     expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+});
+
+describe('Governance (e2e) — Standing Proxy Voting: Vote Proxy Lookup Hardening (21_ADRs > ADR-089, Members Lookup Hardening Phase 4B)', () => {
+  // Budget: 4 calls to POST /auth/otp/request (establishVerifiedManagerBuilding's
+  // own founder+owner [2] + a second unit's real owner via establishRealOwner
+  // [1] + an outsider who never joins this building [1]). Kept intentionally
+  // tight — this describe's own fresh Nest app gets its own fresh in-memory
+  // `ThrottlerStorageService` (confirmed from the installed
+  // @nestjs/throttler source: `this._storage = new Map()` in the
+  // constructor, not a module-level singleton, so no cross-describe/
+  // cross-file leakage is possible), but `@Throttle({limit:5, ttl:60_000})`
+  // on `POST /auth/otp/request` still applies WITHIN this one describe —
+  // an earlier round of this file registered 3 more people here (a
+  // TENANT/BOARD_MEMBER/ACCOUNTANT fixture, purely to probe the removed
+  // route's 404) and tripped it. Removed: the routing-level 404 below is
+  // proven role- and auth-agnostic instead (see that test's own comment),
+  // so those registrations were unnecessary, not just expensive.
+  //
+  // Vote Proxy itself (grant/revoke/getCurrent) had zero e2e coverage before
+  // this describe — no prior Governance ADR added one (this file's own
+  // top-of-document comment) — so the "grants a proxy" test below is this
+  // domain's first real end-to-end exercise of `VoteProxyService.grant`, not
+  // just this phase's own new lookup route.
+  //
+  // `POST :id/units/:unitId/vote-proxy/lookup` replaces the removed generic
+  // `BuildingController` `GET :id/members/lookup` route (see that
+  // controller's own comment) — this describe also proves the old path is
+  // actually gone.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let founder: RegisteredPerson; // VERIFIED MANAGER
+  let ownerA: RegisteredPerson; // sole current Owner of unitIds[0] — its live eligible voter
+  let ownerB: RegisteredPerson; // sole current Owner of unitIds[1] — a valid, distinct proxy candidate
+  let outsider: RegisteredPerson; // registered, but never joins this building
+  let buildingId: string;
+  let unitIds: string[];
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    ({ founder, owner: ownerA, buildingId, unitIds } = await establishVerifiedManagerBuilding(
+      app,
+      prisma,
+      2,
+    ));
+    createdPhones.push(founder.phone, ownerA.phone);
+    createdBuildingIds.push(buildingId);
+
+    // Invited via `invite-owner/v2` (structured name), not the legacy
+    // `ownerFullName`-only path `establishVerifiedManagerBuilding` uses
+    // for `ownerA` — needed so `Person.firstName`/`lastName` actually get
+    // populated on auto-link (`BuildingService.linkOwnerAccountByPhone`'s
+    // own updated doc comment) and `buildDisplayName` has real structured
+    // data to work with, not just the deprecated, never-written
+    // `fullName` fallback.
+    ownerB = await establishRealOwner(app, buildingId, unitIds[1], founder.accessToken, {
+      ownerFirstName: 'Vote',
+      ownerLastName: 'ProxyCandidate',
+    });
+    createdPhones.push(ownerB.phone);
+
+    outsider = await registerPerson(app);
+    createdPhones.push(outsider.phone);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  const lookupPath = (unitId: string) =>
+    `/api/v1/buildings/${buildingId}/units/${unitId}/vote-proxy/lookup`;
+
+  it("rejects a caller who is not the unit's live eligible voter, before revealing any candidate identity", async () => {
+    // founder is a VERIFIED MANAGER but neither owner nor tenant of
+    // unitIds[0] — ownerA is that unit's sole current owner and its only
+    // live eligible voter, so founder must be denied outright.
+    const res = await request(app.getHttpServer())
+      .post(lookupPath(unitIds[0]))
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send({ phone: ownerB.phone })
+      .expect(403);
+
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+
+  it("resolves an eligible candidate for the unit's live eligible voter, with a minimal response shape and a usable displayName", async () => {
+    const res = await request(app.getHttpServer())
+      .post(lookupPath(unitIds[0]))
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ phone: ownerB.phone })
+      .expect(201);
+
+    expect(res.body.data.personId).toBe(ownerB.personId);
+    // Structured name ('Vote' / 'ProxyCandidate') was set on THIS person
+    // via invite-owner/v2 + auto-link above, so this is a real, non-empty
+    // name — not just proving the field is present but null/empty.
+    expect(res.body.data.displayName).toBe('Vote ProxyCandidate');
+    // Exactly `personId` + `displayName` — no `phone`, `role`, `fullName`,
+    // `firstName`, or `lastName` anywhere in the payload.
+    expect(Object.keys(res.body.data).sort()).toEqual(['displayName', 'personId']);
+  });
+
+  it('does not leak identity for a phone that belongs to nobody currently in this building', async () => {
+    const res = await request(app.getHttpServer())
+      .post(lookupPath(unitIds[0]))
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ phone: outsider.phone })
+      .expect(201);
+
+    expect(res.body.data).toBeNull();
+  });
+
+  it('rejects a self-lookup', async () => {
+    const res = await request(app.getHttpServer())
+      .post(lookupPath(unitIds[0]))
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ phone: ownerA.phone })
+      .expect(422);
+
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('rejects a malformed phone with 400 VALIDATION_ERROR instead of a silent not-found', async () => {
+    const res = await request(app.getHttpServer())
+      .post(lookupPath(unitIds[0]))
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ phone: '0912abc1234567' })
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  it('resolves a Persian-digit phone to the matching candidate (migrated from the removed members/lookup coverage)', async () => {
+    const persianOwnerBPhone = toPersianDigits(ownerB.phone.replace('+98', '0'));
+
+    const res = await request(app.getHttpServer())
+      .post(lookupPath(unitIds[0]))
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ phone: persianOwnerBPhone })
+      .expect(201);
+
+    expect(res.body.data.personId).toBe(ownerB.personId);
+  });
+
+  it('creates no VoteProxy row from a lookup alone', async () => {
+    await request(app.getHttpServer())
+      .post(lookupPath(unitIds[0]))
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ phone: ownerB.phone })
+      .expect(201);
+
+    const proxy = await prisma.voteProxy.findFirst({ where: { unitId: unitIds[0] } });
+    expect(proxy).toBeNull();
+  });
+
+  it('old generic members/lookup route no longer exists (404) for a real current member', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/members/lookup`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .query({ phone: ownerB.phone })
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/members/lookup`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .query({ phone: ownerB.phone })
+      .expect(404);
+  });
+
+  it('old generic members/lookup route no longer exists (404) regardless of role or authentication — it is a routing-level removal, not a re-guard', async () => {
+    // NestJS matches the route BEFORE any guard runs — an unmatched path
+    // 404s at the framework level for every caller equally, authenticated
+    // or not, of any role. Proving it with NO Authorization header at all
+    // is therefore a STRICTLY STRONGER guarantee than repeating the same
+    // check per role (TENANT/BOARD_MEMBER/ACCOUNTANT/...): if an entirely
+    // unauthenticated request can't reach it, no authenticated caller of
+    // any role could either, since auth is checked later in the pipeline
+    // than routing. This replaces an earlier version of this test that
+    // registered 3 brand-new people (one per role) just to re-prove the
+    // same routing fact three times over — unnecessary OTP load for a
+    // property that's inherently role-independent (see this describe's
+    // own budget comment).
+    await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/members/lookup`)
+      .query({ phone: ownerB.phone })
+      .expect(404);
+  });
+
+  it('grants a proxy using the personId resolved by lookup, and grant still independently revalidates eligibility', async () => {
+    const lookupRes = await request(app.getHttpServer())
+      .post(lookupPath(unitIds[0]))
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ phone: ownerB.phone })
+      .expect(201);
+    const proxyPersonId = lookupRes.body.data.personId;
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitIds[0]}/vote-proxy`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ proxyPersonId })
+      .expect(201);
+
+    const current = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitIds[0]}/vote-proxy`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .expect(200);
+    expect(current.body.data.proxyPersonId).toBe(proxyPersonId);
+
+    // Lookup is convenience only, never the final security boundary: a
+    // caller who bypasses it entirely and posts a non-member personId
+    // straight to `grant` is still rejected by `VoteProxyPolicy
+    // .assertProxyIsMember`, proving `grant` re-derives and re-asserts
+    // eligibility itself rather than trusting whatever lookup returned.
+    const rejected = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitIds[0]}/vote-proxy`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ proxyPersonId: outsider.personId })
+      .expect(422);
+    expect(rejected.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
 });

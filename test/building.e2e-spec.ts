@@ -712,17 +712,23 @@ describe('Building (e2e) — Ownership Transfer (21_ADRs > ADR-035)', () => {
   });
 });
 
-describe('Building (e2e) — Phone Number Input & Normalization (Invite Owner / Ownership Transfer / Members Lookup)', () => {
+describe('Building (e2e) — Phone Number Input & Normalization (Invite Owner / Ownership Transfer)', () => {
   // Budget: 3 calls to POST /auth/otp/request (founder + local-form invited
   // owner's own verify + Persian-digit-form transferred owner's own verify).
-  // The `members/lookup` assertions make no `otp/request` calls of their own.
   //
-  // These tests prove the same normalization guarantee at three different
+  // These tests prove the same normalization guarantee at two different
   // phone-bearing Building endpoints: `invite-owner` (sets
-  // `Unit.ownerPhone`), `ownership/transfer` (repoints `Unit.ownerPhone`),
-  // and `members/lookup` (reads back by phone via the new
-  // `LookupMemberQueryDto`). Each accepts a non-canonical input form and
-  // asserts the value actually persisted/matched is canonical `+989...`.
+  // `Unit.ownerPhone`) and `ownership/transfer` (repoints `Unit.ownerPhone`).
+  // Each accepts a non-canonical input form and asserts the value actually
+  // persisted/matched is canonical `+989...`.
+  //
+  // Members Lookup Hardening (Phase 4B) — this describe used to also cover
+  // `members/lookup`'s own Persian-digit normalization and malformed-phone
+  // rejection; that route is now removed (see `BuildingController`'s own
+  // comment) and its coverage migrated to `test/governance.e2e-spec.ts`'s
+  // new `POST :id/units/:unitId/vote-proxy/lookup` describe, which exercises
+  // the same `IsIranianMobilePhone`/`ValidationPipe` boundary on its
+  // purpose-specific replacement.
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
@@ -806,27 +812,6 @@ describe('Building (e2e) — Phone Number Input & Normalization (Invite Owner / 
     expect(unitAfter?.ownerPhone).toBe(canonical);
   });
 
-  it('members/lookup resolves a Persian-digit query to the matching member (proves whole-object @Query() DTO transform works)', async () => {
-    const persianFounderPhone = toPersianDigits(founder.phone.replace('+98', '0'));
-
-    const res = await request(app.getHttpServer())
-      .get(`/api/v1/buildings/${buildingId}/members/lookup`)
-      .set('Authorization', `Bearer ${founder.accessToken}`)
-      .query({ phone: persianFounderPhone })
-      .expect(200);
-
-    expect(res.body.data.personId).toBe(founder.personId);
-  });
-
-  it('members/lookup rejects a malformed phone with 400 VALIDATION_ERROR instead of a silent not-found', async () => {
-    const res = await request(app.getHttpServer())
-      .get(`/api/v1/buildings/${buildingId}/members/lookup`)
-      .set('Authorization', `Bearer ${founder.accessToken}`)
-      .query({ phone: '0912abc1234567' })
-      .expect(400);
-
-    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
-  });
 });
 
 describe('Building (e2e) — Tenancy (21_ADRs > ADR-035)', () => {
