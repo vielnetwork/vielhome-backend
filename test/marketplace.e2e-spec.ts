@@ -346,6 +346,16 @@ describe('Marketplace Foundation (e2e) — Submission & Own-Scoped Visibility (A
     submitter = await registerPerson(app);
     createdPhones.push(submitter.phone);
     createdPersonIds.push(submitter.personId);
+    // Marketplace Access-Gate Implementation Phase: `POST /marketplace/
+    // providers` now requires BACKOFFICE_APPROVED. This suite is about
+    // submission/visibility behavior, not the access gate itself (that's
+    // covered in its own "Access-Gate" describe block below) — pre-approve
+    // the submitter directly so every existing assertion here continues to
+    // exercise exactly what it did before this phase.
+    await prisma.person.update({
+      where: { id: submitter.personId },
+      data: { isBackofficeApproved: true },
+    });
 
     otherPerson = await registerPerson(app);
     createdPhones.push(otherPerson.phone);
@@ -480,10 +490,21 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
     submitterA = await registerPerson(app);
     createdPhones.push(submitterA.phone);
     createdPersonIds.push(submitterA.personId);
+    // Same pre-approval as the sibling describe block above — this suite
+    // is about staff moderation and the public directory, not the access
+    // gate itself.
+    await prisma.person.update({
+      where: { id: submitterA.personId },
+      data: { isBackofficeApproved: true },
+    });
 
     submitterB = await registerPerson(app);
     createdPhones.push(submitterB.phone);
     createdPersonIds.push(submitterB.personId);
+    await prisma.person.update({
+      where: { id: submitterB.personId },
+      data: { isBackofficeApproved: true },
+    });
 
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
@@ -675,5 +696,193 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
       .post('/api/v1/backoffice/marketplace-providers/does-not-exist/deactivate')
       .set('Authorization', `Bearer ${reviewer.accessToken}`)
       .expect(404);
+  });
+});
+
+describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — Marketplace Access-Gate Implementation Phase', () => {
+  // Covers the two behaviors this phase adds to Marketplace specifically:
+  // (1) `POST /marketplace/providers` requires BACKOFFICE_APPROVED
+  // (`AccessGuard`), and (2) `contactPhone`/`contactEmail`/`contactVisible`
+  // are redacted on `listApproved`/`getProvider` for any caller who is
+  // neither BACKOFFICE_APPROVED nor the listing's own submitter. Grant/
+  // revoke lifecycle itself (who can call it, audit trail) is covered in
+  // `person-access.e2e-spec.ts`, not duplicated here — this file only
+  // asserts on Marketplace's own consumption of the resulting flag.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdPersonIds: string[] = [];
+  const staffPhones: string[] = [];
+
+  let owner: RegisteredPerson;
+  let unapprovedOther: RegisteredPerson;
+  let approvedOther: RegisteredPerson;
+  let reviewer: RegisteredPerson;
+  let listingId: string;
+  const ownerContactPhone = nextPhone();
+  const ownerContactEmail = 'contact@gated-listing.example';
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    owner = await registerPerson(app);
+    createdPhones.push(owner.phone);
+    createdPersonIds.push(owner.personId);
+    // Temporarily approved just long enough to submit — revoked below to
+    // exercise "owner sees own contact even while currently unapproved".
+    await prisma.person.update({
+      where: { id: owner.personId },
+      data: { isBackofficeApproved: true },
+    });
+
+    unapprovedOther = await registerPerson(app);
+    createdPhones.push(unapprovedOther.phone);
+    createdPersonIds.push(unapprovedOther.personId);
+
+    approvedOther = await registerPerson(app);
+    createdPhones.push(approvedOther.phone);
+    createdPersonIds.push(approvedOther.personId);
+    await prisma.person.update({
+      where: { id: approvedOther.personId },
+      data: { isBackofficeApproved: true },
+    });
+
+    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    staffPhones.push(PLATFORM_REVIEWER_PHONE);
+
+    const submitRes = await request(app.getHttpServer())
+      .post('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({
+        name: 'Gated Contact Listing',
+        category: 'MAINTENANCE',
+        contactPhone: ownerContactPhone,
+        contactEmail: ownerContactEmail,
+        city: 'Tehran',
+      })
+      .expect(201);
+    listingId = submitRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${listingId}/decide`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ decision: 'APPROVE' })
+      .expect(201);
+
+    // Revoke the owner's approval now that the listing exists and is
+    // APPROVED — every test below exercises "currently unapproved owner".
+    await prisma.person.update({
+      where: { id: owner.personId },
+      data: { isBackofficeApproved: false },
+    });
+  });
+
+  afterAll(async () => {
+    await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('an unapproved caller submitting a listing gets a stable 403 with details.requiredAccess', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${unapprovedOther.accessToken}`)
+      .send({ name: 'Should Not Be Created', category: 'MAINTENANCE' })
+      .expect(403);
+
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    expect(res.body.errors[0].details).toEqual({ requiredAccess: 'BACKOFFICE_APPROVED' });
+  });
+
+  it('an approved caller can submit a listing', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${approvedOther.accessToken}`)
+      .send({ name: 'Approved Caller Listing', category: 'MAINTENANCE' })
+      .expect(201);
+
+    expect(res.body.data.submittedById).toBe(approvedOther.personId);
+  });
+
+  it('list: an unapproved non-owner caller sees the listing with contact fields redacted', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${unapprovedOther.accessToken}`)
+      .expect(200);
+
+    const item = res.body.data.find((p: { id: string }) => p.id === listingId);
+    expect(item).toBeDefined();
+    expect(item.contactPhone).toBeNull();
+    expect(item.contactEmail).toBeNull();
+    expect(item.contactVisible).toBe(false);
+  });
+
+  it('detail: an unapproved non-owner caller sees the listing with contact fields redacted', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/marketplace/providers/${listingId}`)
+      .set('Authorization', `Bearer ${unapprovedOther.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data.contactPhone).toBeNull();
+    expect(res.body.data.contactEmail).toBeNull();
+    expect(res.body.data.contactVisible).toBe(false);
+  });
+
+  it('list: an approved caller sees the real contact fields, contactVisible true', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${approvedOther.accessToken}`)
+      .expect(200);
+
+    const item = res.body.data.find((p: { id: string }) => p.id === listingId);
+    expect(item).toBeDefined();
+    expect(item.contactPhone).toBe(ownerContactPhone);
+    expect(item.contactEmail).toBe(ownerContactEmail);
+    expect(item.contactVisible).toBe(true);
+  });
+
+  it('detail: an approved caller sees the real contact fields, contactVisible true', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/marketplace/providers/${listingId}`)
+      .set('Authorization', `Bearer ${approvedOther.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data.contactPhone).toBe(ownerContactPhone);
+    expect(res.body.data.contactEmail).toBe(ownerContactEmail);
+    expect(res.body.data.contactVisible).toBe(true);
+  });
+
+  it('detail: the listing owner sees their own real contact fields even while currently unapproved', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/marketplace/providers/${listingId}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data.contactPhone).toBe(ownerContactPhone);
+    expect(res.body.data.contactEmail).toBe(ownerContactEmail);
+    expect(res.body.data.contactVisible).toBe(true);
+  });
+
+  it("GET /marketplace/providers/me never redacts — it's always the caller's own data", async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/marketplace/providers/me')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+
+    const item = res.body.data.find((p: { id: string }) => p.id === listingId);
+    expect(item).toBeDefined();
+    expect(item.contactPhone).toBe(ownerContactPhone);
+    expect(item.contactEmail).toBe(ownerContactEmail);
+  });
+
+  it('staff moderation detail view is unaffected by redaction (full contact fields, no contactGuard)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/marketplace-providers/${listingId}`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data.contactPhone).toBe(ownerContactPhone);
+    expect(res.body.data.contactEmail).toBe(ownerContactEmail);
   });
 });

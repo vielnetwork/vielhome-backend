@@ -1,0 +1,11 @@
+-- Marketplace Access-Gate Implementation Phase.
+--
+-- Adds the person-level platform-approval fact backing the new
+-- BACKOFFICE_APPROVED feature-access requirement (see @RequiresAccess /
+-- AccessGuard). Deliberately additive-only, mirrors the shape of the
+-- existing "isSuspended" column: a plain boolean, defaulted false, with
+-- no backfill of existing rows — approval must be explicitly granted by
+-- SENIOR_REVIEWER/PLATFORM_ADMIN platform staff after this migration
+-- runs. No building role can set this value.
+-- AlterTable
+ALTER TABLE "persons" ADD COLUMN     "isBackofficeApproved" BOOLEAN NOT NULL DEFAULT false;

@@ -5,6 +5,7 @@ import { MarketplaceService } from './application/marketplace.service';
 import { MarketplaceRepository } from './infrastructure/repositories/marketplace.repository';
 import { ServiceProviderPolicy } from './domain/policies/service-provider.policy';
 import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
+import { AccessGuard } from '../../common/guards/access.guard';
 import { BackOfficeModule } from '../backoffice/backoffice.module';
 
 @Module({
@@ -21,7 +22,13 @@ import { BackOfficeModule } from '../backoffice/backoffice.module';
   // exception to the "only import BuildingModule" convention.
   imports: [BackOfficeModule],
   controllers: [MarketplaceController, MarketplaceModerationController],
-  providers: [MarketplaceService, MarketplaceRepository, ServiceProviderPolicy, PlatformRolesGuard],
+  providers: [
+    MarketplaceService,
+    MarketplaceRepository,
+    ServiceProviderPolicy,
+    PlatformRolesGuard,
+    AccessGuard,
+  ],
   exports: [MarketplaceService],
 })
 export class MarketplaceModule {}

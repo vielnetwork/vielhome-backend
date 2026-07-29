@@ -2,6 +2,34 @@ import { Injectable } from '@nestjs/common';
 import type { ServiceProviderCategory, ServiceProviderStatus } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 
+/**
+ * Marketplace Access-Gate Implementation Phase, requirement 6 — every
+ * field is named explicitly (including `contactPhone`/`contactEmail`) so
+ * a future added column to `ServiceProvider` can never leak into a
+ * response through an implicit `SELECT *`-style bare Prisma call. This
+ * does NOT redact anything by itself — it deliberately returns full rows
+ * (contact fields included) to every caller; redaction for
+ * unapproved/non-owner callers happens one layer up in
+ * `MarketplaceService`, which is the only layer that knows who's asking.
+ */
+const SERVICE_PROVIDER_SELECT = {
+  id: true,
+  name: true,
+  category: true,
+  description: true,
+  contactPhone: true,
+  contactEmail: true,
+  city: true,
+  status: true,
+  isActive: true,
+  submittedById: true,
+  reviewedById: true,
+  reviewedAt: true,
+  reason: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
 @Injectable()
 export class MarketplaceRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -19,7 +47,10 @@ export class MarketplaceRepository {
   }
 
   findById(id: string) {
-    return this.prisma.serviceProvider.findUnique({ where: { id } });
+    return this.prisma.serviceProvider.findUnique({
+      where: { id },
+      select: SERVICE_PROVIDER_SELECT,
+    });
   }
 
   /**
@@ -44,16 +75,21 @@ export class MarketplaceRepository {
         orderBy: { createdAt: 'desc' },
         skip: pagination.skip,
         take: pagination.take,
+        select: SERVICE_PROVIDER_SELECT,
       }),
       this.prisma.serviceProvider.count({ where }),
     ]);
     return { items, total };
   }
 
+  /** Own listings — always full visibility, no redaction anywhere in this
+   * path (viewing your own submissions never hides your own contact
+   * info). */
   listMine(submittedById: string) {
     return this.prisma.serviceProvider.findMany({
       where: { submittedById },
       orderBy: { createdAt: 'desc' },
+      select: SERVICE_PROVIDER_SELECT,
     });
   }
 

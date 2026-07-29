@@ -59,6 +59,18 @@ model Person {
   // silently assumed.
   isSuspended Boolean @default(false)
 
+  // Marketplace Access Gate (Marketplace Access-Gate Implementation Phase).
+  // Person-level platform approval fact — independent of buildings and
+  // building roles. Feature-level access requirements (FREE/PRO/
+  // BACKOFFICE_APPROVED) are declared separately by each feature via the
+  // @RequiresAccess(...) decorator/AccessGuard; this field is only the raw
+  // fact "has VielHome platform staff approved this person," mirroring
+  // isSuspended's shape. Defaults to false — approval must be explicitly
+  // granted by SENIOR_REVIEWER/PLATFORM_ADMIN platform staff via
+  // BackOfficeRepository.setBackofficeApproval(). Never set by building
+  // roles (MANAGER/BOARD_MEMBER/ACCOUNTANT/OWNER/TENANT).
+  isBackofficeApproved Boolean @default(false)
+
   createdChargeBatches ChargeBatch[]    @relation("ChargeBatchCreatedBy")
   chargeItemPayerOf ChargeItemPayer[]   @relation("ChargeItemPayerPerson")
   payments          Payment[]           @relation("PaymentPayer")

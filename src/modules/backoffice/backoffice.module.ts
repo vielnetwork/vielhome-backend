@@ -12,6 +12,7 @@ import { SubscriptionController } from './controller/subscription.controller';
 import { SubscriptionReportController } from './controller/subscription-report.controller';
 import { ComplianceCaseController } from './controller/compliance-case.controller';
 import { LegalHoldController } from './controller/legal-hold.controller';
+import { PersonAccessController } from './controller/person-access.controller';
 import { BuildingVerificationService } from './application/building-verification.service';
 import { ManagerVerificationService } from './application/manager-verification.service';
 import { FraudCaseService } from './application/fraud-case.service';
@@ -19,6 +20,7 @@ import { SupportCaseService } from './application/support-case.service';
 import { SubscriptionService } from './application/subscription.service';
 import { ComplianceCaseService } from './application/compliance-case.service';
 import { LegalHoldService } from './application/legal-hold.service';
+import { PersonAccessService } from './application/person-access.service';
 import { BackOfficeEventListener } from './application/backoffice-event-listener.service';
 import { BackOfficeRepository } from './infrastructure/repositories/backoffice.repository';
 import { BuildingVerificationPolicy } from './domain/policies/building-verification.policy';
@@ -54,6 +56,7 @@ import { BuildingModule } from '../building/building.module';
     SubscriptionReportController,
     ComplianceCaseController,
     LegalHoldController,
+    PersonAccessController,
   ],
   providers: [
     BuildingVerificationService,
@@ -63,6 +66,7 @@ import { BuildingModule } from '../building/building.module';
     SubscriptionService,
     ComplianceCaseService,
     LegalHoldService,
+    PersonAccessService,
     BackOfficeEventListener,
     BackOfficeRepository,
     BuildingVerificationPolicy,

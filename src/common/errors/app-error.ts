@@ -14,6 +14,7 @@ export type AppErrorCode =
   | 'BUSINESS_RULE_VIOLATION'
   | 'DUPLICATE'
   | 'RATE_LIMIT'
+  | 'NOT_IMPLEMENTED'
   | 'UNEXPECTED_ERROR';
 
 export abstract class AppError extends Error {
@@ -67,6 +68,23 @@ export class DuplicateError extends AppError {
 export class RateLimitError extends AppError {
   readonly code: AppErrorCode = 'RATE_LIMIT';
   readonly httpStatus = 429;
+}
+
+/**
+ * Marketplace Access-Gate Implementation Phase — thrown by `AccessGuard`
+ * when a route is decorated `@RequiresAccess('PRO')`. PRO is a recognized
+ * `AccessLevel` value but has no real entitlement check implemented yet
+ * (no subscription/billing wiring exists for person-facing feature gates
+ * — see `SubscriptionPlan`'s own schema comment). Rather than silently
+ * allowing access (unsafe) or throwing an unhandled 500 (opaque), this is
+ * a stable, controlled, non-2xx failure that makes the missing
+ * implementation explicit to the caller via `details.accessLevel`. No
+ * current route should be decorated `@RequiresAccess('PRO')`; if one
+ * appears, callers get this instead of a false grant.
+ */
+export class NotImplementedAppError extends AppError {
+  readonly code: AppErrorCode = 'NOT_IMPLEMENTED';
+  readonly httpStatus = 501;
 }
 
 export class UnexpectedAppError extends AppError {

@@ -4,6 +4,7 @@ import type { ServiceProviderCategory } from '@prisma/client';
 import { MarketplaceRepository } from '../infrastructure/repositories/marketplace.repository';
 import { ServiceProviderPolicy } from '../domain/policies/service-provider.policy';
 import { AuditService } from '../../../common/audit/audit.service';
+import { BackOfficeRepository } from '../../backoffice/infrastructure/repositories/backoffice.repository';
 import { NotFoundAppError } from '../../../common/errors/app-error';
 import {
   buildPaginationMeta,
@@ -12,6 +13,18 @@ import {
 } from '../../../common/pagination/pagination.util';
 import { SubmitServiceProviderDto } from './dto/submit-service-provider.dto';
 import { ServiceProviderDecidedEvent } from '../events/marketplace.events';
+
+/** Shape returned by `MarketplaceRepository`'s explicit-select queries
+ * (`listApproved`/`findById`) — a plain structural type, not imported from
+ * `@prisma/client`, so this file doesn't need to know the exact Prisma
+ * payload-inference generic. */
+interface ServiceProviderRecord {
+  id: string;
+  contactPhone: string | null;
+  contactEmail: string | null;
+  submittedById: string;
+  [key: string]: unknown;
+}
 
 /**
  * Marketplace Foundation (21_ADRs > ADR-030) — a moderated directory, not a
@@ -26,7 +39,40 @@ export class MarketplaceService {
     private readonly policy: ServiceProviderPolicy,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
+    private readonly backOffice: BackOfficeRepository,
   ) {}
+
+  /**
+   * Marketplace Access-Gate Implementation Phase, requirement 6. Contact
+   * fields are visible to: (a) any BACKOFFICE_APPROVED caller, or (b) the
+   * listing's own submitter viewing their own listing — an intentional
+   * extension beyond the literal "unapproved -> hidden" rule, since an
+   * unapproved person should still be able to see contact details they
+   * themselves submitted (this is also what `listMine`, which never calls
+   * this method, already assumes implicitly). Anyone else who is not
+   * approved gets `contactVisible: false` and null contact fields — never
+   * a masked/placeholder value (no existing API convention for that in
+   * this codebase).
+   */
+  private redactContact<T extends ServiceProviderRecord>(
+    provider: T,
+    callerPersonId: string,
+    callerIsApproved: boolean,
+  ): T & { contactVisible: boolean } {
+    const canSeeContact = callerIsApproved || provider.submittedById === callerPersonId;
+    if (canSeeContact) {
+      return {
+        ...provider,
+        contactVisible: provider.contactPhone != null || provider.contactEmail != null,
+      };
+    }
+    return {
+      ...provider,
+      contactPhone: null,
+      contactEmail: null,
+      contactVisible: false,
+    };
+  }
 
   async submit(callerPersonId: string, dto: SubmitServiceProviderDto, requestId: string) {
     const provider = await this.marketplace.createProvider({
@@ -51,13 +97,22 @@ export class MarketplaceService {
     return provider;
   }
 
-  /** 21_ADRs > ADR-072 */
+  /** 21_ADRs > ADR-072. Redacts `contactPhone`/`contactEmail` per-item for
+   * callers who are neither BACKOFFICE_APPROVED nor that item's own
+   * submitter — see `redactContact`. Only one extra query regardless of
+   * page size: the caller's own approval status is a single fact, not
+   * per-item. */
   async listApproved(
+    callerPersonId: string,
     filters: { category?: ServiceProviderCategory; city?: string },
     pagination: PaginationParams,
   ) {
     const { items, total } = await this.marketplace.listApproved(filters, toSkipTake(pagination));
-    return { items, meta: buildPaginationMeta(pagination, total) };
+    const callerIsApproved = await this.backOffice.isPersonBackofficeApproved(callerPersonId);
+    const redacted = items.map((item) =>
+      this.redactContact(item, callerPersonId, callerIsApproved),
+    );
+    return { items: redacted, meta: buildPaginationMeta(pagination, total) };
   }
 
   listMine(callerPersonId: string) {
@@ -73,10 +128,12 @@ export class MarketplaceService {
     const provider = await this.marketplace.findById(id);
     if (!provider) throw new NotFoundAppError('Service provider not found.');
 
-    if (provider.status === 'APPROVED' && provider.isActive) return provider;
+    if (provider.status !== 'APPROVED' || !provider.isActive) {
+      this.policy.assertVisibleToNonStaff(provider.submittedById, callerPersonId);
+    }
 
-    this.policy.assertVisibleToNonStaff(provider.submittedById, callerPersonId);
-    return provider;
+    const callerIsApproved = await this.backOffice.isPersonBackofficeApproved(callerPersonId);
+    return this.redactContact(provider, callerPersonId, callerIsApproved);
   }
 
   // --- Staff moderation (PlatformRolesGuard-gated at the controller) -------

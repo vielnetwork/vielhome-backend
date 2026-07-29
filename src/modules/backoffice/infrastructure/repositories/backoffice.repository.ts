@@ -461,6 +461,48 @@ export class BackOfficeRepository {
     return this.prisma.person.update({ where: { id: personId }, data: { isSuspended: false } });
   }
 
+  // --- Marketplace Access Gate --------------------------------------------
+  // Person-level platform-approval fact backing the BACKOFFICE_APPROVED
+  // `AccessLevel` (see `AccessGuard`/`PersonAccessController`). Lives here,
+  // not on `AuthRepository`, mirroring `suspendPerson`/`reinstatePerson`
+  // above — this repository already writes Person flags directly and is
+  // already exported to every module (including `MarketplaceModule`) that
+  // needs to read/write it, so no new module wiring is required.
+
+  /** Live read, same discipline as `getActivePlatformStaff` and
+   * `JwtStrategy`'s own live `isSuspended` check — never trust a cached
+   * or JWT-carried value for an approval fact that platform staff can
+   * revoke at any time. */
+  async isPersonBackofficeApproved(personId: string): Promise<boolean> {
+    const person = await this.prisma.person.findUnique({
+      where: { id: personId },
+      select: { isBackofficeApproved: true },
+    });
+    return person?.isBackofficeApproved ?? false;
+  }
+
+  /** Minimal existence + current-value lookup for `PersonAccessService`
+   * (needs to 404 on an unknown target and needs the previous value for
+   * its audit record's `metadata.previousValue`). */
+  findPersonForBackofficeApproval(personId: string) {
+    return this.prisma.person.findUnique({
+      where: { id: personId },
+      select: { id: true, isBackofficeApproved: true },
+    });
+  }
+
+  /** Single grant/revoke entry point — accepts either direction so callers
+   * can't accidentally end up with a grant-only workflow (Marketplace
+   * Access-Gate Implementation Phase, requirement 1). Returns the updated
+   * Person row so the caller (`PersonAccessService`) can read back the
+   * post-update value for its audit record and response body. */
+  setPersonBackofficeApproval(personId: string, approved: boolean) {
+    return this.prisma.person.update({
+      where: { id: personId },
+      data: { isBackofficeApproved: approved },
+    });
+  }
+
   // --- Support & Operations Center (07.05) -------------------------------
 
   createSupportCase(params: {
