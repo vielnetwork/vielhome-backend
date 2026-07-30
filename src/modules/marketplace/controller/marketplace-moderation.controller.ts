@@ -6,6 +6,8 @@ import { RejectServiceProviderDto } from '../application/dto/reject-service-prov
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
@@ -21,10 +23,26 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
  * `approve`/`reject`/`archive`, additive named wrappers around the
  * pre-existing `list`/`decide` (both unchanged) — see each method's own
  * doc comment.
+ *
+ * 21_ADRs > ADR-100 — Marketplace Permission Migration, the first Bridge
+ * Migration pilot (ADR-098 Alternative C). `PermissionsGuard` is added
+ * ALONGSIDE `PlatformRolesGuard`, never replacing it — both guards run
+ * (Nest evaluates every guard in the chain; a route only passes if ALL
+ * of them return true), so a caller now needs the pre-existing legacy
+ * rank (`@PlatformRoles`) AND a real, live-resolved RBAC permission
+ * (`@RequiresPermission`) to reach any route here. Read/inspection
+ * routes require `MARKETPLACE_REVIEW`; every route that produces a
+ * final, listing-state-changing decision (approve, reject, archive, or
+ * deactivate — deactivate's classification confirmed explicitly for this
+ * ADR, since it wasn't named in ADR-098's original permission
+ * vocabulary) requires `MARKETPLACE_APPROVE`. `PlatformStaffRole`/
+ * `PlatformRolesGuard`/`@PlatformRoles` are NOT modified or removed —
+ * see ADR-100's own Decision for the full endpoint-to-permission mapping
+ * and the reasoning against seeding a permanent `StaffRole` grant here.
  */
 @ApiTags('marketplace')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, PlatformRolesGuard)
+@UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
 @Controller({ path: 'backoffice/marketplace-providers', version: '1' })
 export class MarketplaceModerationController {
   constructor(private readonly marketplace: MarketplaceService) {}
@@ -32,6 +50,7 @@ export class MarketplaceModerationController {
   /** 21_ADRs > ADR-072 — `page`/`limit` (08_API_Architecture > Pagination); structurally identical to the six BackOffice staff queues, added alongside them even though it wasn't one of `27_Performance_Review_v1.0`'s own named seven. */
   @Get()
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('MARKETPLACE_REVIEW')
   async list(
     @Query('status') status?: string,
     @Query('category') category?: string,
@@ -53,6 +72,7 @@ export class MarketplaceModerationController {
    * an additive convenience matching the ADR's explicit endpoint list. */
   @Get('pending')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('MARKETPLACE_REVIEW')
   async pending(@Query('page') page?: string, @Query('limit') limit?: string) {
     const { items, meta } = await this.marketplace.listPending(parsePagination(page, limit));
     return withEnvelope(items, { metadata: { pagination: meta } });
@@ -60,12 +80,14 @@ export class MarketplaceModerationController {
 
   @Get(':id')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('MARKETPLACE_REVIEW')
   getCase(@Param('id') id: string) {
     return this.marketplace.getCase(id);
   }
 
   @Post(':id/decide')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('MARKETPLACE_APPROVE')
   decide(
     @Param('id') id: string,
     @Body() dto: DecideServiceProviderDto,
@@ -78,6 +100,7 @@ export class MarketplaceModerationController {
   /** ADR-097 requirement 4. Thin wrapper around `decide('APPROVE', ...)`. */
   @Post(':id/approve')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('MARKETPLACE_APPROVE')
   approve(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
@@ -91,6 +114,7 @@ export class MarketplaceModerationController {
    * pre-existing `/decide` route. */
   @Post(':id/reject')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('MARKETPLACE_APPROVE')
   reject(
     @Param('id') id: string,
     @Body() dto: RejectServiceProviderDto,
@@ -103,6 +127,7 @@ export class MarketplaceModerationController {
   /** ADR-097 requirement 4. APPROVED -> ARCHIVED. */
   @Post(':id/archive')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('MARKETPLACE_APPROVE')
   archive(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
@@ -113,6 +138,7 @@ export class MarketplaceModerationController {
 
   @Post(':id/deactivate')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('MARKETPLACE_APPROVE')
   deactivate(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,

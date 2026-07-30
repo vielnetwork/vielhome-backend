@@ -327,6 +327,63 @@ async function waitFor<T>(
   return undefined;
 }
 
+/**
+ * 21_ADRs > ADR-100 — `MarketplaceModerationController`'s routes now also
+ * require a real RBAC permission grant (`PermissionsGuard`), stacked on
+ * top of the pre-existing `PlatformRolesGuard` floor (both guards must
+ * pass — ADR-098's Bridge Migration keeps the legacy guard active, it
+ * does not replace it). The seeded REVIEWER dev fixture this file logs
+ * in as (`PLATFORM_REVIEWER_PHONE`) holds no `StaffRole` by design —
+ * ADR-100 deliberately does NOT add a permanent grant to `prisma/
+ * seed.ts` (see that ADR's own Decision). This helper grants the
+ * `Marketplace Admin` role directly via Prisma, TEST-FIXTURE-ONLY —
+ * mirrors this file's own pre-existing `isBackofficeApproved: true`
+ * direct-fixture-setup convention, never touches `prisma/seed.ts` or any
+ * shared seed data. Find-or-create throughout so this file does not
+ * depend on `npm run db:seed:rbac` having been run first.
+ */
+async function grantMarketplaceAdminToReviewer(
+  prisma: PrismaService,
+  reviewerPersonId: string,
+): Promise<string> {
+  const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewerPersonId } });
+  if (!staff) throw new Error('Seeded REVIEWER has no PlatformStaff row.');
+
+  const role =
+    (await prisma.role.findUnique({ where: { name: 'Marketplace Admin' } })) ??
+    (await prisma.role.create({
+      data: { name: 'Marketplace Admin', description: 'e2e fixture (created only if ADR-099 seed had not already run).' },
+    }));
+
+  for (const key of ['MARKETPLACE_REVIEW', 'MARKETPLACE_APPROVE'] as const) {
+    const permission =
+      (await prisma.permission.findUnique({ where: { key } })) ??
+      (await prisma.permission.create({ data: { key, label: key } }));
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
+    });
+    if (!activeGrant) {
+      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    }
+  }
+
+  const existingGrant = await prisma.staffRole.findFirst({
+    where: { staffId: staff.id, roleId: role.id, revokedAt: null },
+  });
+  if (existingGrant) return existingGrant.id;
+
+  const created = await prisma.staffRole.create({ data: { staffId: staff.id, roleId: role.id } });
+  return created.id;
+}
+
+/** Closes (not deletes — history preservation) a `StaffRole` grant this
+ * file's own fixtures created. Safe to call with an id that's already
+ * closed (idempotent no-op via `revokedAt: null` guard is the caller's
+ * responsibility — every call site here only calls this once per grant). */
+async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
+  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
+}
+
 describe('Marketplace Foundation (e2e) — Submission & Own-Scoped Visibility (ADR-030)', () => {
   // Budget: 2 calls to POST /auth/otp/request (submitter, otherPerson) —
   // the seeded-staff login below uses requestOtpAndCaptureCodeDirect, which
@@ -481,6 +538,7 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
   let submitterA: RegisteredPerson;
   let submitterB: RegisteredPerson;
   let reviewer: RegisteredPerson;
+  let marketplaceAdminGrantId: string; // 21_ADRs > ADR-100 fixture grant
   let approvedId: string;
   let rejectedId: string;
 
@@ -507,6 +565,10 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
     });
 
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    // 21_ADRs > ADR-100 — PermissionsGuard now also gates these routes;
+    // grant the fixture-only Marketplace Admin role (see that helper's own
+    // doc comment for why this is a test fixture, not a seed change).
+    marketplaceAdminGrantId = await grantMarketplaceAdminToReviewer(prisma, reviewer.personId);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
     createdPersonIds.push(reviewer.personId);
 
@@ -530,6 +592,7 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, marketplaceAdminGrantId); // 21_ADRs > ADR-100
     await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
     await cleanupPhones(prisma, createdPhones);
@@ -718,6 +781,7 @@ describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — 
   let unapprovedOther: RegisteredPerson;
   let approvedOther: RegisteredPerson;
   let reviewer: RegisteredPerson;
+  let marketplaceAdminGrantId: string; // 21_ADRs > ADR-100 fixture grant
   let listingId: string;
   const ownerContactPhone = nextPhone();
   const ownerContactEmail = 'contact@gated-listing.example';
@@ -748,6 +812,10 @@ describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — 
     });
 
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    // 21_ADRs > ADR-100 — PermissionsGuard now also gates these routes;
+    // grant the fixture-only Marketplace Admin role (see that helper's own
+    // doc comment for why this is a test fixture, not a seed change).
+    marketplaceAdminGrantId = await grantMarketplaceAdminToReviewer(prisma, reviewer.personId);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
 
     const submitRes = await request(app.getHttpServer())
@@ -778,6 +846,7 @@ describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — 
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, marketplaceAdminGrantId); // 21_ADRs > ADR-100
     await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
     await cleanupPhones(prisma, createdPhones);
@@ -906,6 +975,7 @@ describe('ADR-097 — Marketplace Review Workflow (Phase 2): Edit/Resubmit/Appro
 
   let owner: RegisteredPerson;
   let reviewer: RegisteredPerson;
+  let marketplaceAdminGrantId: string; // 21_ADRs > ADR-100 fixture grant
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
@@ -923,11 +993,16 @@ describe('ADR-097 — Marketplace Review Workflow (Phase 2): Edit/Resubmit/Appro
     });
 
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    // 21_ADRs > ADR-100 — PermissionsGuard now also gates these routes;
+    // grant the fixture-only Marketplace Admin role (see that helper's own
+    // doc comment for why this is a test fixture, not a seed change).
+    marketplaceAdminGrantId = await grantMarketplaceAdminToReviewer(prisma, reviewer.personId);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
     createdPersonIds.push(reviewer.personId);
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, marketplaceAdminGrantId); // 21_ADRs > ADR-100
     await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
     await cleanupPhones(prisma, createdPhones);
@@ -1164,5 +1239,191 @@ describe('ADR-097 — Marketplace Review Workflow (Phase 2): Edit/Resubmit/Appro
       .post(`/api/v1/backoffice/marketplace-providers/${id}/archive`)
       .set('Authorization', `Bearer ${owner.accessToken}`)
       .expect(403);
+  });
+});
+
+/**
+ * 21_ADRs > ADR-100 — Marketplace Permission Migration. Focused coverage
+ * for the NEW guard/permission behavior specifically (grant/revoke
+ * immediacy, tier separation, both guards independently enforcing). Uses
+ * its own dedicated role (never "Marketplace Admin", which the fixture
+ * blocks above already use with both permissions bundled together) so
+ * this file can grant/revoke individual permissions on it mid-test
+ * without disturbing any other describe block's own fixture state.
+ *
+ * Only `pending` (REVIEW-tier) and `approve` (APPROVE-tier) are exercised
+ * directly here as representative routes — `list`/`getCase` share the
+ * exact same `@RequiresPermission('MARKETPLACE_REVIEW')` decorator as
+ * `pending`, and `decide`/`reject`/`archive`/`deactivate` share the exact
+ * same `@RequiresPermission('MARKETPLACE_APPROVE')` decorator as
+ * `approve` — every one of those routes is also exercised end-to-end
+ * through BOTH stacked guards by the pre-existing fixture blocks above
+ * (now updated with their own `grantMarketplaceAdminToReviewer` fixture
+ * grant), so this block stays focused per ADR-100's own "focused
+ * coverage" ask rather than duplicating eight near-identical proofs.
+ */
+describe('ADR-100 — Marketplace Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const staffPhones: string[] = [];
+  const createdPersonIds: string[] = [];
+
+  let submitter: RegisteredPerson;
+  let reviewer: RegisteredPerson;
+  let plainPerson: RegisteredPerson;
+  let pendingId: string;
+  let testRoleId: string;
+  let reviewPermissionId: string;
+  let approvePermissionId: string;
+  let staffRoleGrantId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    submitter = await registerPerson(app);
+    createdPhones.push(submitter.phone);
+    createdPersonIds.push(submitter.personId);
+    await prisma.person.update({
+      where: { id: submitter.personId },
+      data: { isBackofficeApproved: true },
+    });
+
+    plainPerson = await registerPerson(app);
+    createdPhones.push(plainPerson.phone);
+
+    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    createdPersonIds.push(reviewer.personId);
+
+    const submitRes = await request(app.getHttpServer())
+      .post('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${submitter.accessToken}`)
+      .send({ name: 'ADR-100 Test Listing', category: 'OTHER', city: 'Tehran' })
+      .expect(201);
+    pendingId = submitRes.body.data.id;
+
+    const permissionKeys = ['MARKETPLACE_REVIEW', 'MARKETPLACE_APPROVE'] as const;
+    const permissionIds: Record<(typeof permissionKeys)[number], string> = {} as never;
+    for (const key of permissionKeys) {
+      const permission =
+        (await prisma.permission.findUnique({ where: { key } })) ??
+        (await prisma.permission.create({ data: { key, label: key } }));
+      permissionIds[key] = permission.id;
+    }
+    reviewPermissionId = permissionIds.MARKETPLACE_REVIEW;
+    approvePermissionId = permissionIds.MARKETPLACE_APPROVE;
+
+    const testRole = await prisma.role.create({
+      data: { name: `E2E ADR-100 Test Role ${Date.now()}`, description: 'Created by marketplace.e2e-spec.ts (ADR-100 block).' },
+    });
+    testRoleId = testRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewer.personId } });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
+    staffRoleGrantId = grant.id;
+    // No RolePermission granted on this role yet — the reviewer starts
+    // this describe block holding the legacy rank but NO RBAC permission
+    // at all, deliberately, to prove the next test's 403.
+  });
+
+  afterAll(async () => {
+    // 21_ADRs > ADR-100 fixture teardown fix: `staffRole.update(revokedAt:
+    // ...)` only soft-closes the row (ADR-099's history-preservation
+    // design, correct for real production grants) — the row still exists
+    // afterward and still holds a live FK to `rbac_roles.id`, so a
+    // subsequent `role.delete()` correctly violates
+    // `staff_roles_roleId_fkey`. This `StaffRole` is this describe
+    // block's own disposable fixture, never asserted on directly and
+    // never meant to persist as real history — hard-delete it here,
+    // exactly like `cleanupPhones`/`cleanupMarketplaceArtifacts` already
+    // hard-delete their own fixture rows elsewhere in this file.
+    // Production revoke behavior (`RbacManagementService.revokeRole`/
+    // `revokePermission`, both `update`-only, never `delete`) is
+    // unchanged by this — this is test-fixture teardown, not a change to
+    // RBAC semantics.
+    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
+    await prisma.role.delete({ where: { id: testRoleId } });
+    await prisma.serviceProvider.deleteMany({ where: { submittedById: { in: createdPersonIds } } });
+    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/marketplace-providers/pending')
+      .expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/marketplace-providers/pending')
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the REVIEWER-ranked staff member while holding the new role with NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/marketplace-providers/pending')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting MARKETPLACE_REVIEW takes effect immediately — the review-tier route opens, the approve-tier route stays closed (REVIEW cannot APPROVE)', async () => {
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: reviewPermissionId },
+    });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/marketplace-providers/pending')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+
+    // Still holds only MARKETPLACE_REVIEW — the approve-tier action must
+    // still be rejected. This is the direct proof of "REVIEW permission
+    // cannot perform APPROVE actions."
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${pendingId}/approve`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting MARKETPLACE_APPROVE additionally takes effect immediately — the approve-tier route opens (matches the accepted permission matrix)', async () => {
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: approvePermissionId },
+    });
+
+    const approveRes = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${pendingId}/approve`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(201);
+    expect(approveRes.body.data.status).toBe('APPROVED');
+  });
+
+  it('revoking MARKETPLACE_APPROVE takes effect immediately — a subsequent approve-tier action is rejected again, live and uncached (per ADR-098)', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: testRoleId, permissionId: approvePermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
+
+    // The listing is already APPROVED from the previous test; archive is
+    // also APPROVE-tier and APPROVED-only, so it's a valid probe here.
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${pendingId}/archive`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+
+    // REVIEW-tier access is unaffected by revoking APPROVE alone.
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/marketplace-providers/${pendingId}`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
   });
 });

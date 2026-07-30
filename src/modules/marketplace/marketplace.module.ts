@@ -7,6 +7,7 @@ import { ServiceProviderPolicy } from './domain/policies/service-provider.policy
 import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
 import { AccessGuard } from '../../common/guards/access.guard';
 import { BackOfficeModule } from '../backoffice/backoffice.module';
+import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
 
 @Module({
   // Imports BackOfficeModule, NOT BuildingModule — the first domain in this
@@ -20,7 +21,13 @@ import { BackOfficeModule } from '../backoffice/backoffice.module';
   // duplicating platform-staff lookup logic in a second place. See ADR-030
   // Decision for the full reasoning on this being a deliberate, narrow
   // exception to the "only import BuildingModule" convention.
-  imports: [BackOfficeModule],
+  //
+  // 21_ADRs > ADR-100 additionally imports `BackofficeRbacModule` — it
+  // exports `PermissionsGuard` directly (unlike `PlatformRolesGuard`,
+  // which `BackOfficeModule` does NOT export, hence that guard being
+  // re-declared as a local provider below), so no local re-provision is
+  // needed for it.
+  imports: [BackOfficeModule, BackofficeRbacModule],
   controllers: [MarketplaceController, MarketplaceModerationController],
   providers: [
     MarketplaceService,
