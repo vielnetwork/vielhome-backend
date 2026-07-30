@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { MarketplaceService } from '../application/marketplace.service';
 import { SubmitServiceProviderDto } from '../application/dto/submit-service-provider.dto';
+import { UpdateServiceProviderDto } from '../application/dto/update-service-provider.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { AccessGuard } from '../../../common/guards/access.guard';
 import { RequiresAccess } from '../../../common/decorators/access.decorator';
@@ -24,6 +25,13 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
  * product requirement. Contact-field redaction for unapproved callers is
  * handled inside `MarketplaceService`, not at the guard level, since
  * browsing itself must not be blocked.
+ *
+ * ADR-097 — Marketplace Review Workflow (Phase 2) adds `update`/
+ * `resubmit`, additive to the pre-existing `submit` (unchanged, for
+ * backward compatibility — see `MarketplaceService.submit`'s own doc
+ * comment). `resubmit` carries the same access gate as `submit`. No
+ * draft-creation endpoint exists — see `schema.prisma`'s own comment on
+ * why DRAFT was dropped from this phase's scope.
  */
 @ApiTags('marketplace')
 @ApiBearerAuth()
@@ -70,5 +78,31 @@ export class MarketplaceController {
   @Get(':id')
   getProvider(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     return this.marketplace.getProvider(id, user.sub);
+  }
+
+  /** ADR-097 requirement 5. Owner-only, only while REJECTED
+   * (`ServiceProviderPolicy.assertEditable`, enforced in the service). */
+  @Patch(':id')
+  updateListing(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateServiceProviderDto,
+    @RequestId() requestId: string,
+  ) {
+    return this.marketplace.updateListing(id, user.sub, dto, requestId);
+  }
+
+  /** ADR-097 requirement 5. REJECTED -> PENDING — gated by the
+   * Marketplace Access Gate, same requirement as the legacy `submit`
+   * above. */
+  @Post(':id/resubmit')
+  @UseGuards(AccessGuard)
+  @RequiresAccess('BACKOFFICE_APPROVED')
+  resubmit(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.marketplace.resubmit(id, user.sub, requestId);
   }
 }

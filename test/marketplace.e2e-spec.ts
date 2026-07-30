@@ -886,3 +886,283 @@ describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — 
     expect(res.body.data.contactEmail).toBe(ownerContactEmail);
   });
 });
+
+describe('ADR-097 — Marketplace Review Workflow (Phase 2): Edit/Resubmit/Approve/Reject/Archive', () => {
+  // Budget: 1 call to POST /auth/otp/request (owner) — the seeded
+  // REVIEWER login uses requestOtpAndCaptureCodeDirect, which never
+  // touches this budget.
+  //
+  // Reviewed and simplified from an earlier draft of this phase: no
+  // DRAFT status (no client creates draft listings — see schema.prisma's
+  // own comment) and PENDING is NOT renamed to PENDING_REVIEW (no
+  // functional need, would be wire-breaking). The lifecycle exercised
+  // here is PENDING -> REJECTED -> (edit) -> resubmit -> PENDING ->
+  // APPROVED -> ARCHIVED.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdPersonIds: string[] = [];
+  const staffPhones: string[] = [];
+
+  let owner: RegisteredPerson;
+  let reviewer: RegisteredPerson;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    owner = await registerPerson(app);
+    createdPhones.push(owner.phone);
+    createdPersonIds.push(owner.personId);
+    // Requirement 5's access gate applies to resubmitting, same as the
+    // legacy submit endpoint — approved up front so this file's
+    // resubmit assertions exercise the transition itself, not the
+    // access gate (already covered by its own describe block above).
+    await prisma.person.update({
+      where: { id: owner.personId },
+      data: { isBackofficeApproved: true },
+    });
+
+    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    createdPersonIds.push(reviewer.personId);
+  });
+
+  afterAll(async () => {
+    await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('PATCH /marketplace/providers/:id only accepts listing fields — workflow/ownership/audit fields are rejected outright (400), never silently dropped', async () => {
+    const submitRes = await request(app.getHttpServer())
+      .post('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ name: 'Whitelist Check Plumbing', category: 'MAINTENANCE' })
+      .expect(201);
+    const id = submitRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${id}/reject`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ reason: 'Needs more detail.' })
+      .expect(201);
+
+    // The global ValidationPipe (whitelist + forbidNonWhitelisted) 400s
+    // the whole request when any undeclared property is present —
+    // status/submittedById/reviewedById/reviewedAt/reason/isActive are
+    // not part of UpdateServiceProviderDto, so attempting to smuggle any
+    // of them in is rejected before MarketplaceService ever runs, not
+    // silently stripped.
+    const attempts = [
+      { status: 'APPROVED' },
+      { submittedById: reviewer.personId },
+      { reviewedById: reviewer.personId },
+      { reviewedAt: new Date().toISOString() },
+      { reason: 'Forged approval reason' },
+      { isActive: false },
+    ];
+    for (const body of attempts) {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/v1/marketplace/providers/${id}`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ name: 'Legit Edit', ...body })
+        .expect(400);
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+    }
+
+    // A legitimate edit (listing fields only) still works.
+    const okRes = await request(app.getHttpServer())
+      .patch(`/api/v1/marketplace/providers/${id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ name: 'Legit Edit', city: 'Isfahan' })
+      .expect(200);
+    expect(okRes.body.data.name).toBe('Legit Edit');
+    expect(okRes.body.data.city).toBe('Isfahan');
+    // Untouched — proves the PATCH never reached these fields even
+    // structurally, not just that the DTO validation caught the attempts
+    // above.
+    expect(okRes.body.data.status).toBe('REJECTED');
+    expect(okRes.body.data.reviewedById).toBe(reviewer.personId);
+  });
+
+  it('the full PENDING -> reject -> edit -> resubmit -> approve -> archive lifecycle', async () => {
+    const submitRes = await request(app.getHttpServer())
+      .post('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ name: 'Lifecycle Plumbing', category: 'MAINTENANCE', city: 'Tehran' })
+      .expect(201);
+    const id = submitRes.body.data.id;
+    expect(submitRes.body.data.status).toBe('PENDING');
+    expect(submitRes.body.data.submittedAt).not.toBeNull();
+
+    // Editing/resubmitting while still PENDING is blocked — only a
+    // REJECTED listing may be edited or resubmitted.
+    await request(app.getHttpServer())
+      .patch(`/api/v1/marketplace/providers/${id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ name: 'Should Not Apply' })
+      .expect(422);
+    await request(app.getHttpServer())
+      .post(`/api/v1/marketplace/providers/${id}/resubmit`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(422);
+
+    // Shows up in the dedicated pending queue.
+    const pendingRes = await request(app.getHttpServer())
+      .get('/api/v1/backoffice/marketplace-providers/pending')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .query({ page: 1, limit: 100 })
+      .expect(200);
+    expect(pendingRes.body.data.map((p: { id: string }) => p.id)).toContain(id);
+
+    // PENDING -> REJECTED
+    const rejectRes = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${id}/reject`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ reason: 'Missing business registration.' })
+      .expect(201);
+    expect(rejectRes.body.data.status).toBe('REJECTED');
+    expect(rejectRes.body.data.reason).toBe('Missing business registration.');
+
+    // reject requires a reason.
+    const secondSubmit = await request(app.getHttpServer())
+      .post('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ name: 'Needs Reason', category: 'OTHER' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${secondSubmit.body.data.id}/reject`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({})
+      .expect(400);
+
+    // A non-owner cannot edit or resubmit it.
+    const stranger = await registerPerson(app);
+    createdPhones.push(stranger.phone);
+    createdPersonIds.push(stranger.personId);
+    await prisma.person.update({
+      where: { id: stranger.personId },
+      data: { isBackofficeApproved: true },
+    });
+    await request(app.getHttpServer())
+      .patch(`/api/v1/marketplace/providers/${id}`)
+      .set('Authorization', `Bearer ${stranger.accessToken}`)
+      .send({ name: 'Hijacked Name' })
+      .expect(403);
+    await request(app.getHttpServer())
+      .post(`/api/v1/marketplace/providers/${id}/resubmit`)
+      .set('Authorization', `Bearer ${stranger.accessToken}`)
+      .expect(403);
+
+    // Owner edits the rejected listing, then resubmits.
+    await request(app.getHttpServer())
+      .patch(`/api/v1/marketplace/providers/${id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ description: 'Registration number added.' })
+      .expect(200);
+
+    const resubmitRes = await request(app.getHttpServer())
+      .post(`/api/v1/marketplace/providers/${id}/resubmit`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(201);
+    expect(resubmitRes.body.data.status).toBe('PENDING');
+
+    // PENDING -> APPROVED
+    const approveRes = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${id}/approve`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(201);
+    expect(approveRes.body.data.status).toBe('APPROVED');
+
+    // Archiving requires APPROVED — a PENDING/REJECTED listing cannot be
+    // archived directly.
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${secondSubmit.body.data.id}/archive`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(422);
+
+    // PENDING -> ARCHIVED is also invalid — need APPROVED first (rejected
+    // above); confirm APPROVED -> ARCHIVED succeeds.
+    const archiveRes = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${id}/archive`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(201);
+    expect(archiveRes.body.data.status).toBe('ARCHIVED');
+
+    // Reviewed and reversed from an earlier draft: an ARCHIVED listing
+    // stays visible to its own owner (hidden from the public directory
+    // and from any non-owner/non-staff caller, same as PENDING/REJECTED
+    // always were) — NOT a 404 for the owner.
+    const ownerViewRes = await request(app.getHttpServer())
+      .get(`/api/v1/marketplace/providers/${id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    expect(ownerViewRes.body.data.status).toBe('ARCHIVED');
+
+    // A non-owner, non-staff caller gets 403 AUTHORIZATION_ERROR for the
+    // archived listing, not 404 — the same established (if confusingly
+    // documented — see this file's own "FINDING" earlier) contract
+    // `assertVisibleToNonStaff` already applies to PENDING/REJECTED: it
+    // always throws AuthorizationError, and `getProvider` never remaps
+    // that to NotFoundAppError. Either way, the archived listing is
+    // never in the public directory.
+    const strangerRes = await request(app.getHttpServer())
+      .get(`/api/v1/marketplace/providers/${id}`)
+      .set('Authorization', `Bearer ${stranger.accessToken}`)
+      .expect(403);
+
+    expect(strangerRes.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+
+    const directoryRes = await request(app.getHttpServer())
+      .get('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${stranger.accessToken}`)
+      .expect(200);
+    expect(directoryRes.body.data.map((p: { id: string }) => p.id)).not.toContain(id);
+
+    // Staff retain full visibility via the dedicated case route.
+    const caseRes = await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/marketplace-providers/${id}`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+    expect(caseRes.body.data.status).toBe('ARCHIVED');
+
+    // Still visible on the owner's own "My Listings" — that route never
+    // filters by status.
+    const mineRes = await request(app.getHttpServer())
+      .get('/api/v1/marketplace/providers/me')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    expect(mineRes.body.data.map((p: { id: string }) => p.id)).toContain(id);
+  });
+
+  it('a non-staff caller is blocked from every new moderation route (403)', async () => {
+    const submitRes = await request(app.getHttpServer())
+      .post('/api/v1/marketplace/providers')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ name: 'Non-Staff Blocked Target', category: 'OTHER' })
+      .expect(201);
+    const id = submitRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/marketplace-providers/pending')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(403);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${id}/approve`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(403);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${id}/reject`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ reason: 'x' })
+      .expect(403);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/marketplace-providers/${id}/archive`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(403);
+  });
+});

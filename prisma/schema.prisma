@@ -2470,6 +2470,13 @@ model ServiceProvider {
   isActive      Boolean                 @default(true)
   submittedById String
   submittedBy   Person                  @relation("ServiceProviderSubmittedBy", fields: [submittedById], references: [id])
+  // ADR-097 -- Marketplace Review Workflow (Phase 2). Set at creation
+  // (mirrors createdAt -- every listing enters PENDING immediately on
+  // creation, there is no separate draft phase) and updated again on
+  // resubmit (REJECTED -> PENDING), so it always reflects the most
+  // recent moment this listing entered the review queue, distinct from
+  // createdAt once a listing has been resubmitted.
+  submittedAt   DateTime                @default(now())
   reviewedById  String?
   reviewedBy    Person?                 @relation("ServiceProviderReviewedBy", fields: [reviewedById], references: [id])
   reviewedAt    DateTime?
@@ -2488,10 +2495,27 @@ enum ServiceProviderCategory {
   OTHER
 }
 
+// ADR-097 -- Marketplace Review Workflow (Phase 2). PENDING is
+// deliberately NOT renamed to PENDING_REVIEW -- the ADR's own prose uses
+// that name, but there is no functional need for the rename (PENDING
+// already unambiguously means "submitted, awaiting a staff decision" in
+// this codebase) and it would be a wire-contract-breaking change for any
+// existing consumer that reads `status`, violating this same ADR's own
+// "do NOT introduce breaking API changes" constraint for no functional
+// gain. ARCHIVED is the only new value -- APPROVED -> ARCHIVED, a
+// terminal status distinct from the pre-existing `isActive` soft-
+// deactivation flag (see MarketplaceService.archive vs .deactivate).
+// DRAFT was deliberately NOT added: no client in this codebase creates a
+// draft listing (the existing SubmitListingScreen still calls the
+// unchanged, single-call `POST /marketplace/providers`, which creates a
+// listing already PENDING), so a DRAFT status would be unreachable dead
+// surface area. Full lifecycle: PENDING -> APPROVED|REJECTED, REJECTED
+// -> PENDING (resubmit, after edit), APPROVED -> ARCHIVED.
 enum ServiceProviderStatus {
   PENDING
   APPROVED
   REJECTED
+  ARCHIVED
 }
 
 // ---------------------------------------------------------------------------

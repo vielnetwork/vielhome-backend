@@ -11,6 +11,8 @@ import { PrismaService } from '../../../../common/prisma/prisma.service';
  * (contact fields included) to every caller; redaction for
  * unapproved/non-owner callers happens one layer up in
  * `MarketplaceService`, which is the only layer that knows who's asking.
+ *
+ * ADR-097 — Marketplace Review Workflow (Phase 2): adds `submittedAt`.
  */
 const SERVICE_PROVIDER_SELECT = {
   id: true,
@@ -23,6 +25,7 @@ const SERVICE_PROVIDER_SELECT = {
   status: true,
   isActive: true,
   submittedById: true,
+  submittedAt: true,
   reviewedById: true,
   reviewedAt: true,
   reason: true,
@@ -84,7 +87,11 @@ export class MarketplaceRepository {
 
   /** Own listings — always full visibility, no redaction anywhere in this
    * path (viewing your own submissions never hides your own contact
-   * info). */
+   * info). Includes every status, ARCHIVED included — "My Listings" is
+   * the one screen ADR-097 explicitly wants every status visible on
+   * (with a status badge), unlike the public directory or the
+   * single-item `getProvider` route (which now also allows ARCHIVED for
+   * the owner — see `MarketplaceService.getProvider`). */
   listMine(submittedById: string) {
     return this.prisma.serviceProvider.findMany({
       where: { submittedById },
@@ -130,5 +137,51 @@ export class MarketplaceRepository {
 
   setActive(id: string, isActive: boolean) {
     return this.prisma.serviceProvider.update({ where: { id }, data: { isActive } });
+  }
+
+  /** ADR-097 requirement 5. Owner-only edit — only ever called while the
+   * listing is REJECTED (`ServiceProviderPolicy.assertEditable`, enforced
+   * one layer up). Partial update: only the fields the caller actually
+   * sent are touched. Deliberately typed to exactly the mutable listing
+   * fields — `status`/`submittedById`/`submittedAt`/`reviewedById`/
+   * `reviewedAt`/`reason`/`isActive`/`createdAt`/`updatedAt` are not part
+   * of this parameter type at all, so there is no code path through
+   * which this method could touch them even if a caller tried. */
+  updateListing(
+    id: string,
+    fields: Partial<{
+      name: string;
+      category: ServiceProviderCategory;
+      description?: string;
+      contactPhone?: string;
+      contactEmail?: string;
+      city?: string;
+    }>,
+  ) {
+    return this.prisma.serviceProvider.update({ where: { id }, data: fields });
+  }
+
+  /** ADR-097 requirement 5. REJECTED -> PENDING (resubmit after edit) —
+   * sets `submittedAt` to now, since this listing is re-entering the
+   * review queue. Prior `reviewedById`/`reviewedAt`/`reason` from the
+   * earlier rejection are deliberately left in place rather than cleared
+   * — they stop being displayed anywhere the moment status is no longer
+   * REJECTED, and preserving them keeps the review history intact for
+   * staff (`getCase`) without inventing a separate history table. */
+  resubmit(id: string) {
+    return this.prisma.serviceProvider.update({
+      where: { id },
+      data: { status: 'PENDING', submittedAt: new Date() },
+    });
+  }
+
+  /** ADR-097 requirement 4. APPROVED -> ARCHIVED. Coexists with (does not
+   * replace) `setActive`/deactivate — archive is a distinct terminal
+   * status, not a re-use of the `isActive` soft-deactivation flag. */
+  archive(id: string) {
+    return this.prisma.serviceProvider.update({
+      where: { id },
+      data: { status: 'ARCHIVED' },
+    });
   }
 }
