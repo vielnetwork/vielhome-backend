@@ -474,6 +474,62 @@ function findFeature(entries: EffectiveFeatureEntry[], featureKey: string): Effe
   return entry;
 }
 
+/**
+ * 21_ADRs > ADR-101 — `SubscriptionController`'s routes now also require
+ * a real RBAC permission grant (`PermissionsGuard`), stacked on top of
+ * the pre-existing `PlatformRolesGuard` floor (both guards must pass —
+ * ADR-098's Bridge Migration keeps the legacy guard active, it does not
+ * replace it). The seeded REVIEWER dev fixture this file logs in as
+ * (`PLATFORM_REVIEWER_PHONE`) holds no `StaffRole` by design — ADR-099
+ * seeded zero, and ADR-101 deliberately does not add a permanent grant to
+ * `prisma/seed.ts` either (same standing decision as ADR-100). This
+ * helper grants the `Subscription Admin` role directly via Prisma,
+ * TEST-FIXTURE-ONLY — mirrors `marketplace.e2e-spec.ts`'s own
+ * `grantMarketplaceAdminToReviewer` helper exactly. Find-or-create
+ * throughout so this file does not depend on `npm run db:seed:rbac`
+ * having been run first.
+ */
+async function grantSubscriptionAdminToReviewer(
+  prisma: PrismaService,
+  reviewerPersonId: string,
+): Promise<string> {
+  const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewerPersonId } });
+  if (!staff) throw new Error('Seeded REVIEWER has no PlatformStaff row.');
+
+  const role =
+    (await prisma.role.findUnique({ where: { name: 'Subscription Admin' } })) ??
+    (await prisma.role.create({
+      data: { name: 'Subscription Admin', description: 'e2e fixture (created only if ADR-101 seed had not already run).' },
+    }));
+
+  for (const key of ['SUBSCRIPTION_VIEW', 'SUBSCRIPTION_MANAGE'] as const) {
+    const permission =
+      (await prisma.permission.findUnique({ where: { key } })) ??
+      (await prisma.permission.create({ data: { key, label: key } }));
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
+    });
+    if (!activeGrant) {
+      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    }
+  }
+
+  const existingGrant = await prisma.staffRole.findFirst({
+    where: { staffId: staff.id, roleId: role.id, revokedAt: null },
+  });
+  if (existingGrant) return existingGrant.id;
+
+  const created = await prisma.staffRole.create({ data: { staffId: staff.id, roleId: role.id } });
+  return created.id;
+}
+
+/** Closes (not deletes — history preservation) a `StaffRole` grant this
+ * file's own fixtures created. Mirrors `marketplace.e2e-spec.ts`'s own
+ * `revokeStaffRoleGrant` helper exactly. */
+async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
+  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
+}
+
 describe('Subscription Management (e2e) — Auto-Init, Reads & Features (07.04/04.04)', () => {
   // Budget: 3 calls to POST /auth/otp/request (founder, outsider, REVIEWER).
   let app: INestApplication;
@@ -485,6 +541,7 @@ describe('Subscription Management (e2e) — Auto-Init, Reads & Features (07.04/0
   let founder: RegisteredPerson;
   let outsider: RegisteredPerson;
   let reviewer: RegisteredPerson;
+  let subscriptionAdminGrantId: string;
   let buildingId: string;
 
   beforeAll(async () => {
@@ -496,6 +553,7 @@ describe('Subscription Management (e2e) — Auto-Init, Reads & Features (07.04/0
     createdPhones.push(outsider.phone);
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    subscriptionAdminGrantId = await grantSubscriptionAdminToReviewer(prisma, reviewer.personId);
 
     // Building Setup Refinement Phase 2 correction round: `city` is now a
     // real Iranian city code, not free text, so the old
@@ -511,6 +569,7 @@ describe('Subscription Management (e2e) — Auto-Init, Reads & Features (07.04/0
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, subscriptionAdminGrantId);
     await cleanupBuildings(prisma, createdBuildingIds);
     await cleanupPhones(prisma, createdPhones);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
@@ -585,6 +644,7 @@ describe('Subscription Management (e2e) — Plan & Status Changes, History (07.0
 
   let founder: RegisteredPerson;
   let reviewer: RegisteredPerson;
+  let subscriptionAdminGrantId: string;
   let buildingId: string;
 
   beforeAll(async () => {
@@ -594,6 +654,7 @@ describe('Subscription Management (e2e) — Plan & Status Changes, History (07.0
     createdPhones.push(founder.phone);
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    subscriptionAdminGrantId = await grantSubscriptionAdminToReviewer(prisma, reviewer.personId);
 
     // See the correction-round note above `SubAutoCity` earlier in this
     // file — same reasoning, dropped in favor of the default address.
@@ -604,6 +665,7 @@ describe('Subscription Management (e2e) — Plan & Status Changes, History (07.0
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, subscriptionAdminGrantId);
     await cleanupBuildings(prisma, createdBuildingIds);
     await cleanupPhones(prisma, createdPhones);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
@@ -708,6 +770,7 @@ describe('Subscription Management (e2e) — Feature Grants (07.04 Rule 008/009/0
 
   let founder: RegisteredPerson;
   let reviewer: RegisteredPerson;
+  let subscriptionAdminGrantId: string;
   let buildingId: string;
   let smsGrantId: string;
 
@@ -718,6 +781,7 @@ describe('Subscription Management (e2e) — Feature Grants (07.04 Rule 008/009/0
     createdPhones.push(founder.phone);
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    subscriptionAdminGrantId = await grantSubscriptionAdminToReviewer(prisma, reviewer.personId);
 
     // See the correction-round note above `SubAutoCity` earlier in this
     // file — same reasoning, dropped in favor of the default address.
@@ -728,6 +792,7 @@ describe('Subscription Management (e2e) — Feature Grants (07.04 Rule 008/009/0
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, subscriptionAdminGrantId);
     await cleanupBuildings(prisma, createdBuildingIds);
     await cleanupPhones(prisma, createdPhones);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
@@ -840,6 +905,7 @@ describe('Subscription Management (e2e) — Time-Based Lifecycle (07.04 Rule 007
 
   let founder: RegisteredPerson;
   let reviewer: RegisteredPerson;
+  let subscriptionAdminGrantId: string;
   let buildingX: string;
   let buildingY: string;
 
@@ -850,6 +916,7 @@ describe('Subscription Management (e2e) — Time-Based Lifecycle (07.04 Rule 007
     createdPhones.push(founder.phone);
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    subscriptionAdminGrantId = await grantSubscriptionAdminToReviewer(prisma, reviewer.personId);
 
     // See the correction-round note above `SubAutoCity` earlier in this
     // file — same reasoning, dropped in favor of the default address for
@@ -865,6 +932,7 @@ describe('Subscription Management (e2e) — Time-Based Lifecycle (07.04 Rule 007
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, subscriptionAdminGrantId);
     await cleanupBuildings(prisma, createdBuildingIds);
     await cleanupPhones(prisma, createdPhones);
     await cleanupStaffLoginArtifacts(prisma, staffPhones);
@@ -980,5 +1048,164 @@ describe('Subscription Management (e2e) — Time-Based Lifecycle (07.04 Rule 007
       .expect(403);
 
     expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+});
+
+describe('ADR-101 — Subscription Management Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (founder, plainPerson) — the
+  // seeded-staff login below uses requestOtpAndCaptureCodeDirect, which
+  // never touches this budget.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const staffPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let founder: RegisteredPerson;
+  let reviewer: RegisteredPerson;
+  let plainPerson: RegisteredPerson;
+  let buildingId: string;
+  let testRoleId: string;
+  let viewPermissionId: string;
+  let managePermissionId: string;
+  let staffRoleGrantId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    founder = await registerPerson(app);
+    createdPhones.push(founder.phone);
+    plainPerson = await registerPerson(app);
+    createdPhones.push(plainPerson.phone);
+
+    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    staffPhones.push(PLATFORM_REVIEWER_PHONE);
+
+    buildingId = await createBuilding(app, founder.accessToken, {});
+    createdBuildingIds.push(buildingId);
+    await waitForSubscription(prisma, buildingId);
+
+    const permissionKeys = ['SUBSCRIPTION_VIEW', 'SUBSCRIPTION_MANAGE'] as const;
+    const permissionIds: Record<(typeof permissionKeys)[number], string> = {} as never;
+    for (const key of permissionKeys) {
+      const permission =
+        (await prisma.permission.findUnique({ where: { key } })) ??
+        (await prisma.permission.create({ data: { key, label: key } }));
+      permissionIds[key] = permission.id;
+    }
+    viewPermissionId = permissionIds.SUBSCRIPTION_VIEW;
+    managePermissionId = permissionIds.SUBSCRIPTION_MANAGE;
+
+    const testRole = await prisma.role.create({
+      data: { name: `E2E ADR-101 Test Role ${Date.now()}`, description: 'Created by subscription.e2e-spec.ts (ADR-101 block).' },
+    });
+    testRoleId = testRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewer.personId } });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
+    staffRoleGrantId = grant.id;
+    // No RolePermission granted on this role yet — the reviewer starts
+    // this describe block holding the legacy rank but NO RBAC permission
+    // at all, deliberately, to prove the next test's 403.
+  });
+
+  afterAll(async () => {
+    // 21_ADRs > ADR-100's own fixture-teardown fix, reused verbatim:
+    // `staffRole.update(revokedAt: ...)` only soft-closes the row
+    // (ADR-099's history-preservation design, correct for real production
+    // grants) — the row still exists afterward and still holds a live FK
+    // to `rbac_roles.id`, so a subsequent `role.delete()` would violate
+    // `staff_roles_roleId_fkey`. This `StaffRole` is this describe
+    // block's own disposable fixture, never asserted on directly and
+    // never meant to persist as real history — hard-delete it here,
+    // exactly like `marketplace.e2e-spec.ts`'s own ADR-100 block already
+    // does. Production revoke behavior (`RbacManagementService.revokeRole`/
+    // `revokePermission`, both `update`-only, never `delete`) is
+    // unchanged by this — this is test-fixture teardown, not a change to
+    // RBAC semantics.
+    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
+    await prisma.role.delete({ where: { id: testRoleId } });
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/buildings/${buildingId}/subscription`)
+      .expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/buildings/${buildingId}/subscription`)
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the REVIEWER-ranked staff member while holding the new role with NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/buildings/${buildingId}/subscription`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting SUBSCRIPTION_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed (VIEW cannot MANAGE)', async () => {
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: viewPermissionId },
+    });
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/buildings/${buildingId}/subscription`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+
+    // Still holds only SUBSCRIPTION_VIEW — the manage-tier action must
+    // still be rejected. This is the direct proof of "VIEW permission
+    // cannot perform MANAGE actions."
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/buildings/${buildingId}/subscription/plan`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ plan: 'PRO', reason: 'ADR-101 e2e proof' })
+      .expect(403);
+  });
+
+  it('granting SUBSCRIPTION_MANAGE additionally takes effect immediately — the manage-tier route opens (matches the approved permission matrix)', async () => {
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: managePermissionId },
+    });
+
+    const planRes = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/buildings/${buildingId}/subscription/plan`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ plan: 'PRO', reason: 'ADR-101 e2e proof' })
+      .expect(201);
+    expect(planRes.body.data.plan).toBe('PRO');
+  });
+
+  it('revoking SUBSCRIPTION_MANAGE takes effect immediately — a subsequent manage-tier action is rejected again, live and uncached (per ADR-098)', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/buildings/${buildingId}/subscription/status`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ status: 'ACTIVE', reason: 'ADR-101 e2e proof' })
+      .expect(403);
+
+    // VIEW-tier access is unaffected by revoking MANAGE alone.
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/buildings/${buildingId}/subscription`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
   });
 });

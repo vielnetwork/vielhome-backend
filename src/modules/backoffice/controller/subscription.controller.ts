@@ -7,6 +7,8 @@ import { CreateFeatureGrantDto } from '../application/dto/create-feature-grant.d
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
@@ -16,34 +18,47 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
  * ADR-033). Platform staff only. Deliberately scoped to state management
  * (plan/status/grants/history/effective-features) — no billing, no
  * payment collection, no pricing enforcement this sprint.
+ *
+ * 21_ADRs > ADR-101 — first (and, per that ADR's scope redirect, only)
+ * Bridge Migration pilot for this controller: `PermissionsGuard` is added
+ * alongside the pre-existing `PlatformRolesGuard`, never replacing it
+ * (both must pass). Reads map to `SUBSCRIPTION_VIEW`, state-changing
+ * routes to `SUBSCRIPTION_MANAGE` — two permissions kept deliberately
+ * separate from `FINANCE_VIEW`/`FINANCE_REFUND` (Subscription Management
+ * is its own domain, not part of the Finance module, even though both
+ * are billing-adjacent).
  */
 @ApiTags('backoffice')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, PlatformRolesGuard)
+@UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
 @Controller({ path: 'backoffice/buildings/:buildingId/subscription', version: '1' })
 export class SubscriptionController {
   constructor(private readonly service: SubscriptionService) {}
 
   @Get()
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('SUBSCRIPTION_VIEW')
   get(@Param('buildingId') buildingId: string) {
     return this.service.getForBuilding(buildingId);
   }
 
   @Get('effective-features')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('SUBSCRIPTION_VIEW')
   effectiveFeatures(@Param('buildingId') buildingId: string) {
     return this.service.resolveEffectiveFeatures(buildingId);
   }
 
   @Get('history')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('SUBSCRIPTION_VIEW')
   history(@Param('buildingId') buildingId: string) {
     return this.service.getHistory(buildingId);
   }
 
   @Post('plan')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('SUBSCRIPTION_MANAGE')
   changePlan(
     @Param('buildingId') buildingId: string,
     @Body() dto: ChangeSubscriptionPlanDto,
@@ -55,6 +70,7 @@ export class SubscriptionController {
 
   @Post('status')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('SUBSCRIPTION_MANAGE')
   changeStatus(
     @Param('buildingId') buildingId: string,
     @Body() dto: ChangeSubscriptionStatusDto,
@@ -67,6 +83,7 @@ export class SubscriptionController {
   /** Manually applies the Trial/Grace-Period time-based transitions — standing in for the not-yet-built scheduler. See `SubscriptionService.evaluateExpiry`. */
   @Post('evaluate-expiry')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('SUBSCRIPTION_MANAGE')
   evaluateExpiry(
     @Param('buildingId') buildingId: string,
     @CurrentUser() user: JwtPayload,
@@ -77,6 +94,7 @@ export class SubscriptionController {
 
   @Post('grants')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('SUBSCRIPTION_MANAGE')
   createGrant(
     @Param('buildingId') buildingId: string,
     @Body() dto: CreateFeatureGrantDto,
@@ -98,6 +116,7 @@ export class SubscriptionController {
 
   @Post('grants/:grantId/revoke')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('SUBSCRIPTION_MANAGE')
   revokeGrant(
     @Param('grantId') grantId: string,
     @CurrentUser() user: JwtPayload,

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { PermissionKey } from '@prisma/client';
-import { BackOfficeRepository } from '../../backoffice/infrastructure/repositories/backoffice.repository';
+import { PlatformStaffRepository } from '../../platform-staff/infrastructure/repositories/platform-staff.repository';
 import { BackofficeRbacRepository } from '../infrastructure/repositories/backoffice-rbac.repository';
 
 /**
@@ -20,12 +20,12 @@ import { BackofficeRbacRepository } from '../infrastructure/repositories/backoff
 @Injectable()
 export class PermissionResolverService {
   constructor(
-    private readonly backOffice: BackOfficeRepository,
+    private readonly platformStaff: PlatformStaffRepository,
     private readonly rbac: BackofficeRbacRepository,
   ) {}
 
   async resolve(personId: string): Promise<Set<PermissionKey>> {
-    const staff = await this.backOffice.getActivePlatformStaff(personId);
+    const staff = await this.platformStaff.getActivePlatformStaff(personId);
     if (!staff) return new Set();
 
     const keys = await this.rbac.getEffectivePermissionKeysForStaff(staff.id);

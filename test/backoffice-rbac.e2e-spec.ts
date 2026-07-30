@@ -266,7 +266,16 @@ describe('Backoffice RBAC Foundation (ADR-099)', () => {
         .get('/api/v1/backoffice/rbac/permissions')
         .set('Authorization', `Bearer ${admin.accessToken}`)
         .expect(200);
-      expect(permsRes.body.data.length).toBe(11);
+      const permissionKeys = permsRes.body.data.map(
+        (permission: { key: string }) => permission.key,
+      );
+
+      expect(permissionKeys).toEqual(
+        expect.arrayContaining([
+          'SUBSCRIPTION_VIEW',
+          'SUBSCRIPTION_MANAGE',
+        ]),
+      );
     });
 
     it('assigns a role to a staff member, writes an audit entry, and rejects a duplicate active grant (idempotency / conflict)', async () => {

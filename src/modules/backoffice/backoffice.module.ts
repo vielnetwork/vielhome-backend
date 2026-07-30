@@ -34,6 +34,7 @@ import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { MembershipGuard } from '../../common/guards/membership.guard';
 import { BuildingModule } from '../building/building.module';
+import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
 
 @Module({
   // Only BuildingModule — `BackOfficeEventListener` reacts to
@@ -41,7 +42,14 @@ import { BuildingModule } from '../building/building.module';
   // dependency" discipline every domain since ADR-023 has followed.
   // `AuditService` is not imported here because `AuditModule` is
   // `@Global()` (see ADR-026) — injectable everywhere without an import.
-  imports: [BuildingModule],
+  //
+  // 21_ADRs > ADR-101 additionally imports `BackofficeRbacModule` — it
+  // exports `PermissionsGuard` directly, needed to gate
+  // `SubscriptionController` (the ADR-101 Bridge Migration pilot). Safe
+  // to import here (no cycle): `BackofficeRbacModule` was changed as
+  // part of this same ADR to depend on `PlatformStaffModule` instead of
+  // this module, specifically to make this import possible.
+  imports: [BuildingModule, BackofficeRbacModule],
   controllers: [
     BuildingVerificationController,
     BuildingVerificationAppealController,

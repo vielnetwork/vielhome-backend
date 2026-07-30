@@ -3,8 +3,8 @@
 // Deterministic, idempotent seed for the new permission-driven
 // authorization model. Deliberately a SEPARATE script from `prisma/
 // seed.ts` (run via its own `db:seed:rbac` package.json entry, not folded
-// into the general dev seed's `db:seed`) — this reference data (11
-// Permissions, 6 Roles, the approved Role<->Permission matrix) is the
+// into the general dev seed's `db:seed`) — this reference data (13
+// Permissions, 7 Roles, the approved Role<->Permission matrix) is the
 // same in every environment, unlike `seed.ts`'s dev-only test Person/
 // PlatformStaff rows.
 //
@@ -50,6 +50,22 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     description:
       'Manage the platform-wide System Feature Toggle system (21_ADRs > ADR-098 item 9) — distinct from customer-facing FeatureGrant entitlements.',
   },
+  // 21_ADRs > ADR-101 — Subscription Management (07.04/ADR-033) is a
+  // distinct domain from the Finance module even though both are
+  // billing-adjacent; kept as its own permission pair rather than folded
+  // into FINANCE_VIEW/FINANCE_REFUND, to preserve a clean semantic
+  // boundary between the two.
+  {
+    key: 'SUBSCRIPTION_VIEW',
+    label: 'View Subscriptions',
+    description: 'View a building\'s subscription state, effective features, and change history.',
+  },
+  {
+    key: 'SUBSCRIPTION_MANAGE',
+    label: 'Manage Subscriptions',
+    description:
+      'Change a building\'s subscription plan/status, run the time-based lifecycle evaluation, and create/revoke feature grants.',
+  },
 ];
 
 // 21_ADRs > ADR-099 §2 — the approved final permission matrix (Support
@@ -67,6 +83,10 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
   'Support Admin': ['USER_VIEW', 'BUILDING_VIEW'],
   'Technical Admin': ['SYSTEM_SETTINGS', 'FEATURE_FLAGS', 'AUDIT_VIEW'],
   'Marketplace Admin': ['MARKETPLACE_REVIEW', 'MARKETPLACE_APPROVE'],
+  // 21_ADRs > ADR-101 — a dedicated role, not folded into Finance Admin,
+  // per the explicit decision to keep Subscription Management and
+  // Finance as separate permission domains.
+  'Subscription Admin': ['SUBSCRIPTION_VIEW', 'SUBSCRIPTION_MANAGE'],
 };
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
@@ -76,6 +96,7 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   'Support Admin': 'Support-facing user and building context, per 07_BackOffice_v2.0 Support Center scope.',
   'Technical Admin': 'System-level configuration, feature toggles, and audit oversight.',
   'Marketplace Admin': 'Marketplace listing review and approval — nothing else.',
+  'Subscription Admin': 'Subscription Management access — view and manage building plan/status/feature grants.',
 };
 
 async function auditSeedCreate(entityType: string, entityId: string, action: string, metadata: Record<string, unknown>) {
@@ -143,7 +164,7 @@ async function main() {
   console.log(`RolePermission grants created this run: ${grantsCreated} (re-running this script creates 0).`);
 
   console.log(
-    'No StaffRole rows were seeded — ADR-099 deliberately defers real staff-to-role assignment to ADR-100 or a dedicated follow-up.',
+    'No StaffRole rows were seeded — ADR-099 deliberately defers real staff-to-role assignment to ADR-100/ADR-101 or a dedicated follow-up.',
   );
 }
 

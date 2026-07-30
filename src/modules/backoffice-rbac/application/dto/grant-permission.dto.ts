@@ -14,6 +14,8 @@ const PERMISSION_KEYS = [
   'AUDIT_VIEW',
   'SYSTEM_SETTINGS',
   'FEATURE_FLAGS',
+  'SUBSCRIPTION_VIEW',
+  'SUBSCRIPTION_MANAGE',
 ] as const;
 
 /** 21_ADRs > ADR-099 §6 — `POST /backoffice/rbac/roles/:roleId/permissions`. */

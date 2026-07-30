@@ -2470,6 +2470,13 @@ enum PermissionKey {
   AUDIT_VIEW
   SYSTEM_SETTINGS
   FEATURE_FLAGS
+  // ADR-101 — Subscription Management Permission Migration. Deliberately
+  // NOT folded into FINANCE_VIEW/FINANCE_REFUND: Subscription Management
+  // (07.04/ADR-033) is a distinct domain from the Finance module (Funds/
+  // Charges/Payments/Ledger) even though both are billing-adjacent — kept
+  // as its own permission pair to preserve a clean semantic boundary.
+  SUBSCRIPTION_VIEW
+  SUBSCRIPTION_MANAGE
 }
 
 model Role {
