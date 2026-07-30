@@ -116,6 +116,14 @@ model Person {
   // same "reuse Person, don't fork identity" choice as everything else in
   // this schema.
   platformStaff                 PlatformStaff?
+  // Backoffice RBAC Foundation (21_ADRs > ADR-099). Nullable actor FKs
+  // above on `StaffRole`/`RolePermission` mean a seed-created row has no
+  // back-relation entry here at all (the FK is null) -- these arrays only
+  // ever contain real, API-driven grants/revocations.
+  rbacRoleGrantsAssigned        StaffRole[]                @relation("StaffRoleAssignedBy")
+  rbacRoleGrantsRevoked         StaffRole[]                @relation("StaffRoleRevokedBy")
+  rbacPermissionGrantsAdded     RolePermission[]           @relation("RolePermissionAddedBy")
+  rbacPermissionGrantsRevoked   RolePermission[]           @relation("RolePermissionRevokedBy")
   assignedBuildingVerifications BuildingVerificationCase[] @relation("BVCAssignee")
   reviewedBuildingVerifications BuildingVerificationCase[] @relation("BVCReviewer")
   managerVerificationCandidacies ManagerVerificationCase[] @relation("MVCCandidate")
@@ -2413,7 +2421,136 @@ model PlatformStaff {
   isActive  Boolean           @default(true)
   createdAt DateTime          @default(now())
 
+  // Backoffice RBAC Foundation (21_ADRs > ADR-099) -- additive, parallel to
+  // `role` above per ADR-098's Bridge Migration. A staff member may hold
+  // zero or more `Role`s at once via `StaffRole`.
+  staffRoles StaffRole[]
+
   @@map("platform_staff")
+}
+
+// ---------------------------------------------------------------------------
+// Backoffice RBAC Foundation (21_ADRs > ADR-099; architecture: ADR-098)
+//
+// A parallel, permission-driven authorization model, introduced ALONGSIDE
+// (not replacing) `PlatformStaffRole`/`PlatformStaff` above, per ADR-098's
+// approved "Bridge Migration" -- no existing column, enum, guard, or
+// controller is touched by this section. `Role` is a pure named container
+// holding zero business logic of its own. A staff member can hold multiple
+// `Role`s at once via `StaffRole` (mirrors `Membership`'s own multi-row-
+// per-person pattern, not a single-role-per-staff column). `Permission` is
+// a fixed vocabulary (`PermissionKey`) a `Role` holds zero or more of via
+// `RolePermission`.
+//
+// Both join models preserve full EFFECTIVE HISTORY -- a revoked grant is
+// closed (`revokedAt` set), never deleted, symmetric between the two
+// (ADR-099 Decision). `AuditLog` records that a change happened; these
+// rows record what was true, and for how long -- ADR-099 requires being
+// able to reconstruct which permissions a role held, and therefore which
+// permissions a staff member effectively held, at any past point in time.
+//
+// Neither join model can express "at most one ACTIVE grant per pair" as a
+// plain `@@unique` (a boolean-in-a-unique-constraint approach breaks the
+// moment a pair is revoked and re-granted more than once -- two closed
+// rows for the same pair would collide with each other). Both are backed
+// instead by a partial unique index (`WHERE "revokedAt" IS NULL`), added by
+// hand-written SQL in this feature's migration -- Prisma's schema DSL has
+// no way to express a partial index as of this project's Prisma version.
+// ---------------------------------------------------------------------------
+
+enum PermissionKey {
+  USER_VIEW
+  USER_EDIT
+  BUILDING_VIEW
+  BUILDING_EDIT
+  MARKETPLACE_REVIEW
+  MARKETPLACE_APPROVE
+  FINANCE_VIEW
+  FINANCE_REFUND
+  AUDIT_VIEW
+  SYSTEM_SETTINGS
+  FEATURE_FLAGS
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  staffRoles      StaffRole[]
+  rolePermissions RolePermission[]
+
+  @@map("rbac_roles")
+}
+
+model Permission {
+  id          String        @id @default(cuid())
+  key         PermissionKey @unique
+  label       String
+  description String?
+  createdAt   DateTime      @default(now())
+
+  rolePermissions RolePermission[]
+
+  @@map("rbac_permissions")
+}
+
+// Staff <-> Role. `staffId` references `PlatformStaff.id` -- a Person must
+// already be a (seeded) platform staff member before they can hold an RBAC
+// role. The partial unique index (see header comment) enforces at most one
+// row per (staffId, roleId) with `revokedAt IS NULL` at a time.
+model StaffRole {
+  id      String        @id @default(cuid())
+  staffId String
+  staff   PlatformStaff @relation(fields: [staffId], references: [id])
+  roleId  String
+  role    Role          @relation(fields: [roleId], references: [id])
+
+  // Nullable -- ADR-099's deterministic seed creates no `StaffRole` rows at
+  // all (real staff are deliberately not auto-assigned into the new roles
+  // by this ADR), but the field stays nullable for any future seed/system-
+  // driven grant. Every API-driven grant going forward MUST supply a real
+  // acting Person (enforced in `RbacManagementService`, not at the schema
+  // level).
+  assignedById String?
+  assignedBy   Person?  @relation("StaffRoleAssignedBy", fields: [assignedById], references: [id])
+  assignedAt   DateTime @default(now())
+  revokedById  String?
+  revokedBy    Person?  @relation("StaffRoleRevokedBy", fields: [revokedById], references: [id])
+  revokedAt    DateTime?
+
+  @@index([staffId])
+  @@index([roleId])
+  @@map("staff_roles")
+}
+
+// Role <-> Permission. Same active-row/history shape as `StaffRole` above
+// (ADR-099: history preservation is symmetric between the two join
+// models) -- a past grant is closed via `revokedAt`, never deleted.
+model RolePermission {
+  id           String     @id @default(cuid())
+  roleId       String
+  role         Role       @relation(fields: [roleId], references: [id])
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id])
+
+  // Nullable -- ADR-099's deterministic seed creates the initial six-role
+  // permission matrix with no real human actor. `AuditService` records
+  // `metadata: { source: 'SYSTEM_SEED' }` for these rows (see
+  // `prisma/seed/rbac.seed.ts`); every API-driven grant going forward MUST
+  // supply a real acting Person (enforced in `RbacManagementService`).
+  addedById   String?
+  addedBy     Person?   @relation("RolePermissionAddedBy", fields: [addedById], references: [id])
+  addedAt     DateTime  @default(now())
+  revokedById String?
+  revokedBy   Person?   @relation("RolePermissionRevokedBy", fields: [revokedById], references: [id])
+  revokedAt   DateTime?
+
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
 }
 
 // ---------------------------------------------------------------------------

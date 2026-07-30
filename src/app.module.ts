@@ -23,6 +23,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { GamificationModule } from './modules/gamification/gamification.module';
 import { BackOfficeModule } from './modules/backoffice/backoffice.module';
 import { MarketplaceModule } from './modules/marketplace/marketplace.module';
+import { BackofficeRbacModule } from './modules/backoffice-rbac/backoffice-rbac.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 
 @Module({
@@ -84,6 +85,11 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     GamificationModule,
     BackOfficeModule,
     MarketplaceModule,
+    // 21_ADRs > ADR-099 (architecture: ADR-098) — new, parallel
+    // permission-driven authorization model. Registered after
+    // BackOfficeModule/MarketplaceModule since it imports the former;
+    // no existing controller is migrated to it yet (Bridge Migration).
+    BackofficeRbacModule,
     // Registered last — the first module in this codebase whose own
     // startup logic (`SchedulerBootstrapService.onApplicationBootstrap`)
     // actively calls into other domains' services, so every domain it
