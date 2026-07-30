@@ -34,7 +34,7 @@ for the first time across every platform-wide unbounded listing
 been completed (`26_Security_Review_v1.0`, `27_Performance_Review_v1.0` —
 Project docs, not ADRs). Remaining before overall MVP release readiness:
 committing a versioned Swagger/OpenAPI snapshot (mechanism ready,
-`ADR-071`), Testing Phase 3's remaining domains (BackOffice/Marketplace),
+`ADR-071`), the remaining BackOffice and Marketplace e2e expansion work,
 and the smaller named follow-ups inside each review's own Priority Order
 (e.g. a real `npm audit` run, measuring the frozen numeric Performance
 Targets) — see "Release readiness" below. Every sprint has been confirmed
@@ -159,6 +159,27 @@ committed (`ADR-063`), `package-lock.json` real and committed (`ADR-064`),
 `npm test` passing 23/23 suites (265/265 tests) as of the `ADR-062` freeze
 pass. Treat any *new* delivery's first local run as its own real first test
 pass regardless of this history — see "Known risk areas."
+
+**`npm run test:e2e` cross-suite cleanup race — investigated and closed
+(`21_ADRs > ADR-107`, "E2E Cleanup Must Never Use Broad Predicates Against
+Shared Seeded Fixtures").** A full parallel `npm run test:e2e` run
+surfaced failures that first presented as real authorization/authentication
+defects (`ManagerVerificationController`'s ADR-102 permission-migration
+tests returning 403 after a permission grant; `notifications.e2e-spec.ts`'s
+Notification Template permission-migration tests failing OTP verification
+with 422/P2025). Both traced to test-only cleanup helpers deleting rows by
+a predicate scoped only to a **shared** seeded identifier (the seeded
+platform admin's `staffId` in `backoffice-rbac.e2e-spec.ts`; the seeded
+staff phone numbers in `notifications.e2e-spec.ts`) — under Jest's parallel
+per-file workers against one shared dev database, either predicate could
+delete another concurrently-running suite's own in-flight fixture row.
+Fixed by narrowing both predicates to rows the owning suite can prove are
+its own (exact `roleId`; `consumedAt`/`expiresAt` state) — test code only,
+no change to `PermissionsGuard`, `PermissionResolverService`, `AuthService`,
+or `AuthRepository`. Re-verified clean on a full parallel run: **22/22 test
+suites passed, 617/617 tests passed.** See `ADR-107` for the full root
+cause, fix, and the residual-risk follow-up (auditing the same broad-
+predicate shape in other files' own local cleanup helpers).
 
 ## Prerequisites
 
@@ -377,10 +398,10 @@ Performance, Security — have now been picked up at least once (`ADR-070`/
 Performance Review's own headline finding (frozen Page/Limit pagination
 never implemented) is now closed by `ADR-072`. **Remaining before overall
 MVP release readiness: committing a versioned Swagger/OpenAPI snapshot
-(mechanism ready — `npm run docs:export-openapi`, `ADR-071`), Testing
-Phase 3+'s remaining domains (BackOffice/Marketplace), and the smaller
-named follow-ups inside each review's own Priority Order** (a real
-`npm audit` run, measuring the frozen numeric Performance Targets, the
+(mechanism ready — `npm run docs:export-openapi`, `ADR-071`), the
+remaining BackOffice and Marketplace e2e expansion work, plus the other
+documented follow-up items inside each review's own Priority Order** (a
+real `npm audit` run, measuring the frozen numeric Performance Targets, the
 `detectAnomalies` N+1 fix, and others — see `19_Current_Sprint_v2.0`'s
 Release Readiness section for the live, authoritative status).
 
@@ -396,9 +417,9 @@ Release Readiness section for the live, authoritative status).
    (`<300ms` avg, `<150ms` critical) against real traffic, and batch
    `ComplianceCaseService.detectAnomalies()`'s N+1 existence checks
    (`27_Performance_Review_v1.0` §2.1) next time that service is touched.
-4. Testing Phase 3+: BackOffice/Marketplace e2e coverage remains open beyond
-   Auth/Building/Finance/Governance/Cases/Documents/Notifications/
-   Gamification, continuing the pattern `test/auth.e2e-spec.ts`/`test/
+4. Remaining BackOffice and Marketplace e2e expansion work: several
+   BackOffice sub-domains and Marketplace already have dedicated e2e
+   coverage; the remaining gaps continue the pattern `test/auth.e2e-spec.ts`/`test/
    building.e2e-spec.ts`/`test/finance.e2e-spec.ts`/`test/governance.
    e2e-spec.ts`/`test/cases.e2e-spec.ts`/`test/documents.e2e-spec.ts`/
    `test/notifications.e2e-spec.ts`/`test/gamification.e2e-spec.ts`
