@@ -16,6 +16,7 @@ import { NotificationPolicy } from './domain/policies/notification.policy';
 import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
 import { BuildingModule } from '../building/building.module';
 import { BackOfficeModule } from '../backoffice/backoffice.module';
+import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
 
 @Module({
   // Reuses BuildingRepository's recipient-resolution helpers (added this
@@ -45,9 +46,15 @@ import { BackOfficeModule } from '../backoffice/backoffice.module';
   // single-purpose import Marketplace already established for its own
   // moderation controller (ADR-030 point 6). No other part of this module
   // touches BackOffice.
+  //
+  // 21_ADRs > ADR-102 additionally imports `BackofficeRbacModule` for
+  // `PermissionsGuard`, gating `NotificationTemplateController` alongside
+  // the pre-existing `PlatformRolesGuard`. No cycle risk: this module is
+  // never imported back into `BackOfficeModule`/`BackofficeRbacModule`.
   imports: [
     BuildingModule,
     BackOfficeModule,
+    BackofficeRbacModule,
     BullModule.registerQueue({ name: NOTIFICATION_DISPATCH_QUEUE }),
   ],
   controllers: [

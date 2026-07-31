@@ -1148,3 +1148,338 @@ describe('Audit & Compliance Center (e2e) — Legal Hold & Raw Audit Log (07.06)
     expect(metaRows.length).toBeGreaterThanOrEqual(4);
   });
 });
+
+describe('ADR-102 — Compliance Case Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (subjectPerson, plainPerson)
+  // — admin login uses requestOtpAndCaptureCodeDirect via
+  // loginAsSeededStaff, which never touches this budget.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
+  const createdPhones: string[] = [];
+  const createdPersonIds: string[] = [];
+
+  let subjectPerson: RegisteredPerson;
+  let plainPerson: RegisteredPerson;
+  let admin: RegisteredPerson;
+  let testRoleId: string;
+  let viewPermissionId: string;
+  let managePermissionId: string;
+  let staffRoleGrantId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    subjectPerson = await registerPerson(app);
+    createdPhones.push(subjectPerson.phone);
+    createdPersonIds.push(subjectPerson.personId);
+
+    plainPerson = await registerPerson(app);
+    createdPhones.push(plainPerson.phone);
+
+    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
+    staffPhones.push(PLATFORM_ADMIN_PHONE);
+    staffDeviceTokens.push(admin.deviceToken!);
+
+    const permissionKeys = ['COMPLIANCE_VIEW', 'COMPLIANCE_MANAGE'] as const;
+    const permissionIds: Record<(typeof permissionKeys)[number], string> = {} as never;
+    for (const key of permissionKeys) {
+      const permission =
+        (await prisma.permission.findUnique({ where: { key } })) ??
+        (await prisma.permission.create({ data: { key, label: key } }));
+      permissionIds[key] = permission.id;
+    }
+    viewPermissionId = permissionIds.COMPLIANCE_VIEW;
+    managePermissionId = permissionIds.COMPLIANCE_MANAGE;
+
+    const testRole = await prisma.role.create({
+      data: {
+        name: `E2E ADR-102 Compliance Test Role ${Date.now()}`,
+        description: 'Created by compliance-case.e2e-spec.ts (ADR-102 block).',
+      },
+    });
+    testRoleId = testRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: admin.personId } });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
+    staffRoleGrantId = grant.id;
+    // No RolePermission granted yet — admin holds the legacy rank
+    // (PLATFORM_ADMIN, satisfying the required SENIOR_REVIEWER+ rank) but
+    // no RBAC permission at all, deliberately.
+  });
+
+  afterAll(async () => {
+    // Hard-delete the fixture's own StaffRole row (disposable test
+    // fixture) rather than just revoking it — same ADR-100 teardown fix
+    // reused verbatim (revoking alone leaves a live FK to the Role being
+    // deleted next).
+    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
+    await prisma.role.delete({ where: { id: testRoleId } });
+    await cleanupAuditComplianceArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    await request(app.getHttpServer()).get('/api/v1/backoffice/compliance-cases').expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/compliance-cases')
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the PLATFORM_ADMIN-ranked staff member while holding the new role with NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/compliance-cases')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting COMPLIANCE_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed', async () => {
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: viewPermissionId },
+    });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/compliance-cases')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/backoffice/compliance-cases')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({
+        category: 'OTHER',
+        subjectActorId: subjectPerson.personId,
+        description: 'ADR-102 e2e proof.',
+      })
+      .expect(403);
+  });
+
+  it('granting COMPLIANCE_MANAGE additionally takes effect immediately — the manage-tier route opens', async () => {
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: managePermissionId },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/backoffice/compliance-cases')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({
+        category: 'OTHER',
+        subjectActorId: subjectPerson.personId,
+        description: 'ADR-102 e2e proof.',
+      })
+      .expect(201);
+    expect(res.body.data.subjectActorId).toBe(subjectPerson.personId);
+  });
+
+  it('revoking COMPLIANCE_MANAGE takes effect immediately — a subsequent manage-tier action is rejected again, live and uncached', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/backoffice/compliance-cases')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({
+        category: 'OTHER',
+        subjectActorId: subjectPerson.personId,
+        description: 'ADR-102 e2e proof (should be rejected).',
+      })
+      .expect(403);
+
+    // VIEW-tier access is unaffected by revoking MANAGE alone.
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/compliance-cases')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(200);
+  });
+});
+
+describe('ADR-102 — Legal Hold & Audit Log Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  // Budget: 1 call to POST /auth/otp/request (plainPerson registration) —
+  // admin login uses requestOtpAndCaptureCodeDirect via
+  // loginAsSeededStaff, which never touches this budget.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
+  const createdPhones: string[] = [];
+
+  let plainPerson: RegisteredPerson;
+  let admin: RegisteredPerson;
+  let legalHoldTestRoleId: string;
+  let legalHoldPermissionId: string;
+  let legalHoldStaffRoleGrantId: string;
+  let auditTestRoleId: string;
+  let auditPermissionId: string;
+  let auditStaffRoleGrantId: string;
+  const heldEntityType = 'SupportCase';
+  const heldEntityId = `e2e-adr102-held-entity-${RUN_ID}`;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    plainPerson = await registerPerson(app);
+    createdPhones.push(plainPerson.phone);
+
+    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
+    staffPhones.push(PLATFORM_ADMIN_PHONE);
+    staffDeviceTokens.push(admin.deviceToken!);
+
+    const legalHoldPermission =
+      (await prisma.permission.findUnique({ where: { key: 'LEGAL_HOLD_MANAGE' } })) ??
+      (await prisma.permission.create({
+        data: { key: 'LEGAL_HOLD_MANAGE', label: 'LEGAL_HOLD_MANAGE' },
+      }));
+    legalHoldPermissionId = legalHoldPermission.id;
+    const legalHoldRole = await prisma.role.create({
+      data: {
+        name: `E2E ADR-102 LegalHold Test Role ${Date.now()}`,
+        description: 'Created by compliance-case.e2e-spec.ts (ADR-102 block).',
+      },
+    });
+    legalHoldTestRoleId = legalHoldRole.id;
+
+    const auditPermission =
+      (await prisma.permission.findUnique({ where: { key: 'AUDIT_VIEW' } })) ??
+      (await prisma.permission.create({ data: { key: 'AUDIT_VIEW', label: 'AUDIT_VIEW' } }));
+    auditPermissionId = auditPermission.id;
+    const auditRole = await prisma.role.create({
+      data: {
+        name: `E2E ADR-102 Audit Test Role ${Date.now()}`,
+        description: 'Created by compliance-case.e2e-spec.ts (ADR-102 block).',
+      },
+    });
+    auditTestRoleId = auditRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: admin.personId } });
+    legalHoldStaffRoleGrantId = (
+      await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: legalHoldTestRoleId } })
+    ).id;
+    auditStaffRoleGrantId = (
+      await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: auditTestRoleId } })
+    ).id;
+    // Neither role has a RolePermission grant yet — admin holds the
+    // legacy PLATFORM_ADMIN rank (satisfying both controllers' legacy
+    // requirement) but no RBAC permission at all, deliberately.
+  });
+
+  afterAll(async () => {
+    // Hard-delete both fixture StaffRole rows (disposable test fixtures)
+    // rather than just revoking them — same ADR-100 teardown fix reused
+    // verbatim (revoking alone leaves a live FK to the Role being deleted
+    // next).
+    await prisma.staffRole.delete({ where: { id: legalHoldStaffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: legalHoldTestRoleId } });
+    await prisma.role.delete({ where: { id: legalHoldTestRoleId } });
+    await prisma.staffRole.delete({ where: { id: auditStaffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: auditTestRoleId } });
+    await prisma.role.delete({ where: { id: auditTestRoleId } });
+    await prisma.auditLegalHold.deleteMany({
+      where: { entityType: heldEntityType, entityId: heldEntityId },
+    });
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller on both controllers (401)', async () => {
+    await request(app.getHttpServer()).get('/api/v1/backoffice/legal-holds').expect(401);
+    await request(app.getHttpServer()).get('/api/v1/backoffice/audit-logs').expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/legal-holds')
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/audit-logs')
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the PLATFORM_ADMIN-ranked staff member on both routes while holding NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/legal-holds')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/audit-logs')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting LEGAL_HOLD_MANAGE takes effect immediately — the legal-hold route opens; audit-logs stays closed', async () => {
+    await prisma.rolePermission.create({
+      data: { roleId: legalHoldTestRoleId, permissionId: legalHoldPermissionId },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/backoffice/legal-holds')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ entityType: heldEntityType, entityId: heldEntityId, reason: 'ADR-102 e2e proof.' })
+      .expect(201);
+    expect(res.body.data.isActive).toBe(true);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/audit-logs')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(403);
+  });
+
+  it('revoking LEGAL_HOLD_MANAGE takes effect immediately — the route closes again, live and uncached', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: legalHoldTestRoleId, permissionId: legalHoldPermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/legal-holds')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting AUDIT_VIEW takes effect immediately — the audit-logs route opens', async () => {
+    await prisma.rolePermission.create({
+      data: { roleId: auditTestRoleId, permissionId: auditPermissionId },
+    });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/audit-logs')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .query({ entityType: heldEntityType, entityId: heldEntityId })
+      .expect(200);
+  });
+
+  it('revoking AUDIT_VIEW takes effect immediately — the route closes again, live and uncached', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: auditTestRoleId, permissionId: auditPermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/audit-logs')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(403);
+  });
+});

@@ -7,6 +7,7 @@ import { GamificationRepository } from './infrastructure/repositories/gamificati
 import { GamificationPolicy } from './domain/policies/gamification.policy';
 import { BuildingModule } from '../building/building.module';
 import { BackOfficeModule } from '../backoffice/backoffice.module';
+import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
 import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
 
 @Module({
@@ -17,7 +18,12 @@ import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
   // EventListener` still reacts to events from Finance/Governance/Cases/
   // Auth via `import type` only (compile-time, no runtime DI dependency),
   // unchanged since ADR-023.
-  imports: [BuildingModule, BackOfficeModule],
+  // 21_ADRs > ADR-102 additionally imports `BackofficeRbacModule` for
+  // `PermissionsGuard`, gating the single staff-only `GET /gamification/
+  // analytics` route alongside the pre-existing `PlatformRolesGuard`. No
+  // cycle risk: this module is never imported back into `BackOfficeModule`/
+  // `BackofficeRbacModule`.
+  imports: [BuildingModule, BackOfficeModule, BackofficeRbacModule],
   controllers: [GamificationController, BuildingGamificationController],
   providers: [
     GamificationService,

@@ -7,6 +7,8 @@ import { DecideComplianceCaseDto } from '../application/dto/decide-compliance-ca
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
@@ -22,13 +24,17 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
  */
 @ApiTags('backoffice')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, PlatformRolesGuard)
+@UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
 @Controller({ path: 'backoffice/compliance-cases', version: '1' })
 export class ComplianceCaseController {
   constructor(private readonly service: ComplianceCaseService) {}
 
+  // 21_ADRs > ADR-102 — reads (list/get) map to COMPLIANCE_VIEW; every
+  // mutation (open/assign/decide/detect) maps to COMPLIANCE_MANAGE. All
+  // routes stay SENIOR_REVIEWER-tier at the legacy layer, unchanged.
   @Post()
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('COMPLIANCE_MANAGE')
   open(
     @Body() dto: OpenComplianceCaseDto,
     @CurrentUser() user: JwtPayload,
@@ -40,6 +46,7 @@ export class ComplianceCaseController {
   /** 21_ADRs > ADR-072 — `page`/`limit` (08_API_Architecture > Pagination). */
   @Get()
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('COMPLIANCE_VIEW')
   async list(
     @Query('status') status?: string,
     @Query('category') category?: string,
@@ -58,12 +65,14 @@ export class ComplianceCaseController {
 
   @Get(':caseId')
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('COMPLIANCE_VIEW')
   getCase(@Param('caseId') caseId: string) {
     return this.service.getCase(caseId);
   }
 
   @Post(':caseId/assign')
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('COMPLIANCE_MANAGE')
   assign(
     @Param('caseId') caseId: string,
     @Body() dto: AssignComplianceCaseDto,
@@ -75,6 +84,7 @@ export class ComplianceCaseController {
 
   @Post(':caseId/decide')
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('COMPLIANCE_MANAGE')
   decide(
     @Param('caseId') caseId: string,
     @Body() dto: DecideComplianceCaseDto,
@@ -91,6 +101,7 @@ export class ComplianceCaseController {
    */
   @Post('detect')
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('COMPLIANCE_MANAGE')
   detect(@CurrentUser() user: JwtPayload, @RequestId() requestId: string) {
     return this.service.detectAnomalies(user.sub, requestId);
   }

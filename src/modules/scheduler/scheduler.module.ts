@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { BackOfficeModule } from '../backoffice/backoffice.module';
+import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
 import { GovernanceModule } from '../governance/governance.module';
 import { SchedulerController } from './controller/scheduler.controller';
 import {
@@ -33,9 +34,14 @@ import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
  * (`SCHEDULED_JOBS_QUEUE`) it actually owns.
  */
 @Module({
+  // 21_ADRs > ADR-102 additionally imports `BackofficeRbacModule` for
+  // `PermissionsGuard`, gating `SchedulerController` alongside the
+  // pre-existing `PlatformRolesGuard`. No cycle risk: this module is
+  // never imported back into `BackOfficeModule`/`BackofficeRbacModule`.
   imports: [
     BullModule.registerQueue({ name: SCHEDULED_JOBS_QUEUE }),
     BackOfficeModule,
+    BackofficeRbacModule,
     GovernanceModule,
   ],
   controllers: [SchedulerController],

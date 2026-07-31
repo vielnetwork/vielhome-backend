@@ -5,6 +5,8 @@ import { GamificationService } from '../application/gamification.service';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
@@ -53,10 +55,23 @@ export class GamificationController {
     return this.gamification.getLeaderboard(tier);
   }
 
-  /** 21_ADRs > ADR-047 — a bounded slice of 15_Gamification's own Analytics section. Staff-only; see the class doc comment and `GamificationService.getAnalytics` for exactly what is/isn't computed and why. */
+  /**
+   * 21_ADRs > ADR-047 — a bounded slice of 15_Gamification's own Analytics
+   * section. Staff-only; see the class doc comment and
+   * `GamificationService.getAnalytics` for exactly what is/isn't computed
+   * and why.
+   *
+   * 21_ADRs > ADR-102 — `PermissionsGuard` added at the method level,
+   * alongside the pre-existing method-level `PlatformRolesGuard` (this is
+   * the only route on this controller that's platform-staff-gated at
+   * all, so the class-level guard chain is deliberately left as plain
+   * `JwtAuthGuard` — adding `PermissionsGuard` there would wrongly gate
+   * every customer-facing route on this controller too).
+   */
   @Get('analytics')
-  @UseGuards(PlatformRolesGuard)
+  @UseGuards(PlatformRolesGuard, PermissionsGuard)
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('GAMIFICATION_ANALYTICS_VIEW')
   getAnalytics(@Query('fromDate') fromDate?: string, @Query('toDate') toDate?: string) {
     return this.gamification.getAnalytics(
       fromDate ? new Date(fromDate) : undefined,

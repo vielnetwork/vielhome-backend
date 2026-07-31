@@ -3,8 +3,8 @@
 // Deterministic, idempotent seed for the new permission-driven
 // authorization model. Deliberately a SEPARATE script from `prisma/
 // seed.ts` (run via its own `db:seed:rbac` package.json entry, not folded
-// into the general dev seed's `db:seed`) — this reference data (13
-// Permissions, 7 Roles, the approved Role<->Permission matrix) is the
+// into the general dev seed's `db:seed`) — this reference data (30
+// Permissions, 8 Roles, the approved Role<->Permission matrix) is the
 // same in every environment, unlike `seed.ts`'s dev-only test Person/
 // PlatformStaff rows.
 //
@@ -66,6 +66,97 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     description:
       'Change a building\'s subscription plan/status, run the time-based lifecycle evaluation, and create/revoke feature grants.',
   },
+  // 21_ADRs > ADR-102 — Backoffice Permission Migration Completion.
+  // One dedicated VIEW/MANAGE pair per remaining domain (no key shared
+  // across domains, same boundary discipline as ADR-101). Legal Hold and
+  // Scheduler are single keys — small, uniform PLATFORM_ADMIN-only
+  // domains with no meaningful view/manage split, matching the existing
+  // SYSTEM_SETTINGS/FEATURE_FLAGS precedent.
+  {
+    key: 'BUILDING_VERIFICATION_VIEW',
+    label: 'View Building Verification Cases',
+    description: 'View pending/decided building verification cases.',
+  },
+  {
+    key: 'BUILDING_VERIFICATION_MANAGE',
+    label: 'Manage Building Verification Cases',
+    description: 'Assign and decide building verification cases.',
+  },
+  {
+    key: 'MANAGER_VERIFICATION_VIEW',
+    label: 'View Manager Verification Cases',
+    description: 'View pending/decided manager verification cases.',
+  },
+  {
+    key: 'MANAGER_VERIFICATION_MANAGE',
+    label: 'Manage Manager Verification Cases',
+    description: 'Decide and restore manager verification cases.',
+  },
+  {
+    key: 'FRAUD_VIEW',
+    label: 'View Fraud Cases',
+    description: 'View fraud cases and fraud metrics.',
+  },
+  {
+    key: 'FRAUD_MANAGE',
+    label: 'Manage Fraud Cases',
+    description: 'Create, assign, add evidence to, decide, reopen, enforce, and appeal-decide fraud cases.',
+  },
+  {
+    key: 'SUPPORT_VIEW',
+    label: 'View Support Cases',
+    description: 'View support cases and support metrics.',
+  },
+  {
+    key: 'SUPPORT_MANAGE',
+    label: 'Manage Support Cases',
+    description: 'Create, message on, assign, resolve, close, escalate, and merge support cases.',
+  },
+  {
+    key: 'COMPLIANCE_VIEW',
+    label: 'View Compliance Cases',
+    description: 'View compliance cases.',
+  },
+  {
+    key: 'COMPLIANCE_MANAGE',
+    label: 'Manage Compliance Cases',
+    description: 'Create, assign, decide compliance cases, and run anomaly detection.',
+  },
+  {
+    key: 'LEGAL_HOLD_MANAGE',
+    label: 'Manage Legal Holds',
+    description: 'Create, list, and release legal holds.',
+  },
+  {
+    key: 'PERSON_ACCESS_VIEW',
+    label: 'View Backoffice Approval Status',
+    description: 'View a person\'s Backoffice-approval status.',
+  },
+  {
+    key: 'PERSON_ACCESS_MANAGE',
+    label: 'Manage Backoffice Approval Status',
+    description: 'Change a person\'s Backoffice-approval status.',
+  },
+  {
+    key: 'NOTIFICATION_TEMPLATE_VIEW',
+    label: 'View Notification Templates',
+    description: 'View the platform-wide notification-copy template library.',
+  },
+  {
+    key: 'NOTIFICATION_TEMPLATE_MANAGE',
+    label: 'Manage Notification Templates',
+    description: 'Create and update notification-copy templates.',
+  },
+  {
+    key: 'SCHEDULER_TRIGGER',
+    label: 'Trigger Scheduled Jobs',
+    description: 'Manually trigger a scheduled background job on demand.',
+  },
+  {
+    key: 'GAMIFICATION_ANALYTICS_VIEW',
+    label: 'View Gamification Analytics',
+    description: 'View platform-wide Gamification analytics.',
+  },
 ];
 
 // 21_ADRs > ADR-099 §2 — the approved final permission matrix (Support
@@ -78,25 +169,69 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
 // now, not a broader one it shouldn't have).
 const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
   'Super Admin': PERMISSIONS.map((p) => p.key),
-  'Operations Admin': ['USER_VIEW', 'USER_EDIT', 'BUILDING_VIEW', 'BUILDING_EDIT', 'AUDIT_VIEW'],
+  // 21_ADRs > ADR-102 — Operations Admin gains the building/user
+  // administration-adjacent domains (Building Verification, Manager
+  // Verification, Person Access), matching its existing USER_*/BUILDING_*
+  // scope.
+  'Operations Admin': [
+    'USER_VIEW',
+    'USER_EDIT',
+    'BUILDING_VIEW',
+    'BUILDING_EDIT',
+    'AUDIT_VIEW',
+    'BUILDING_VERIFICATION_VIEW',
+    'BUILDING_VERIFICATION_MANAGE',
+    'MANAGER_VERIFICATION_VIEW',
+    'MANAGER_VERIFICATION_MANAGE',
+    'PERSON_ACCESS_VIEW',
+    'PERSON_ACCESS_MANAGE',
+  ],
   'Finance Admin': ['FINANCE_VIEW', 'FINANCE_REFUND', 'USER_VIEW', 'BUILDING_VIEW'],
-  'Support Admin': ['USER_VIEW', 'BUILDING_VIEW'],
-  'Technical Admin': ['SYSTEM_SETTINGS', 'FEATURE_FLAGS', 'AUDIT_VIEW'],
+  // 21_ADRs > ADR-102 — Support Admin gains its own literally-named
+  // domain.
+  'Support Admin': ['USER_VIEW', 'BUILDING_VIEW', 'SUPPORT_VIEW', 'SUPPORT_MANAGE'],
+  // 21_ADRs > ADR-102 — Technical Admin gains the remaining
+  // platform-wide operational/system concerns (Scheduler, Notification
+  // Templates, Gamification Analytics).
+  'Technical Admin': [
+    'SYSTEM_SETTINGS',
+    'FEATURE_FLAGS',
+    'AUDIT_VIEW',
+    'SCHEDULER_TRIGGER',
+    'NOTIFICATION_TEMPLATE_VIEW',
+    'NOTIFICATION_TEMPLATE_MANAGE',
+    'GAMIFICATION_ANALYTICS_VIEW',
+  ],
   'Marketplace Admin': ['MARKETPLACE_REVIEW', 'MARKETPLACE_APPROVE'],
   // 21_ADRs > ADR-101 — a dedicated role, not folded into Finance Admin,
   // per the explicit decision to keep Subscription Management and
   // Finance as separate permission domains.
   'Subscription Admin': ['SUBSCRIPTION_VIEW', 'SUBSCRIPTION_MANAGE'],
+  // 21_ADRs > ADR-102 — a new, dedicated role (not folded into Operations
+  // Admin) given how sensitive Fraud/Compliance/Legal Hold are, mirroring
+  // the "one focused role per sensitive domain" precedent Marketplace
+  // Admin/Subscription Admin already established. Includes AUDIT_VIEW —
+  // investigating a fraud/compliance case plausibly needs audit-log
+  // visibility.
+  'Fraud & Compliance Admin': [
+    'FRAUD_VIEW',
+    'FRAUD_MANAGE',
+    'COMPLIANCE_VIEW',
+    'COMPLIANCE_MANAGE',
+    'LEGAL_HOLD_MANAGE',
+    'AUDIT_VIEW',
+  ],
 };
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
   'Super Admin': 'Unrestricted platform access — holds every defined permission.',
-  'Operations Admin': 'Day-to-day user and building management, plus audit oversight.',
+  'Operations Admin': 'Day-to-day user and building management, building/manager verification, and audit oversight.',
   'Finance Admin': 'Finance module access — view and refund, with read access to related users/buildings.',
-  'Support Admin': 'Support-facing user and building context, per 07_BackOffice_v2.0 Support Center scope.',
-  'Technical Admin': 'System-level configuration, feature toggles, and audit oversight.',
+  'Support Admin': 'Support case management, plus read-only user and building context.',
+  'Technical Admin': 'System-level configuration, feature toggles, scheduler, notification templates, and audit oversight.',
   'Marketplace Admin': 'Marketplace listing review and approval — nothing else.',
   'Subscription Admin': 'Subscription Management access — view and manage building plan/status/feature grants.',
+  'Fraud & Compliance Admin': 'Fraud case, compliance case, and legal hold management, with audit visibility.',
 };
 
 async function auditSeedCreate(entityType: string, entityId: string, action: string, metadata: Record<string, unknown>) {

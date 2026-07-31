@@ -6,16 +6,24 @@ import { RestoreManagerVerificationDto } from '../application/dto/restore-manage
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
 import { parsePagination } from '../../../common/pagination/pagination.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
-/** Manager Verification Queue (07.02) — Admin Review path, platform staff only. */
+/**
+ * Manager Verification Queue (07.02) — Admin Review path, platform staff only.
+ *
+ * 21_ADRs > ADR-102 — `PermissionsGuard` added alongside the pre-existing
+ * `PlatformRolesGuard`. Reads map to `MANAGER_VERIFICATION_VIEW`,
+ * decide/restore to `MANAGER_VERIFICATION_MANAGE`.
+ */
 @ApiTags('backoffice')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, PlatformRolesGuard)
+@UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
 @Controller({ path: 'backoffice/manager-verifications', version: '1' })
 export class ManagerVerificationController {
   constructor(private readonly service: ManagerVerificationService) {}
@@ -23,6 +31,7 @@ export class ManagerVerificationController {
   /** 21_ADRs > ADR-072 — `page`/`limit` (08_API_Architecture > Pagination). */
   @Get()
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('MANAGER_VERIFICATION_VIEW')
   async list(
     @Query('status') status?: string,
     @Query('priority') priority?: string,
@@ -38,12 +47,14 @@ export class ManagerVerificationController {
 
   @Get(':caseId')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('MANAGER_VERIFICATION_VIEW')
   getCase(@Param('caseId') caseId: string) {
     return this.service.getCase(caseId);
   }
 
   @Post(':caseId/decide')
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('MANAGER_VERIFICATION_MANAGE')
   decide(
     @Param('caseId') caseId: string,
     @Body() dto: DecideManagerVerificationDto,
@@ -56,6 +67,7 @@ export class ManagerVerificationController {
   /** 21_ADRs > ADR-040 — "Restore" (07_BackOffice_v2.0's fourth named staff action, alongside Approve/Reject/Suspend). `:caseId` is the SUSPENDED case being restored, not the building — same shape as `decide`. */
   @Post(':caseId/restore')
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('MANAGER_VERIFICATION_MANAGE')
   restore(
     @Param('caseId') caseId: string,
     @Body() dto: RestoreManagerVerificationDto,

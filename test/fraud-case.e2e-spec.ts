@@ -1447,3 +1447,171 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Manager Claim (07
     expect(membership?.managerState).toBe('SUSPENDED');
   });
 });
+
+describe('ADR-102 — Fraud Case Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (targetPerson, plainPerson)
+  // — reviewer login uses requestOtpAndCaptureCodeDirect via
+  // loginAsSeededStaff, which never touches this budget.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
+  const createdPhones: string[] = [];
+  const createdPersonIds: string[] = [];
+
+  let targetPerson: RegisteredPerson;
+  let plainPerson: RegisteredPerson;
+  let reviewer: RegisteredPerson;
+  let testRoleId: string;
+  let viewPermissionId: string;
+  let managePermissionId: string;
+  let staffRoleGrantId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    targetPerson = await registerPerson(app);
+    createdPhones.push(targetPerson.phone);
+    createdPersonIds.push(targetPerson.personId);
+
+    plainPerson = await registerPerson(app);
+    createdPhones.push(plainPerson.phone);
+
+    // Suite-owned, ad-hoc-elevated REVIEWER-ranked actor — same
+    // disclosed test-only elevation pattern as `seniorReviewer` in this
+    // file's "Enforcement Against a Person" describe above (register a
+    // fresh Person, then grant it a `PlatformStaff` row directly;
+    // `PlatformRolesGuard`/`PermissionsGuard` both resolve `PlatformStaff`
+    // fresh per request, so no re-login is needed). Deliberately NOT the
+    // shared `PLATFORM_REVIEWER_PHONE` seeded fixture: this block asserts
+    // the exact effective-permission state of one specific StaffRole
+    // grant (none -> FRAUD_VIEW -> +FRAUD_MANAGE -> -FRAUD_MANAGE), which
+    // is only sound if this actor's staffId can't pick up any OTHER
+    // suite's concurrently-active grant. The shared seeded reviewer/admin
+    // identities are granted FRAUD_MANAGE by several other describe
+    // blocks in this file and by compliance-case.e2e-spec.ts's own
+    // detectAnomalies describe (a separate, concurrent Jest worker
+    // process against the same dev database) -- `PermissionResolverService`
+    // unions ALL active grants for a staffId, so reusing a shared
+    // identity here would make these negative assertions flaky under
+    // real concurrency.
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
+    createdPersonIds.push(reviewer.personId);
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER', isActive: true },
+    });
+
+    const permissionKeys = ['FRAUD_VIEW', 'FRAUD_MANAGE'] as const;
+    const permissionIds: Record<(typeof permissionKeys)[number], string> = {} as never;
+    for (const key of permissionKeys) {
+      const permission =
+        (await prisma.permission.findUnique({ where: { key } })) ??
+        (await prisma.permission.create({ data: { key, label: key } }));
+      permissionIds[key] = permission.id;
+    }
+    viewPermissionId = permissionIds.FRAUD_VIEW;
+    managePermissionId = permissionIds.FRAUD_MANAGE;
+
+    const testRole = await prisma.role.create({
+      data: {
+        name: `E2E ADR-102 Fraud Test Role ${Date.now()}`,
+        description: 'Created by fraud-case.e2e-spec.ts (ADR-102 block).',
+      },
+    });
+    testRoleId = testRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewer.personId } });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
+    staffRoleGrantId = grant.id;
+    // No RolePermission granted yet — reviewer holds the legacy REVIEWER
+    // rank (satisfying both `list`'s and `open`'s legacy requirement) but
+    // no RBAC permission at all, deliberately.
+  });
+
+  afterAll(async () => {
+    // Hard-delete the fixture's own StaffRole row (disposable test
+    // fixture) rather than just revoking it — same ADR-100 teardown fix
+    // reused verbatim (revoking alone leaves a live FK to the Role being
+    // deleted next).
+    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
+    await prisma.role.delete({ where: { id: testRoleId } });
+    await cleanupFraudArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    await request(app.getHttpServer()).get('/api/v1/backoffice/fraud-cases').expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/fraud-cases')
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the REVIEWER-ranked staff member while holding the new role with NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/fraud-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting FRAUD_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed', async () => {
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: viewPermissionId },
+    });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/fraud-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/backoffice/fraud-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ signalType: 'OTHER', targetPersonId: targetPerson.personId })
+      .expect(403);
+  });
+
+  it('granting FRAUD_MANAGE additionally takes effect immediately — the manage-tier route opens', async () => {
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: managePermissionId },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/backoffice/fraud-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ signalType: 'OTHER', targetPersonId: targetPerson.personId })
+      .expect(201);
+    expect(res.body.data.targetPersonId).toBe(targetPerson.personId);
+  });
+
+  it('revoking FRAUD_MANAGE takes effect immediately — a subsequent manage-tier action is rejected again, live and uncached', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/backoffice/fraud-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ signalType: 'OTHER', targetPersonId: targetPerson.personId })
+      .expect(403);
+
+    // VIEW-tier access is unaffected by revoking MANAGE alone.
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/fraud-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+  });
+});

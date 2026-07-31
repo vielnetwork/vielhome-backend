@@ -5,6 +5,8 @@ import { AuditService } from '../../../common/audit/audit.service';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
@@ -24,13 +26,17 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
  */
 @ApiTags('backoffice')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, PlatformRolesGuard)
+@UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
 @Controller({ path: 'backoffice/audit-logs', version: '1' })
 export class AuditController {
   constructor(private readonly audit: AuditService) {}
 
+  // 21_ADRs > ADR-102 — every route here is a read (audit logs are
+  // append-only, no mutation route exists), so all four map to the same
+  // pre-existing AUDIT_VIEW permission (ADR-099) — no new key needed.
   @Get()
   @PlatformRoles('PLATFORM_ADMIN')
+  @RequiresPermission('AUDIT_VIEW')
   async search(
     @Query('entityType') entityType: string | undefined,
     @Query('entityId') entityId: string | undefined,
@@ -61,6 +67,7 @@ export class AuditController {
   /** 07.06 Rule 013 — Timeline Reconstruction for a single entity. */
   @Get('timeline')
   @PlatformRoles('PLATFORM_ADMIN')
+  @RequiresPermission('AUDIT_VIEW')
   async timeline(
     @Query('entityType') entityType: string,
     @Query('entityId') entityId: string,
@@ -89,6 +96,7 @@ export class AuditController {
    */
   @Get('export')
   @PlatformRoles('PLATFORM_ADMIN')
+  @RequiresPermission('AUDIT_VIEW')
   async export(
     @Query('entityType') entityType: string | undefined,
     @Query('entityId') entityId: string | undefined,
@@ -118,6 +126,7 @@ export class AuditController {
   /** 07.06 Rule 019/020 — aggregate Compliance Dashboard metrics. */
   @Get('metrics')
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('AUDIT_VIEW')
   async metrics(
     @Query('fromDate') fromDate: string | undefined,
     @Query('toDate') toDate: string | undefined,

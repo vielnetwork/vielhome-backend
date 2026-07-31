@@ -5,6 +5,8 @@ import { PlaceLegalHoldDto } from '../application/dto/place-legal-hold.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
@@ -19,13 +21,17 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
  */
 @ApiTags('backoffice')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, PlatformRolesGuard)
+@UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
 @Controller({ path: 'backoffice/legal-holds', version: '1' })
 export class LegalHoldController {
   constructor(private readonly service: LegalHoldService) {}
 
+  // 21_ADRs > ADR-102 — single key (LEGAL_HOLD_MANAGE) covers all 3
+  // routes — small, uniform PLATFORM_ADMIN-only domain, no meaningful
+  // view/manage split.
   @Post()
   @PlatformRoles('PLATFORM_ADMIN')
+  @RequiresPermission('LEGAL_HOLD_MANAGE')
   place(
     @Body() dto: PlaceLegalHoldDto,
     @CurrentUser() user: JwtPayload,
@@ -37,6 +43,7 @@ export class LegalHoldController {
   /** 21_ADRs > ADR-072 — `page`/`limit` (08_API_Architecture > Pagination). */
   @Get()
   @PlatformRoles('PLATFORM_ADMIN')
+  @RequiresPermission('LEGAL_HOLD_MANAGE')
   async list(
     @Query('entityType') entityType?: string,
     @Query('entityId') entityId?: string,
@@ -57,6 +64,7 @@ export class LegalHoldController {
 
   @Post(':holdId/release')
   @PlatformRoles('PLATFORM_ADMIN')
+  @RequiresPermission('LEGAL_HOLD_MANAGE')
   release(
     @Param('holdId') holdId: string,
     @CurrentUser() user: JwtPayload,

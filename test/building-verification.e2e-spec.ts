@@ -982,3 +982,172 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     expect(res.body.data.building.id).toBe(building2);
   });
 });
+
+describe('ADR-102 — Building Verification Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (founder, plainPerson) — the
+  // seeded-staff login below uses requestOtpAndCaptureCodeDirect, which
+  // never touches this budget.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let founder: RegisteredPerson;
+  let founder2: RegisteredPerson;
+  let reviewer: RegisteredPerson;
+  let plainPerson: RegisteredPerson;
+  let buildingId: string;
+  let caseId: string;
+  let testRoleId: string;
+  let viewPermissionId: string;
+  let managePermissionId: string;
+  let staffRoleGrantId: string;
+
+  // A single fresh-address building auto-approves (VERIFIED, decided)
+  // the instant its case is created (07.01 Rule 002), which would make
+  // any `decide` call 422 regardless of permission — same trap this
+  // file's own "Auto-Evaluation & Risk-Based Routing" describe above
+  // documents. Two buildings sharing this exact (city, district,
+  // mainStreet) tuple are created instead: the first auto-approves, the
+  // second gets flagged UNDER_REVIEW (still decidable) — this block uses
+  // the SECOND building's case for the manage-tier proof.
+  const sharedAddress = {
+    province: 'IR-TEHRAN',
+    city: 'IR-TEHRAN-TEHRAN',
+    district: `ADR102BVDistrict${RUN_ID}`,
+    mainStreet: 'ADR102SharedStreet',
+  };
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    founder = await registerPerson(app);
+    createdPhones.push(founder.phone);
+    founder2 = await registerPerson(app);
+    createdPhones.push(founder2.phone);
+    plainPerson = await registerPerson(app);
+    createdPhones.push(plainPerson.phone);
+
+    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
+
+    // First building at this address — no similar-address building
+    // exists yet, so it auto-approves. Not used for the decide proof
+    // below, only to make the second building's flag possible.
+    const firstBuildingId = await createBuilding(app, founder.accessToken, sharedAddress);
+    createdBuildingIds.push(firstBuildingId);
+    await waitForInitialCase(prisma, firstBuildingId);
+
+    // Second building, a DIFFERENT creator, reuses the exact same
+    // address — the first building now exists, so this one gets flagged
+    // UNDER_REVIEW (07.01 Rule 002) and stays decidable.
+    buildingId = await createBuilding(app, founder2.accessToken, sharedAddress);
+    createdBuildingIds.push(buildingId);
+    const foundCase = await waitForInitialCase(prisma, buildingId);
+    caseId = foundCase!.id;
+
+    const permissionKeys = ['BUILDING_VERIFICATION_VIEW', 'BUILDING_VERIFICATION_MANAGE'] as const;
+    const permissionIds: Record<(typeof permissionKeys)[number], string> = {} as never;
+    for (const key of permissionKeys) {
+      const permission =
+        (await prisma.permission.findUnique({ where: { key } })) ??
+        (await prisma.permission.create({ data: { key, label: key } }));
+      permissionIds[key] = permission.id;
+    }
+    viewPermissionId = permissionIds.BUILDING_VERIFICATION_VIEW;
+    managePermissionId = permissionIds.BUILDING_VERIFICATION_MANAGE;
+
+    const testRole = await prisma.role.create({
+      data: { name: `E2E ADR-102 BV Test Role ${Date.now()}`, description: 'Created by building-verification.e2e-spec.ts (ADR-102 block).' },
+    });
+    testRoleId = testRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewer.personId } });
+    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    staffRoleGrantId = grant.id;
+    // No RolePermission granted yet — reviewer holds the legacy rank but
+    // no RBAC permission at all, deliberately.
+  });
+
+  afterAll(async () => {
+    // Hard-delete the fixture's own StaffRole row (disposable test
+    // fixture) rather than just revoking it — same ADR-100 teardown fix
+    // reused verbatim (revoking alone leaves a live FK to the Role being
+    // deleted next).
+    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
+    await prisma.role.delete({ where: { id: testRoleId } });
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/building-verifications/${caseId}`)
+      .expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/building-verifications/${caseId}`)
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the REVIEWER-ranked staff member while holding the new role with NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/building-verifications/${caseId}`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting BUILDING_VERIFICATION_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed', async () => {
+    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/building-verifications/${caseId}`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/building-verifications/${caseId}/decide`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ decision: 'APPROVE', reason: 'ADR-102 e2e proof' })
+      .expect(403);
+  });
+
+  it('granting BUILDING_VERIFICATION_MANAGE additionally takes effect immediately — the manage-tier route opens', async () => {
+    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: managePermissionId } });
+
+    const decideRes = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/building-verifications/${caseId}/decide`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ decision: 'APPROVE', reason: 'ADR-102 e2e proof' })
+      .expect(201);
+    expect(decideRes.body.data.status).toBe('VERIFIED');
+  });
+
+  it('revoking BUILDING_VERIFICATION_MANAGE takes effect immediately — a subsequent manage-tier action is rejected again, live and uncached', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/building-verifications/${caseId}/assign`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ assigneeId: reviewer.personId })
+      .expect(403);
+
+    // VIEW-tier access is unaffected by revoking MANAGE alone.
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/building-verifications/${caseId}`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+  });
+});

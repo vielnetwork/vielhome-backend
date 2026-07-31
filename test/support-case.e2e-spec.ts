@@ -821,3 +821,146 @@ describe('Support & Operations Center (e2e) — Staff Queue, Escalation & Merge 
     expect('reopenRate' in res.body.data).toBe(true);
   });
 });
+
+describe('ADR-102 — Support Case Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  // Budget: 1 call to POST /auth/otp/request (plainPerson registration) —
+  // reviewer login uses requestOtpAndCaptureCodeDirect via
+  // loginAsSeededStaff, which never touches this budget.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
+  const createdPhones: string[] = [];
+  const createdPersonIds: string[] = [];
+
+  let reviewer: RegisteredPerson;
+  let plainPerson: RegisteredPerson;
+  let testRoleId: string;
+  let viewPermissionId: string;
+  let managePermissionId: string;
+  let staffRoleGrantId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
+    createdPersonIds.push(reviewer.personId);
+
+    plainPerson = await registerPerson(app);
+    createdPhones.push(plainPerson.phone);
+
+    const permissionKeys = ['SUPPORT_VIEW', 'SUPPORT_MANAGE'] as const;
+    const permissionIds: Record<(typeof permissionKeys)[number], string> = {} as never;
+    for (const key of permissionKeys) {
+      const permission =
+        (await prisma.permission.findUnique({ where: { key } })) ??
+        (await prisma.permission.create({ data: { key, label: key } }));
+      permissionIds[key] = permission.id;
+    }
+    viewPermissionId = permissionIds.SUPPORT_VIEW;
+    managePermissionId = permissionIds.SUPPORT_MANAGE;
+
+    const testRole = await prisma.role.create({
+      data: { name: `E2E ADR-102 Support Test Role ${Date.now()}`, description: 'Created by support-case.e2e-spec.ts (ADR-102 block).' },
+    });
+    testRoleId = testRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewer.personId } });
+    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    staffRoleGrantId = grant.id;
+    // No RolePermission granted yet — reviewer holds the legacy REVIEWER
+    // rank (satisfying both `list`'s and `open`'s legacy requirement) but
+    // no RBAC permission at all, deliberately.
+  });
+
+  afterAll(async () => {
+    // Hard-delete the fixture's own StaffRole row (disposable test
+    // fixture) rather than just revoking it — same ADR-100 teardown fix
+    // reused verbatim (revoking alone leaves a live FK to the Role being
+    // deleted next).
+    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
+    await prisma.role.delete({ where: { id: testRoleId } });
+    await cleanupSupportArtifacts(prisma, createdPersonIds);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    await request(app.getHttpServer()).get('/api/v1/backoffice/support-cases').expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/support-cases')
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the REVIEWER-ranked staff member while holding the new role with NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/support-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting SUPPORT_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed', async () => {
+    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/support-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/backoffice/support-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({
+        category: 'TECHNICAL',
+        subject: 'ADR-102 e2e proof ticket',
+        description: 'Opened solely to prove the SUPPORT_MANAGE permission gate.',
+      })
+      .expect(403);
+  });
+
+  it('granting SUPPORT_MANAGE additionally takes effect immediately — the manage-tier route opens', async () => {
+    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: managePermissionId } });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/backoffice/support-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({
+        category: 'TECHNICAL',
+        subject: 'ADR-102 e2e proof ticket',
+        description: 'Opened solely to prove the SUPPORT_MANAGE permission gate.',
+      })
+      .expect(201);
+    expect(res.body.data.subject).toBe('ADR-102 e2e proof ticket');
+  });
+
+  it('revoking SUPPORT_MANAGE takes effect immediately — a subsequent manage-tier action is rejected again, live and uncached', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/backoffice/support-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({
+        category: 'TECHNICAL',
+        subject: 'ADR-102 e2e proof ticket (should be rejected)',
+        description: 'Opened solely to prove the SUPPORT_MANAGE permission gate.',
+      })
+      .expect(403);
+
+    // VIEW-tier access is unaffected by revoking MANAGE alone.
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/support-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+  });
+});

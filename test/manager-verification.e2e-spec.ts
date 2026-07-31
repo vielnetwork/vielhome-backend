@@ -971,3 +971,149 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
     expect(res.body.data.candidate.id).toBe(founder1.personId);
   });
 });
+
+describe('ADR-102 — Manager Verification Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (founder, plainPerson) —
+  // admin login uses requestOtpAndCaptureCodeDirect via
+  // loginAsSeededStaff, which never touches this budget.
+  //
+  // Uses PLATFORM_ADMIN (rank 3) throughout, not REVIEWER (rank 1) —
+  // `decide`/`restore` both require `@PlatformRoles('SENIOR_REVIEWER')`
+  // (rank 2+), so a REVIEWER-ranked persona would be blocked by the
+  // LEGACY guard regardless of any RBAC permission grant, making it
+  // impossible to isolate what `PermissionsGuard` itself is enforcing.
+  // PLATFORM_ADMIN's rank satisfies both `list`/`get`'s REVIEWER
+  // requirement and `decide`/`restore`'s SENIOR_REVIEWER requirement, so
+  // every 403 below is unambiguously `PermissionsGuard`'s own doing.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let founder: RegisteredPerson;
+  let admin: RegisteredPerson;
+  let plainPerson: RegisteredPerson;
+  let buildingId: string;
+  let caseId: string;
+  let testRoleId: string;
+  let viewPermissionId: string;
+  let managePermissionId: string;
+  let staffRoleGrantId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    founder = await registerPerson(app);
+    createdPhones.push(founder.phone);
+    plainPerson = await registerPerson(app);
+    createdPhones.push(plainPerson.phone);
+
+    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
+    staffPhones.push(PLATFORM_ADMIN_PHONE);
+    staffDeviceTokens.push(admin.deviceToken!);
+
+    buildingId = await createBuilding(app, founder.accessToken, { role: 'MANAGER' });
+    createdBuildingIds.push(buildingId);
+    const foundCase = await waitForInitialCase(prisma, buildingId, founder.personId);
+    caseId = foundCase!.id;
+
+    const permissionKeys = ['MANAGER_VERIFICATION_VIEW', 'MANAGER_VERIFICATION_MANAGE'] as const;
+    const permissionIds: Record<(typeof permissionKeys)[number], string> = {} as never;
+    for (const key of permissionKeys) {
+      const permission =
+        (await prisma.permission.findUnique({ where: { key } })) ??
+        (await prisma.permission.create({ data: { key, label: key } }));
+      permissionIds[key] = permission.id;
+    }
+    viewPermissionId = permissionIds.MANAGER_VERIFICATION_VIEW;
+    managePermissionId = permissionIds.MANAGER_VERIFICATION_MANAGE;
+
+    const testRole = await prisma.role.create({
+      data: { name: `E2E ADR-102 MV Test Role ${Date.now()}`, description: 'Created by manager-verification.e2e-spec.ts (ADR-102 block).' },
+    });
+    testRoleId = testRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: admin.personId } });
+    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    staffRoleGrantId = grant.id;
+    // No RolePermission granted yet — admin holds the legacy PLATFORM_ADMIN
+    // rank (satisfying every route's legacy requirement) but no RBAC
+    // permission at all, deliberately.
+  });
+
+  afterAll(async () => {
+    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
+    await prisma.role.delete({ where: { id: testRoleId } });
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/manager-verifications/${caseId}`)
+      .expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/manager-verifications/${caseId}`)
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the PLATFORM_ADMIN-ranked staff member while holding the new role with NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/manager-verifications/${caseId}`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting MANAGER_VERIFICATION_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed', async () => {
+    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/manager-verifications/${caseId}`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/manager-verifications/${caseId}/decide`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ decision: 'SUSPEND', reason: 'ADR-102 e2e proof' })
+      .expect(403);
+  });
+
+  it('granting MANAGER_VERIFICATION_MANAGE additionally takes effect immediately — the manage-tier route opens', async () => {
+    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: managePermissionId } });
+
+    const decideRes = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/manager-verifications/${caseId}/decide`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ decision: 'SUSPEND', reason: 'ADR-102 e2e proof' })
+      .expect(201);
+    expect(decideRes.body.data.status).toBe('SUSPENDED');
+  });
+
+  it('revoking MANAGER_VERIFICATION_MANAGE takes effect immediately — a subsequent manage-tier action is rejected again, live and uncached', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/manager-verifications/${caseId}/restore`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ reason: 'ADR-102 e2e proof' })
+      .expect(403);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/manager-verifications/${caseId}`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(200);
+  });
+});

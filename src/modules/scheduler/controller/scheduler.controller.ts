@@ -5,6 +5,8 @@ import type { Queue } from 'bullmq';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { ValidationError } from '../../../common/errors/app-error';
 import { TriggerScheduledJobDto } from '../application/dto/trigger-scheduled-job.dto';
 import { JOB_NAMES, SCHEDULED_JOBS_QUEUE } from '../application/scheduled-jobs.processor';
@@ -23,13 +25,16 @@ const VALID_JOB_NAMES: string[] = Object.values(JOB_NAMES);
  */
 @ApiTags('backoffice')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, PlatformRolesGuard)
+@UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
 @Controller({ path: 'backoffice/scheduler', version: '1' })
 export class SchedulerController {
   constructor(@InjectQueue(SCHEDULED_JOBS_QUEUE) private readonly queue: Queue) {}
 
+  // 21_ADRs > ADR-102 — single key (SCHEDULER_TRIGGER), one route, one
+  // action.
   @Post('trigger')
   @PlatformRoles('PLATFORM_ADMIN')
+  @RequiresPermission('SCHEDULER_TRIGGER')
   async trigger(@Body() dto: TriggerScheduledJobDto) {
     if (!VALID_JOB_NAMES.includes(dto.jobName)) {
       throw new ValidationError(`Unknown job name. Valid values: ${VALID_JOB_NAMES.join(', ')}`);

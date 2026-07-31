@@ -597,3 +597,143 @@ describe('Person Backoffice-Approval Grant/Revoke (e2e) — Marketplace Access-G
       .expect(404);
   });
 });
+
+describe('ADR-102 — Person Access Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (target, plainPerson) — the
+  // elevated staff member below is a third `registerPerson` call on the
+  // same shared throttle budget as this file's own main describe block
+  // above; `loginAsSeededStaff` is not used in this block at all.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+
+  let target: RegisteredPerson;
+  let plainPerson: RegisteredPerson;
+  let seniorStaff: RegisteredPerson;
+  let testRoleId: string;
+  let viewPermissionId: string;
+  let managePermissionId: string;
+  let staffRoleGrantId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    target = await registerPerson(app);
+    createdPhones.push(target.phone);
+    plainPerson = await registerPerson(app);
+    createdPhones.push(plainPerson.phone);
+
+    seniorStaff = await registerPerson(app);
+    createdPhones.push(seniorStaff.phone);
+    // Disclosed test-only elevation, same precedent as this file's own
+    // main describe block above — no seeded SENIOR_REVIEWER fixture
+    // exists. `PlatformRolesGuard` resolves `PlatformStaff` fresh per
+    // request, so this takes effect on `seniorStaff`'s existing token
+    // immediately.
+    await prisma.platformStaff.create({
+      data: { personId: seniorStaff.personId, role: 'SENIOR_REVIEWER', isActive: true },
+    });
+
+    const permissionKeys = ['PERSON_ACCESS_VIEW', 'PERSON_ACCESS_MANAGE'] as const;
+    const permissionIds: Record<(typeof permissionKeys)[number], string> = {} as never;
+    for (const key of permissionKeys) {
+      const permission =
+        (await prisma.permission.findUnique({ where: { key } })) ??
+        (await prisma.permission.create({ data: { key, label: key } }));
+      permissionIds[key] = permission.id;
+    }
+    viewPermissionId = permissionIds.PERSON_ACCESS_VIEW;
+    managePermissionId = permissionIds.PERSON_ACCESS_MANAGE;
+
+    const testRole = await prisma.role.create({
+      data: { name: `E2E ADR-102 PersonAccess Test Role ${Date.now()}`, description: 'Created by person-access.e2e-spec.ts (ADR-102 block).' },
+    });
+    testRoleId = testRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: seniorStaff.personId } });
+    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    staffRoleGrantId = grant.id;
+    // No RolePermission granted yet — seniorStaff holds the legacy rank
+    // (SENIOR_REVIEWER, satisfying both GET's REVIEWER and POST's
+    // SENIOR_REVIEWER requirement) but no RBAC permission at all,
+    // deliberately.
+  });
+
+  afterAll(async () => {
+    // Hard-delete the fixture's own StaffRole row (disposable test
+    // fixture) rather than just revoking it — same ADR-100 teardown fix
+    // reused verbatim (revoking alone leaves a live FK to the Role being
+    // deleted next).
+    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
+    await prisma.role.delete({ where: { id: testRoleId } });
+    await prisma.platformStaff.deleteMany({ where: { personId: seniorStaff.personId } });
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
+      .expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the SENIOR_REVIEWER-ranked staff member while holding the new role with NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
+      .set('Authorization', `Bearer ${seniorStaff.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting PERSON_ACCESS_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed', async () => {
+    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
+      .set('Authorization', `Bearer ${seniorStaff.accessToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
+      .set('Authorization', `Bearer ${seniorStaff.accessToken}`)
+      .send({ approved: true })
+      .expect(403);
+  });
+
+  it('granting PERSON_ACCESS_MANAGE additionally takes effect immediately — the manage-tier route opens', async () => {
+    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: managePermissionId } });
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
+      .set('Authorization', `Bearer ${seniorStaff.accessToken}`)
+      .send({ approved: true, reason: 'ADR-102 e2e proof' })
+      .expect(201);
+    expect(res.body.data).toEqual({ personId: target.personId, isBackofficeApproved: true });
+  });
+
+  it('revoking PERSON_ACCESS_MANAGE takes effect immediately — a subsequent manage-tier action is rejected again, live and uncached', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
+      .set('Authorization', `Bearer ${seniorStaff.accessToken}`)
+      .send({ approved: false })
+      .expect(403);
+
+    // VIEW-tier access is unaffected by revoking MANAGE alone.
+    await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
+      .set('Authorization', `Bearer ${seniorStaff.accessToken}`)
+      .expect(200);
+  });
+});

@@ -6,6 +6,8 @@ import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
@@ -28,7 +30,7 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
  */
 @ApiTags('backoffice')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, PlatformRolesGuard)
+@UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
 @Controller({ path: 'backoffice/persons/:personId/backoffice-approval', version: '1' })
 export class PersonAccessController {
   constructor(
@@ -36,11 +38,18 @@ export class PersonAccessController {
     private readonly backOffice: BackOfficeRepository,
   ) {}
 
-  /** Current approval fact for a given Person — staff-facing read, no
+  /**
+   * Current approval fact for a given Person — staff-facing read, no
    * write. Also platform-staff-only (not exposed to the person themself
-   * or to any building role). */
+   * or to any building role).
+   *
+   * 21_ADRs > ADR-102 — `PermissionsGuard` added alongside the
+   * pre-existing `PlatformRolesGuard`. Read maps to `PERSON_ACCESS_VIEW`,
+   * the grant/revoke route to `PERSON_ACCESS_MANAGE`.
+   */
   @Get()
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('PERSON_ACCESS_VIEW')
   async get(@Param('personId') personId: string) {
     const target = await this.backOffice.findPersonForBackofficeApproval(personId);
     return { personId, isBackofficeApproved: target?.isBackofficeApproved ?? null };
@@ -54,6 +63,7 @@ export class PersonAccessController {
    */
   @Post()
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('PERSON_ACCESS_MANAGE')
   set(
     @Param('personId') personId: string,
     @Body() dto: SetBackofficeApprovalDto,

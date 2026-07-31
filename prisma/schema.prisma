@@ -2477,6 +2477,37 @@ enum PermissionKey {
   // as its own permission pair to preserve a clean semantic boundary.
   SUBSCRIPTION_VIEW
   SUBSCRIPTION_MANAGE
+  // ADR-102 — Backoffice Permission Migration Completion (Inventory +
+  // Matrix phase). One dedicated VIEW/MANAGE pair per remaining domain,
+  // per the same "clean semantic boundary per domain" decision as
+  // ADR-101 — no permission is shared across domains. AUDIT_VIEW already
+  // existed (ADR-099) and needed no new key: AuditController is
+  // read-only, no mutation routes exist to gate separately.
+  BUILDING_VERIFICATION_VIEW
+  BUILDING_VERIFICATION_MANAGE
+  MANAGER_VERIFICATION_VIEW
+  MANAGER_VERIFICATION_MANAGE
+  FRAUD_VIEW
+  FRAUD_MANAGE
+  SUPPORT_VIEW
+  SUPPORT_MANAGE
+  COMPLIANCE_VIEW
+  COMPLIANCE_MANAGE
+  // Legal Hold and Scheduler are each a single, small, uniform
+  // PLATFORM_ADMIN-only domain with no meaningful view/manage split —
+  // one key each, matching the existing SYSTEM_SETTINGS/FEATURE_FLAGS
+  // precedent for this shape of domain.
+  LEGAL_HOLD_MANAGE
+  PERSON_ACCESS_VIEW
+  PERSON_ACCESS_MANAGE
+  NOTIFICATION_TEMPLATE_VIEW
+  NOTIFICATION_TEMPLATE_MANAGE
+  SCHEDULER_TRIGGER
+  // A single privileged route (GamificationController.getAnalytics)
+  // inside an otherwise customer-facing controller — kept as its own
+  // dedicated key for consistency with every other domain here, not
+  // merged into a cross-cutting "analytics" permission.
+  GAMIFICATION_ANALYTICS_VIEW
 }
 
 model Role {

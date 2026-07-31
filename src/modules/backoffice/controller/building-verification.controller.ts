@@ -6,16 +6,25 @@ import { AssignVerificationCaseDto } from '../application/dto/assign-verificatio
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
 import { parsePagination } from '../../../common/pagination/pagination.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
-/** Building Verification Queue (07.01) — platform staff only. */
+/**
+ * Building Verification Queue (07.01) — platform staff only.
+ *
+ * 21_ADRs > ADR-102 — `PermissionsGuard` added alongside the pre-existing
+ * `PlatformRolesGuard` (both must pass). Reads map to
+ * `BUILDING_VERIFICATION_VIEW`, assign/decide to
+ * `BUILDING_VERIFICATION_MANAGE`.
+ */
 @ApiTags('backoffice')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, PlatformRolesGuard)
+@UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
 @Controller({ path: 'backoffice/building-verifications', version: '1' })
 export class BuildingVerificationController {
   constructor(private readonly service: BuildingVerificationService) {}
@@ -23,6 +32,7 @@ export class BuildingVerificationController {
   /** 21_ADRs > ADR-072 — `page`/`limit` (08_API_Architecture > Pagination). */
   @Get()
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('BUILDING_VERIFICATION_VIEW')
   async list(
     @Query('status') status?: string,
     @Query('priority') priority?: string,
@@ -39,12 +49,14 @@ export class BuildingVerificationController {
 
   @Get(':caseId')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('BUILDING_VERIFICATION_VIEW')
   getCase(@Param('caseId') caseId: string) {
     return this.service.getCase(caseId);
   }
 
   @Post(':caseId/assign')
   @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('BUILDING_VERIFICATION_MANAGE')
   assign(
     @Param('caseId') caseId: string,
     @Body() dto: AssignVerificationCaseDto,
@@ -56,6 +68,7 @@ export class BuildingVerificationController {
 
   @Post(':caseId/decide')
   @PlatformRoles('REVIEWER')
+  @RequiresPermission('BUILDING_VERIFICATION_MANAGE')
   decide(
     @Param('caseId') caseId: string,
     @Body() dto: DecideBuildingVerificationDto,

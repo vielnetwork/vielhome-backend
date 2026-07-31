@@ -903,3 +903,102 @@ describe('Gamification (e2e) — Analytics Staff Access (ADR-047, PlatformRolesG
     expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
 });
+
+describe('ADR-102 — Gamification Analytics Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  // Budget: 1 call to POST /auth/otp/request (regularMember registration)
+  // — admin login uses requestOtpAndCaptureCodeDirect via
+  // loginAsSeededStaff, which never touches this budget.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
+  const createdPhones: string[] = [];
+
+  let admin: RegisteredPerson;
+  let regularMember: RegisteredPerson;
+  let testRoleId: string;
+  let viewPermissionId: string;
+  let staffRoleGrantId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
+    staffPhones.push(PLATFORM_ADMIN_PHONE);
+    staffDeviceTokens.push(admin.deviceToken!);
+    regularMember = await registerPerson(app);
+    createdPhones.push(regularMember.phone);
+
+    const key = 'GAMIFICATION_ANALYTICS_VIEW' as const;
+    const permission =
+      (await prisma.permission.findUnique({ where: { key } })) ??
+      (await prisma.permission.create({ data: { key, label: key } }));
+    viewPermissionId = permission.id;
+
+    const testRole = await prisma.role.create({
+      data: { name: `E2E ADR-102 Gamification Test Role ${Date.now()}`, description: 'Created by gamification.e2e-spec.ts (ADR-102 block).' },
+    });
+    testRoleId = testRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: admin.personId } });
+    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    staffRoleGrantId = grant.id;
+    // No RolePermission granted yet — admin holds the legacy rank
+    // (PLATFORM_ADMIN, satisfying the required SENIOR_REVIEWER+ rank) but
+    // no RBAC permission at all, deliberately.
+  });
+
+  afterAll(async () => {
+    // Hard-delete the fixture's own StaffRole row (disposable test
+    // fixture) rather than just revoking it — same ADR-100 teardown fix
+    // reused verbatim (revoking alone leaves a live FK to the Role being
+    // deleted next).
+    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
+    await prisma.role.delete({ where: { id: testRoleId } });
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    await request(app.getHttpServer()).get('/api/v1/gamification/analytics').expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/gamification/analytics')
+      .set('Authorization', `Bearer ${regularMember.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the PLATFORM_ADMIN-ranked staff member while holding the new role with NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/gamification/analytics')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting GAMIFICATION_ANALYTICS_VIEW takes effect immediately — the route opens', async () => {
+    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/gamification/analytics')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(200);
+
+    expect(Array.isArray(res.body.data.xpByReason)).toBe(true);
+  });
+
+  it('revoking GAMIFICATION_ANALYTICS_VIEW takes effect immediately — the route closes again, live and uncached', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: testRoleId, permissionId: viewPermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/gamification/analytics')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(403);
+  });
+});

@@ -1511,3 +1511,116 @@ describe('Notifications (e2e) — NotificationTemplate Staff CRUD (ADR-060)', ()
     expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
   });
 });
+
+describe('ADR-102 — Notification Template Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
+  // Budget: 1 call to POST /auth/otp/request (plainPerson registration) —
+  // reviewer login uses requestOtpAndCaptureCodeDirect via
+  // loginAsSeededStaff, which never touches this budget.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdTemplateIds: string[] = [];
+
+  let reviewer: RegisteredPerson;
+  let plainPerson: RegisteredPerson;
+  let testRoleId: string;
+  let viewPermissionId: string;
+  let managePermissionId: string;
+  let staffRoleGrantId: string;
+  const templateCode = `e2e-adr102-notif-tpl-${RUN_ID}`;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+
+    plainPerson = await registerPerson(app);
+    createdPhones.push(plainPerson.phone);
+
+    const permissionKeys = ['NOTIFICATION_TEMPLATE_VIEW', 'NOTIFICATION_TEMPLATE_MANAGE'] as const;
+    const permissionIds: Record<(typeof permissionKeys)[number], string> = {} as never;
+    for (const key of permissionKeys) {
+      const permission =
+        (await prisma.permission.findUnique({ where: { key } })) ??
+        (await prisma.permission.create({ data: { key, label: key } }));
+      permissionIds[key] = permission.id;
+    }
+    viewPermissionId = permissionIds.NOTIFICATION_TEMPLATE_VIEW;
+    managePermissionId = permissionIds.NOTIFICATION_TEMPLATE_MANAGE;
+
+    const testRole = await prisma.role.create({
+      data: { name: `E2E ADR-102 NotificationTemplate Test Role ${Date.now()}`, description: 'Created by notifications.e2e-spec.ts (ADR-102 block).' },
+    });
+    testRoleId = testRole.id;
+
+    const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewer.personId } });
+    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    staffRoleGrantId = grant.id;
+    // No RolePermission granted yet — reviewer holds the legacy REVIEWER
+    // rank (satisfying `list`'s legacy requirement — the manage-tier
+    // routes require SENIOR_REVIEWER+, so `create` stays legacy-blocked
+    // for reviewer regardless of permission) but no RBAC permission at
+    // all, deliberately.
+  });
+
+  afterAll(async () => {
+    // Hard-delete the fixture's own StaffRole row (disposable test
+    // fixture) rather than just revoking it — same ADR-100 teardown fix
+    // reused verbatim (revoking alone leaves a live FK to the Role being
+    // deleted next).
+    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
+    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
+    await prisma.role.delete({ where: { id: testRoleId } });
+    await prisma.notificationTemplate.deleteMany({ where: { id: { in: createdTemplateIds } } });
+    await cleanupStaffLoginArtifacts(prisma, [PLATFORM_REVIEWER_PHONE], [reviewer.deviceToken!]);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    await request(app.getHttpServer()).get('/api/v1/backoffice/notification-templates').expect(401);
+  });
+
+  it('rejects a plain, non-staff authenticated caller — legacy PlatformRolesGuard still enforces (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/notification-templates')
+      .set('Authorization', `Bearer ${plainPerson.accessToken}`)
+      .expect(403);
+  });
+
+  it('rejects the REVIEWER-ranked staff member while holding the new role with NO granted permission — PermissionsGuard actively enforces on top of the legacy gate (403)', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/notification-templates')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+  });
+
+  it('granting NOTIFICATION_TEMPLATE_VIEW takes effect immediately — the read-tier route opens', async () => {
+    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/notification-templates')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+  });
+
+  it("granting NOTIFICATION_TEMPLATE_VIEW alone still can't reach the manage-tier route — REVIEWER's legacy rank is below the required SENIOR_REVIEWER anyway (403)", async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/backoffice/notification-templates')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .send({ code: templateCode, titleTemplate: 'x', bodyTemplate: 'y' })
+      .expect(403);
+  });
+
+  it('revoking NOTIFICATION_TEMPLATE_VIEW takes effect immediately — the read-tier route closes again, live and uncached', async () => {
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: testRoleId, permissionId: viewPermissionId, revokedAt: null },
+    });
+    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/notification-templates')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+  });
+});
