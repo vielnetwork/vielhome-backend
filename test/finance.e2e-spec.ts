@@ -1746,3 +1746,429 @@ describe('Finance (e2e) — Reporting (21_ADRs > ADR-055 / ADR-057)', () => {
     expect(res.body.data.paymentRegistrationRate).toBe(0.75);
   });
 });
+
+describe('Finance (e2e) — Regression Hardening: Payer Snapshot Immutability (Finance Phase F1)', () => {
+  // Budget: 4 calls to POST /auth/otp/request (manager + ownerA + newTenant + ownerC).
+  //
+  // Proves ADR-095's own "resolved once at ISSUE time, never re-derived"
+  // payer-snapshot guarantee actually holds against the two events most
+  // likely to violate it in practice: a tenancy created on a unit AFTER
+  // an already-issued batch resolved to OWNER, and an ownership transfer
+  // completed AFTER a batch was already issued. Neither
+  // `BuildingRepository.createTenancy` nor `.transferOwnership` touches
+  // `ChargeItem`/`ChargeItemPayer` at all (confirmed by direct read of
+  // both methods) — these tests exercise that guarantee through the real
+  // HTTP surface rather than trusting the source read alone.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let ownerA: RegisteredPerson;
+  let newTenant: RegisteredPerson;
+  let ownerC: RegisteredPerson;
+  let buildingId: string;
+  let tenancyUnitId: string;
+  let transferUnitId: string;
+
+  let tenancyBatchId: string;
+  let tenancyChargeItemId: string;
+  let transferBatchId: string;
+  let transferChargeItemId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    ownerA = await registerPerson(app);
+    createdPhones.push(ownerA.phone);
+
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 2 });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    [tenancyUnitId, transferUnitId] = unitsRes.body.data.map((u: { id: string }) => u.id);
+
+    // ownerA owns BOTH units at the start — same direct-`Ownership`-seed
+    // pattern the Charge Generation Phase 2 describe already established
+    // (avoids re-deriving the real invite-owner/OTP-auto-link flow just
+    // to get an owner fixture). A real `Membership` row is ALSO seeded
+    // here (unlike that describe, which never has owner1/owner2 call a
+    // route as themselves) — `POST .../ownership/transfer` below is
+    // self-service and gated by `MembershipGuard`, so ownerA needs a real
+    // current Membership on this building, not just an `Ownership` row.
+    await prisma.ownership.create({
+      data: { unitId: tenancyUnitId, personId: ownerA.personId, isCurrent: true },
+    });
+    await prisma.membership.create({
+      data: { personId: ownerA.personId, buildingId, unitId: tenancyUnitId, role: 'OWNER' },
+    });
+    await prisma.ownership.create({
+      data: { unitId: transferUnitId, personId: ownerA.personId, isCurrent: true },
+    });
+    await prisma.membership.create({
+      data: { personId: ownerA.personId, buildingId, unitId: transferUnitId, role: 'OWNER' },
+    });
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  // --- Scenario A: Tenant fallback snapshot ---------------------------------
+
+  it('a TENANT-requested charge on a unit with an owner and no active tenant resolves to OWNER and snapshots that owner', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Tenant Fallback Snapshot',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 70_000,
+        unitScope: 'MANUAL',
+        unitIds: [tenancyUnitId],
+        payerType: 'TENANT',
+      })
+      .expect(201);
+    tenancyBatchId = createRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${tenancyBatchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    // Public API contract: `resolvedPayerType` is exposed on the batch
+    // detail response; the exact payer personId breakdown
+    // (`ChargeItemPayer`) is not exposed by any read route — inspected
+    // directly below, same as the pre-existing Charge Generation Phase 2
+    // tests already do.
+    const batchRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charges/${tenancyBatchId}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const chargeItem = batchRes.body.data.chargeItems.find(
+      (ci: { unitId: string }) => ci.unitId === tenancyUnitId,
+    );
+    tenancyChargeItemId = chargeItem.id;
+    expect(chargeItem.resolvedPayerType).toBe('OWNER');
+
+    const payers = await prisma.chargeItemPayer.findMany({
+      where: { chargeItemId: tenancyChargeItemId },
+    });
+    expect(payers.map((p) => p.personId)).toEqual([ownerA.personId]);
+  });
+
+  it('creating a tenancy after issuance does not retroactively change the already-issued ChargeItem\'s payer snapshot', async () => {
+    newTenant = await registerPerson(app);
+    createdPhones.push(newTenant.phone);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${tenancyUnitId}/tenancy`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ tenantPersonId: newTenant.personId })
+      .expect(201);
+
+    const batchRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charges/${tenancyBatchId}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const chargeItem = batchRes.body.data.chargeItems.find(
+      (ci: { unitId: string }) => ci.unitId === tenancyUnitId,
+    );
+    // Still OWNER — the new tenancy is never re-resolved against an
+    // already-issued batch's snapshot.
+    expect(chargeItem.resolvedPayerType).toBe('OWNER');
+
+    const payers = await prisma.chargeItemPayer.findMany({
+      where: { chargeItemId: tenancyChargeItemId },
+    });
+    // Still exactly ownerA — the new tenant is NOT retroactively attached.
+    expect(payers.map((p) => p.personId)).toEqual([ownerA.personId]);
+  });
+
+  // --- Scenario B: Ownership transfer ---------------------------------------
+
+  it('an OWNER-requested charge snapshots the original owner', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Pre-Transfer Owner Snapshot',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 80_000,
+        unitScope: 'MANUAL',
+        unitIds: [transferUnitId],
+        payerType: 'OWNER',
+      })
+      .expect(201);
+    transferBatchId = createRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${transferBatchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const batchRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charges/${transferBatchId}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const chargeItem = batchRes.body.data.chargeItems.find(
+      (ci: { unitId: string }) => ci.unitId === transferUnitId,
+    );
+    transferChargeItemId = chargeItem.id;
+    expect(chargeItem.resolvedPayerType).toBe('OWNER');
+
+    const payers = await prisma.chargeItemPayer.findMany({
+      where: { chargeItemId: transferChargeItemId },
+    });
+    expect(payers.map((p) => p.personId)).toEqual([ownerA.personId]);
+  });
+
+  it('transferring ownership after issuance does not change the old ChargeItem\'s payer snapshot', async () => {
+    const newOwnerPhone = nextPhone();
+
+    // Self-service — only the unit's own current owner may initiate
+    // (`OwnershipTransferPolicy.assertCallerIsCurrentOwner`).
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${transferUnitId}/ownership/transfer`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ newOwnerPhone })
+      .expect(201);
+
+    // The transfer only completes once the incoming phone verifies OTP
+    // (`BuildingService.linkOwnerAccountByPhone`, the same auto-link path
+    // `building.e2e-spec.ts`'s own Ownership Transfer describe already
+    // proves out — "completes the transfer automatically on the incoming
+    // owner next OTP verify"). Reusing that exact sequence: no `purpose`
+    // argument to `requestOtpAndCaptureCode` (defaults to `'LOGIN'`),
+    // matching `verifyOtp`'s own hardcoded `purpose: 'LOGIN'` request
+    // body. An earlier version of this test requested with `'REGISTER'`
+    // — `AuthService.verifyOtp` looks up the stored OTP via
+    // `findLatestActiveOtp(phone, purpose)`, which is purpose-scoped, so
+    // a `'REGISTER'`-purpose request is invisible to a `'LOGIN'`-purpose
+    // verify lookup and the call 422s instead of returning 200. Fixed to
+    // match the proven Building flow instead of inventing a new one.
+    const code = await requestOtpAndCaptureCode(app, newOwnerPhone);
+    const verifyRes = await verifyOtp(app, { phone: newOwnerPhone, code }).expect(200);
+    ownerC = {
+      phone: newOwnerPhone,
+      personId: verifyRes.body.data.personId,
+      accessToken: verifyRes.body.data.accessToken,
+    };
+    createdPhones.push(ownerC.phone);
+
+    const batchRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charges/${transferBatchId}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const chargeItem = batchRes.body.data.chargeItems.find(
+      (ci: { unitId: string }) => ci.unitId === transferUnitId,
+    );
+    // Still OWNER — unchanged.
+    expect(chargeItem.resolvedPayerType).toBe('OWNER');
+
+    const payers = await prisma.chargeItemPayer.findMany({
+      where: { chargeItemId: transferChargeItemId },
+    });
+    // Still exactly the ORIGINAL owner — the transfer never rewrites an
+    // already-issued batch's snapshot.
+    expect(payers.map((p) => p.personId)).toEqual([ownerA.personId]);
+  });
+
+  it('a new charge batch issued after the transfer snapshots the new owner, not the old one', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Post-Transfer Owner Snapshot',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 90_000,
+        unitScope: 'MANUAL',
+        unitIds: [transferUnitId],
+        payerType: 'OWNER',
+      })
+      .expect(201);
+    const newBatchId = createRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${newBatchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const batchRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charges/${newBatchId}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const chargeItem = batchRes.body.data.chargeItems.find(
+      (ci: { unitId: string }) => ci.unitId === transferUnitId,
+    );
+    expect(chargeItem.resolvedPayerType).toBe('OWNER');
+
+    const payers = await prisma.chargeItemPayer.findMany({
+      where: { chargeItemId: chargeItem.id },
+    });
+    expect(payers.map((p) => p.personId)).toEqual([ownerC.personId]);
+  });
+});
+
+describe('Finance (e2e) — Regression Hardening: Cross-Building Isolation (Finance Phase F1)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (managerA + managerB).
+  //
+  // Every Finance resource-by-id read route resolves the resource first,
+  // then compares its own `buildingId` against the URL's `:id` — the same
+  // pattern `getFund`/`getChargeBatch`/`getOwnUnit`/`getOwnPayment` (via
+  // `FinanceService`) already establish, and this file never had an
+  // explicit test for. Two distinct isolation failure modes:
+  //   (1) a legitimate member of Building B supplies a Building-A-owned
+  //       resource id on a Building-B-scoped route — must 404 (resource
+  //       not found), never leak existence/data, never 403 (MembershipGuard
+  //       already passed on Building B; the mismatch is a deeper,
+  //       resource-ownership check).
+  //   (2) a person who is NOT a member of Building A at all requests a
+  //       Building-A-scoped route directly — must 403 (MembershipGuard's
+  //       own ordinary deny-by-default), not 404.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let managerA: RegisteredPerson;
+  let managerB: RegisteredPerson;
+  let buildingAId: string;
+  let buildingBId: string;
+  let unitAId: string;
+
+  let fundAId: string;
+  let chargeBatchAId: string;
+  let paymentAId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    managerA = await registerPerson(app);
+    createdPhones.push(managerA.phone);
+    managerB = await registerPerson(app);
+    createdPhones.push(managerB.phone);
+
+    buildingAId = await createBuilding(app, managerA.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingAId);
+    buildingBId = await createBuilding(app, managerB.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingBId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/units`)
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .expect(200);
+    unitAId = unitsRes.body.data[0].id;
+
+    const fundRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingAId}/funds`)
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .send({ name: 'Building A Fund', type: 'CURRENT' })
+      .expect(201);
+    fundAId = fundRes.body.data.id;
+
+    chargeBatchAId = await issueFixedChargeBatch(app, buildingAId, managerA.accessToken, 100_000);
+
+    paymentAId = await reportPayment(app, buildingAId, unitAId, managerA.accessToken, 50_000);
+
+    // Adjustment has no dedicated single-adjustment-detail route — its
+    // isolation boundary is exercised below via the unit-scoped
+    // `listUnitAdjustments` route instead (the same `getOwnUnit` guard the
+    // charge-items/debt routes already share).
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingAId}/units/${unitAId}/adjustments`)
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .send({ amount: 10_000, reason: 'e2e isolation fixture' })
+      .expect(201);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  // --- Pattern 1: Building A's resource id, requested via Building B's own authorized route ---
+
+  it('GET fund detail 404s when the fund belongs to another building', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/funds/${fundAId}`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('GET charge batch detail 404s when the batch belongs to another building', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/charges/${chargeBatchAId}`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('GET unit debt 404s when the unit belongs to another building', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/units/${unitAId}/debt`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('GET unit charge-items 404s when the unit belongs to another building', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/units/${unitAId}/charge-items`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('GET unit adjustments 404s when the unit belongs to another building', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/units/${unitAId}/adjustments`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('GET payment refunds 404s when the payment belongs to another building (no single-payment-detail route exists; this is the closest payment-scoped read)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/payments/${paymentAId}/refunds`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('GET financial-summary for Building B never reflects Building A\'s activity', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/financial-summary`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(200);
+    expect(res.body.data.totalOutstanding).toBe(0);
+    expect(res.body.data.totalCollected).toBe(0);
+    expect(res.body.data.chargeBatchCount).toBe(0);
+  });
+
+  // --- Pattern 2: a genuine non-member of Building A hits Building A's own routes directly ---
+
+  it('blocks a Building-B-only member from reading Building A funds at all (403, not 404)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/funds`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(403);
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+
+  it('blocks a Building-B-only member from reading Building A financial-summary at all (403, not 404)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/financial-summary`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(403);
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+});
