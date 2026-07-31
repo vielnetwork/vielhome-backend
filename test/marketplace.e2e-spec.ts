@@ -232,6 +232,7 @@ interface RegisteredPerson {
   phone: string;
   personId: string;
   accessToken: string;
+  deviceToken?: string;
 }
 
 /** Registers a brand-new Person via the real OTP request/verify flow — no
@@ -260,9 +261,15 @@ async function loginAsSeededStaff(app: INestApplication, phone: string): Promise
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const code = await requestOtpAndCaptureCodeDirect(app, phone);
+    const deviceToken = `e2e-${phone}-${code}`;
     const res = await verifyOtp(app, { phone, code });
     if (res.status === 200) {
-      return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
+      return {
+        phone,
+        personId: res.body.data.personId,
+        accessToken: res.body.data.accessToken,
+        deviceToken,
+      };
     }
     if (attempt === maxAttempts) {
       throw new Error(
@@ -286,17 +293,29 @@ async function loginAsSeededStaff(app: INestApplication, phone: string): Promise
 async function deleteStaffLoginArtifactsOnceBatch(
   prisma: PrismaService,
   phones: string[],
+  deviceTokens: string[],
 ): Promise<void> {
-  await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
-  await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
-  await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
+  await prisma.refreshToken.deleteMany({
+    where: { device: { deviceToken: { in: deviceTokens } } },
+  });
+  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
+  await prisma.otpRequest.deleteMany({
+    where: {
+      phone: { in: phones },
+      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
+    },
+  });
 }
 
-async function cleanupStaffLoginArtifacts(prisma: PrismaService, phones: string[]): Promise<void> {
+async function cleanupStaffLoginArtifacts(
+  prisma: PrismaService,
+  phones: string[],
+  deviceTokens: string[],
+): Promise<void> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones);
+      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
       return;
     } catch (error) {
       const isForeignKeyError =
@@ -528,6 +547,7 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
   // Includes `reviewer.personId` (its own listings never exist in this
   // file, but `cleanupMarketplaceArtifacts` also matches on `reviewedById`,
   // which the seeded REVIEWER's own personId ends up in) — safe to include
@@ -570,6 +590,7 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
     // doc comment for why this is a test fixture, not a seed change).
     marketplaceAdminGrantId = await grantMarketplaceAdminToReviewer(prisma, reviewer.personId);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
     createdPersonIds.push(reviewer.personId);
 
     const resA = await request(app.getHttpServer())
@@ -594,7 +615,7 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
   afterAll(async () => {
     await revokeStaffRoleGrant(prisma, marketplaceAdminGrantId); // 21_ADRs > ADR-100
     await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -776,6 +797,7 @@ describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — 
   const createdPhones: string[] = [];
   const createdPersonIds: string[] = [];
   const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
 
   let owner: RegisteredPerson;
   let unapprovedOther: RegisteredPerson;
@@ -817,6 +839,7 @@ describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — 
     // doc comment for why this is a test fixture, not a seed change).
     marketplaceAdminGrantId = await grantMarketplaceAdminToReviewer(prisma, reviewer.personId);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
 
     const submitRes = await request(app.getHttpServer())
       .post('/api/v1/marketplace/providers')
@@ -848,7 +871,7 @@ describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — 
   afterAll(async () => {
     await revokeStaffRoleGrant(prisma, marketplaceAdminGrantId); // 21_ADRs > ADR-100
     await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -972,6 +995,7 @@ describe('ADR-097 — Marketplace Review Workflow (Phase 2): Edit/Resubmit/Appro
   const createdPhones: string[] = [];
   const createdPersonIds: string[] = [];
   const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
 
   let owner: RegisteredPerson;
   let reviewer: RegisteredPerson;
@@ -998,13 +1022,14 @@ describe('ADR-097 — Marketplace Review Workflow (Phase 2): Edit/Resubmit/Appro
     // doc comment for why this is a test fixture, not a seed change).
     marketplaceAdminGrantId = await grantMarketplaceAdminToReviewer(prisma, reviewer.personId);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
     createdPersonIds.push(reviewer.personId);
   });
 
   afterAll(async () => {
     await revokeStaffRoleGrant(prisma, marketplaceAdminGrantId); // 21_ADRs > ADR-100
     await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -1267,6 +1292,7 @@ describe('ADR-100 — Marketplace Permission Migration (PermissionsGuard/@Requir
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
   const createdPersonIds: string[] = [];
 
   let submitter: RegisteredPerson;
@@ -1294,6 +1320,7 @@ describe('ADR-100 — Marketplace Permission Migration (PermissionsGuard/@Requir
 
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
     createdPersonIds.push(reviewer.personId);
 
     const submitRes = await request(app.getHttpServer())
@@ -1348,7 +1375,7 @@ describe('ADR-100 — Marketplace Permission Migration (PermissionsGuard/@Requir
     await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
     await prisma.role.delete({ where: { id: testRoleId } });
     await prisma.serviceProvider.deleteMany({ where: { submittedById: { in: createdPersonIds } } });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });

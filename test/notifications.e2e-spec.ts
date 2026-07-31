@@ -304,6 +304,7 @@ interface RegisteredPerson {
   phone: string;
   personId: string;
   accessToken: string;
+  deviceToken?: string;
 }
 
 /** Registers a brand-new Person via the real OTP request/verify flow — no
@@ -355,7 +356,12 @@ async function loginAsSeededStaff(app: INestApplication, phone: string): Promise
     try {
       const code = await requestOtpAndCaptureCode(app, phone);
       const res = await verifyOtp(app, { phone, code }).expect(200);
-      return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
+      return {
+        phone,
+        personId: res.body.data.personId,
+        accessToken: res.body.data.accessToken,
+        deviceToken: `e2e-${phone}-${code}`,
+      };
     } catch (error) {
       const status = (error as { response?: { status?: number } })?.response?.status;
       // Only retry the specific cross-suite-collision symptom (a 500 from
@@ -382,11 +388,42 @@ async function loginAsSeededStaff(app: INestApplication, phone: string): Promise
  * this file must never delete them. Without this cleanup step at all,
  * repeated real-toolchain runs over time would unboundedly accumulate
  * `RefreshToken`/`Device`/`OtpRequest` rows for these two phones.
+ *
+ * The `OtpRequest` deletion is deliberately scoped to rows that are
+ * already consumed or already expired — never a currently-active
+ * (`consumedAt: null`, not yet expired) row. `loginAsSeededStaff`'s own
+ * comment documents the cross-suite race this guards against: ~9 other
+ * e2e files log into these same two shared phones concurrently
+ * (`npm run test:e2e` runs spec files as separate Jest workers with no
+ * coordination), so an unscoped `deleteMany({ where: { phone } })` here
+ * could delete another suite's freshly-created, not-yet-consumed
+ * `OtpRequest` row out from under it mid-`requestOtp`-to-`verifyOtp`
+ * window — surfacing there as a 422 ("No active code found," if the row
+ * is gone before `findLatestActiveOtp` reads it) or a P2025 ("Record to
+ * update not found" from `consumeOtp`'s own `update()`, if the row is
+ * deleted in the narrower gap after that read). Every row this file
+ * itself created for these phones is guaranteed to already be consumed
+ * (a successful `loginAsSeededStaff` call always calls `verifyOtp`,
+ * which always calls `consumeOtp`) or expired well before `afterAll`
+ * runs, so this narrowing loses no real cleanup coverage for this file's
+ * own rows — it only stops this file from being the one that deletes
+ * someone else's in-flight row.
  */
-async function cleanupStaffLoginArtifacts(prisma: PrismaService, phones: string[]): Promise<void> {
-  await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
-  await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
-  await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
+async function cleanupStaffLoginArtifacts(
+  prisma: PrismaService,
+  phones: string[],
+  deviceTokens: string[],
+): Promise<void> {
+  await prisma.refreshToken.deleteMany({
+    where: { device: { deviceToken: { in: deviceTokens } } },
+  });
+  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
+  await prisma.otpRequest.deleteMany({
+    where: {
+      phone: { in: phones },
+      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
+    },
+  });
 }
 
 function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -1249,6 +1286,48 @@ describe('Notifications (e2e) — Preferences', () => {
   });
 });
 
+async function grantNotificationTemplateAdminToStaff(
+  prisma: PrismaService,
+  personId: string,
+  keys: readonly ('NOTIFICATION_TEMPLATE_VIEW' | 'NOTIFICATION_TEMPLATE_MANAGE')[],
+): Promise<string> {
+  const staff = await prisma.platformStaff.findUnique({ where: { personId } });
+  if (!staff) throw new Error('Seeded staff has no PlatformStaff row.');
+
+  const role =
+    (await prisma.role.findUnique({ where: { name: `Notification Template Admin (e2e, ${personId})` } })) ??
+    (await prisma.role.create({
+      data: {
+        name: `Notification Template Admin (e2e, ${personId})`,
+        description: 'e2e fixture (ADR-102).',
+      },
+    }));
+
+  for (const key of keys) {
+    const permission =
+      (await prisma.permission.findUnique({ where: { key } })) ??
+      (await prisma.permission.create({ data: { key, label: key } }));
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
+    });
+    if (!activeGrant) {
+      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    }
+  }
+
+  const existingGrant = await prisma.staffRole.findFirst({
+    where: { staffId: staff.id, roleId: role.id, revokedAt: null },
+  });
+  if (existingGrant) return existingGrant.id;
+
+  const created = await prisma.staffRole.create({ data: { staffId: staff.id, roleId: role.id } });
+  return created.id;
+}
+
+async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
+  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
+}
+
 describe('Notifications (e2e) — NotificationTemplate Staff CRUD (ADR-060)', () => {
   // Budget: 3-5 calls to POST /auth/otp/request (seeded PLATFORM_ADMIN
   // login + seeded REVIEWER login, each with up to one retry against the
@@ -1264,18 +1343,33 @@ describe('Notifications (e2e) — NotificationTemplate Staff CRUD (ADR-060)', ()
   let reviewer: RegisteredPerson;
   let regularMember: RegisteredPerson;
   const templateCode = (suffix: string) => `e2e-notif-tpl-${RUN_ID}-${suffix}`;
+  let adminGrantId: string;
+  let reviewerGrantId: string;
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
     admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
+    adminGrantId = await grantNotificationTemplateAdminToStaff(prisma, admin.personId, [
+      'NOTIFICATION_TEMPLATE_VIEW',
+      'NOTIFICATION_TEMPLATE_MANAGE',
+    ]);
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    reviewerGrantId = await grantNotificationTemplateAdminToStaff(prisma, reviewer.personId, [
+      'NOTIFICATION_TEMPLATE_VIEW',
+    ]);
     regularMember = await registerPerson(app);
     createdPhones.push(regularMember.phone);
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, adminGrantId);
+    await revokeStaffRoleGrant(prisma, reviewerGrantId);
     await prisma.notificationTemplate.deleteMany({ where: { id: { in: createdTemplateIds } } });
-    await cleanupStaffLoginArtifacts(prisma, [PLATFORM_ADMIN_PHONE, PLATFORM_REVIEWER_PHONE]);
+    await cleanupStaffLoginArtifacts(
+      prisma,
+      [PLATFORM_ADMIN_PHONE, PLATFORM_REVIEWER_PHONE],
+      [admin.deviceToken!, reviewer.deviceToken!],
+    );
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });

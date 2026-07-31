@@ -404,6 +404,7 @@ interface RegisteredPerson {
   phone: string;
   personId: string;
   accessToken: string;
+  deviceToken?: string;
 }
 
 /** Registers a brand-new Person via the real OTP request/verify flow — no
@@ -447,9 +448,15 @@ async function loginAsSeededStaff(app: INestApplication, phone: string): Promise
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const code = await requestOtpAndCaptureCodeDirect(app, phone);
+    const deviceToken = `e2e-${phone}-${code}`;
     const res = await verifyOtp(app, { phone, code });
     if (res.status === 200) {
-      return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
+      return {
+        phone,
+        personId: res.body.data.personId,
+        accessToken: res.body.data.accessToken,
+        deviceToken,
+      };
     }
     if (attempt === maxAttempts) {
       throw new Error(
@@ -482,17 +489,29 @@ async function loginAsSeededStaff(app: INestApplication, phone: string): Promise
 async function deleteStaffLoginArtifactsOnceBatch(
   prisma: PrismaService,
   phones: string[],
+  deviceTokens: string[],
 ): Promise<void> {
-  await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
-  await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
-  await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
+  await prisma.refreshToken.deleteMany({
+    where: { device: { deviceToken: { in: deviceTokens } } },
+  });
+  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
+  await prisma.otpRequest.deleteMany({
+    where: {
+      phone: { in: phones },
+      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
+    },
+  });
 }
 
-async function cleanupStaffLoginArtifacts(prisma: PrismaService, phones: string[]): Promise<void> {
+async function cleanupStaffLoginArtifacts(
+  prisma: PrismaService,
+  phones: string[],
+  deviceTokens: string[],
+): Promise<void> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones);
+      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
       return;
     } catch (error) {
       const isForeignKeyError =
@@ -587,6 +606,43 @@ async function waitFor<T>(
   return undefined;
 }
 
+async function grantFraudAdminToStaff(prisma: PrismaService, personId: string): Promise<string> {
+  const staff = await prisma.platformStaff.findUnique({ where: { personId } });
+  if (!staff) throw new Error('Seeded/elevated staff has no PlatformStaff row.');
+
+  const role =
+    (await prisma.role.findUnique({ where: { name: 'Fraud Admin (e2e)' } })) ??
+    (await prisma.role.create({
+      data: { name: 'Fraud Admin (e2e)', description: 'e2e fixture (ADR-102).' },
+    }));
+
+  for (const key of ['FRAUD_VIEW', 'FRAUD_MANAGE'] as const) {
+    const permission =
+      (await prisma.permission.findUnique({ where: { key } })) ??
+      (await prisma.permission.create({ data: { key, label: key } }));
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
+    });
+    if (!activeGrant) {
+      await prisma.rolePermission.create({
+        data: { roleId: role.id, permissionId: permission.id },
+      });
+    }
+  }
+
+  const existingGrant = await prisma.staffRole.findFirst({
+    where: { staffId: staff.id, roleId: role.id, revokedAt: null },
+  });
+  if (existingGrant) return existingGrant.id;
+
+  const created = await prisma.staffRole.create({ data: { staffId: staff.id, roleId: role.id } });
+  return created.id;
+}
+
+async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
+  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
+}
+
 describe('Fraud & Abuse Center (e2e) — Report, Case Lifecycle & Metrics (07.03)', () => {
   // Budget: 4 calls to POST /auth/otp/request (reporter, targetPerson,
   // REVIEWER login, PLATFORM_ADMIN login).
@@ -594,6 +650,7 @@ describe('Fraud & Abuse Center (e2e) — Report, Case Lifecycle & Metrics (07.03
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
   const createdPersonIds: string[] = [];
 
   let reporter: RegisteredPerson;
@@ -602,6 +659,8 @@ describe('Fraud & Abuse Center (e2e) — Report, Case Lifecycle & Metrics (07.03
   let admin: RegisteredPerson;
   let caseId: string;
   let signalCaseId: string;
+  let reviewerGrantId: string;
+  let adminGrantId: string;
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
@@ -616,14 +675,20 @@ describe('Fraud & Abuse Center (e2e) — Report, Case Lifecycle & Metrics (07.03
 
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewerGrantId = await grantFraudAdminToStaff(prisma, reviewer.personId);
 
     admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
     staffPhones.push(PLATFORM_ADMIN_PHONE);
+    staffDeviceTokens.push(admin.deviceToken!);
+    adminGrantId = await grantFraudAdminToStaff(prisma, admin.personId);
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, reviewerGrantId);
+    await revokeStaffRoleGrant(prisma, adminGrantId);
     await cleanupFraudArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -809,6 +874,7 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
   const createdPersonIds: string[] = [];
 
   let targetSuspend: RegisteredPerson;
@@ -821,6 +887,9 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
   let openCaseId: string;
   let suspensionActionId: string;
   let warningActionId: string;
+  let reviewerGrantId: string;
+  let seniorReviewerGrantId: string;
+  let adminGrantId: string;
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
@@ -835,6 +904,8 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
 
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewerGrantId = await grantFraudAdminToStaff(prisma, reviewer.personId);
 
     seniorReviewer = await registerPerson(app);
     createdPhones.push(seniorReviewer.phone);
@@ -846,9 +917,12 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     await prisma.platformStaff.create({
       data: { personId: seniorReviewer.personId, role: 'SENIOR_REVIEWER', isActive: true },
     });
+    seniorReviewerGrantId = await grantFraudAdminToStaff(prisma, seniorReviewer.personId);
 
     admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
     staffPhones.push(PLATFORM_ADMIN_PHONE);
+    staffDeviceTokens.push(admin.deviceToken!);
+    adminGrantId = await grantFraudAdminToStaff(prisma, admin.personId);
 
     const caseSuspendRes = await request(app.getHttpServer())
       .post('/api/v1/backoffice/fraud-cases')
@@ -898,10 +972,28 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
   }, 20000);
 
   afterAll(async () => {
-    await cleanupFraudArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones);
-    await cleanupPhones(prisma, createdPhones);
-    await app.close();
+    try {
+      if (reviewerGrantId) {
+        await revokeStaffRoleGrant(prisma, reviewerGrantId);
+      }
+      // seniorReviewer's own PlatformStaff row is deleted inside
+      // cleanupFraudArtifacts below (it's an ad-hoc test-only elevation,
+      // not a seeded fixture, and its personId is in createdPersonIds) —
+      // its StaffRole grant must be HARD-deleted first, not just revoked,
+      // or the still-live FK to that PlatformStaff row blocks the delete
+      // with `staff_roles_staffId_fkey`. Same ADR-100 teardown fix reused.
+      if (seniorReviewerGrantId) {
+        await prisma.staffRole.delete({ where: { id: seniorReviewerGrantId } });
+      }
+      if (adminGrantId) {
+        await revokeStaffRoleGrant(prisma, adminGrantId);
+      }
+      await cleanupFraudArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });
+      await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+      await cleanupPhones(prisma, createdPhones);
+    } finally {
+      await app.close();
+    }
   });
 
   it('rejects enforce with targetType PERSON but no targetPersonId (400)', async () => {
@@ -1077,6 +1169,7 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Building (07.03)'
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
   const createdPersonIds: string[] = [];
   const createdBuildingIds: string[] = [];
 
@@ -1086,6 +1179,8 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Building (07.03)'
   let buildingId: string;
   let caseId: string;
   let actionId: string;
+  let reviewerGrantId: string;
+  let adminGrantId: string;
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
@@ -1099,9 +1194,13 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Building (07.03)'
 
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewerGrantId = await grantFraudAdminToStaff(prisma, reviewer.personId);
 
     admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
     staffPhones.push(PLATFORM_ADMIN_PHONE);
+    staffDeviceTokens.push(admin.deviceToken!);
+    adminGrantId = await grantFraudAdminToStaff(prisma, admin.personId);
 
     const caseRes = await request(app.getHttpServer())
       .post('/api/v1/backoffice/fraud-cases')
@@ -1117,12 +1216,14 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Building (07.03)'
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, reviewerGrantId);
+    await revokeStaffRoleGrant(prisma, adminGrantId);
     await cleanupFraudArtifacts(prisma, {
       personIds: createdPersonIds,
       buildingIds: createdBuildingIds,
     });
     await cleanupBuildings(prisma, createdBuildingIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -1197,6 +1298,7 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Manager Claim (07
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
   const createdPersonIds: string[] = [];
   const createdBuildingIds: string[] = [];
 
@@ -1208,6 +1310,8 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Manager Claim (07
   let membershipId: string;
   let caseId: string;
   let actionId: string;
+  let reviewerGrantId: string;
+  let adminGrantId: string;
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
@@ -1248,9 +1352,13 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Manager Claim (07
 
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewerGrantId = await grantFraudAdminToStaff(prisma, reviewer.personId);
 
     admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
     staffPhones.push(PLATFORM_ADMIN_PHONE);
+    staffDeviceTokens.push(admin.deviceToken!);
+    adminGrantId = await grantFraudAdminToStaff(prisma, admin.personId);
 
     const caseRes = await request(app.getHttpServer())
       .post('/api/v1/backoffice/fraud-cases')
@@ -1266,12 +1374,14 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Manager Claim (07
   });
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, reviewerGrantId);
+    await revokeStaffRoleGrant(prisma, adminGrantId);
     await cleanupFraudArtifacts(prisma, {
       personIds: createdPersonIds,
       buildingIds: createdBuildingIds,
     });
     await cleanupBuildings(prisma, createdBuildingIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });

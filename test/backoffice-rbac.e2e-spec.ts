@@ -95,14 +95,29 @@ async function cleanupPhones(prisma: PrismaService, phones: string[]): Promise<v
 /** RBAC-specific teardown: closes (not deletes — history preservation is
  * the whole point) any StaffRole this run created, and hard-deletes the
  * rows this run's own dedicated test Role/Permission ended up with, so
- * repeated CI runs don't accumulate garbage rows across test executions. */
+ * repeated CI runs don't accumulate garbage rows across test executions.
+ *
+ * `staffIds` here is the SHARED seeded platform admin's `PlatformStaff.id`
+ * — other e2e files (`manager-verification.e2e-spec.ts`,
+ * `scheduler.e2e-spec.ts`, etc.) grant roles to that exact same staff
+ * record concurrently when `npm run test:e2e` runs suites across parallel
+ * Jest workers against one shared dev database. A `staffId`-only
+ * predicate here previously deleted every active `StaffRole` for that
+ * staff member regardless of which role it pointed to — including
+ * another suite's own concurrently-active grant — causing its permission
+ * to "disappear" mid-run and its own later `staffRole.delete({id})` to
+ * fail with "record not found." Scoping to this file's own `roleIds` too
+ * (each a uniquely-named, exclusively-owned fixture role) ensures this
+ * only ever deletes StaffRole rows this file itself created. */
 async function cleanupRbacFixtures(
   prisma: PrismaService,
   staffIds: string[],
   roleIds: string[],
 ): Promise<void> {
-  if (staffIds.length) {
-    await prisma.staffRole.deleteMany({ where: { staffId: { in: staffIds } } });
+  if (staffIds.length && roleIds.length) {
+    await prisma.staffRole.deleteMany({
+      where: { staffId: { in: staffIds }, roleId: { in: roleIds } },
+    });
   }
   if (roleIds.length) {
     await prisma.rolePermission.deleteMany({ where: { roleId: { in: roleIds } } });

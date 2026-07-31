@@ -309,6 +309,7 @@ interface RegisteredPerson {
   phone: string;
   personId: string;
   accessToken: string;
+  deviceToken?: string;
 }
 
 /** Registers a brand-new Person via the real OTP request/verify flow — no
@@ -355,9 +356,15 @@ async function loginAsSeededStaff(app: INestApplication, phone: string): Promise
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const code = await requestOtpAndCaptureCodeDirect(app, phone);
+    const deviceToken = `e2e-${phone}-${code}`;
     const res = await verifyOtp(app, { phone, code });
     if (res.status === 200) {
-      return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
+      return {
+        phone,
+        personId: res.body.data.personId,
+        accessToken: res.body.data.accessToken,
+        deviceToken,
+      };
     }
     if (attempt === maxAttempts) {
       throw new Error(
@@ -390,17 +397,29 @@ async function loginAsSeededStaff(app: INestApplication, phone: string): Promise
 async function deleteStaffLoginArtifactsOnceBatch(
   prisma: PrismaService,
   phones: string[],
+  deviceTokens: string[],
 ): Promise<void> {
-  await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
-  await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
-  await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
+  await prisma.refreshToken.deleteMany({
+    where: { device: { deviceToken: { in: deviceTokens } } },
+  });
+  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
+  await prisma.otpRequest.deleteMany({
+    where: {
+      phone: { in: phones },
+      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
+    },
+  });
 }
 
-async function cleanupStaffLoginArtifacts(prisma: PrismaService, phones: string[]): Promise<void> {
+async function cleanupStaffLoginArtifacts(
+  prisma: PrismaService,
+  phones: string[],
+  deviceTokens: string[],
+): Promise<void> {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones);
+      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
       return;
     } catch (error) {
       const isForeignKeyError =
@@ -504,6 +523,50 @@ function waitForInitialCase(prisma: PrismaService, buildingId: string, candidate
       where: { buildingId, candidateId, isReverification: false },
     }),
   );
+}
+
+/**
+ * 21_ADRs > ADR-102 — `ManagerVerificationController`'s routes now also
+ * require a real RBAC permission grant (`PermissionsGuard`), stacked on
+ * the pre-existing `PlatformRolesGuard` floor. TEST-FIXTURE-ONLY, mirrors
+ * `marketplace.e2e-spec.ts`'s own `grantMarketplaceAdminToReviewer` helper.
+ */
+async function grantManagerVerificationAdminToReviewer(
+  prisma: PrismaService,
+  reviewerPersonId: string,
+): Promise<string> {
+  const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewerPersonId } });
+  if (!staff) throw new Error('Seeded staff has no PlatformStaff row.');
+
+  const role =
+    (await prisma.role.findUnique({ where: { name: 'Manager Verification Admin (e2e)' } })) ??
+    (await prisma.role.create({
+      data: { name: 'Manager Verification Admin (e2e)', description: 'e2e fixture (ADR-102).' },
+    }));
+
+  for (const key of ['MANAGER_VERIFICATION_VIEW', 'MANAGER_VERIFICATION_MANAGE'] as const) {
+    const permission =
+      (await prisma.permission.findUnique({ where: { key } })) ??
+      (await prisma.permission.create({ data: { key, label: key } }));
+    const activeGrant = await prisma.rolePermission.findFirst({
+      where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
+    });
+    if (!activeGrant) {
+      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    }
+  }
+
+  const existingGrant = await prisma.staffRole.findFirst({
+    where: { staffId: staff.id, roleId: role.id, revokedAt: null },
+  });
+  if (existingGrant) return existingGrant.id;
+
+  const created = await prisma.staffRole.create({ data: { staffId: staff.id, roleId: role.id } });
+  return created.id;
+}
+
+async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
+  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
 }
 
 describe('Manager Verification (e2e) — Owner Approval: blocks & threshold (06.03)', () => {
@@ -654,11 +717,14 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
   let app: INestApplication;
   let prisma: PrismaService;
   const staffPhones: string[] = [];
+  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
   const createdBuildingIds: string[] = [];
 
   let admin: RegisteredPerson;
   let reviewer: RegisteredPerson;
+  let reviewerGrantId: string;
+  let adminGrantId: string;
   let founder1: RegisteredPerson;
   let founder2: RegisteredPerson;
   let founder3: RegisteredPerson;
@@ -674,8 +740,12 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
 
     admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
     staffPhones.push(PLATFORM_ADMIN_PHONE);
+    staffDeviceTokens.push(admin.deviceToken!);
     reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
     staffPhones.push(PLATFORM_REVIEWER_PHONE);
+    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewerGrantId = await grantManagerVerificationAdminToReviewer(prisma, reviewer.personId);
+    adminGrantId = await grantManagerVerificationAdminToReviewer(prisma, admin.personId);
 
     founder1 = await registerPerson(app);
     createdPhones.push(founder1.phone);
@@ -720,9 +790,11 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
   }, 20000);
 
   afterAll(async () => {
+    await revokeStaffRoleGrant(prisma, reviewerGrantId);
+    await revokeStaffRoleGrant(prisma, adminGrantId);
     await cleanupBuildings(prisma, createdBuildingIds);
     await cleanupPhones(prisma, createdPhones);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones);
+    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await app.close();
   });
 
