@@ -1,6 +1,6 @@
 # ADR-112 — Backoffice Building Administration
 
-**Status:** Proposed — pending the operator's real build/unit/e2e verification run
+**Status:** Accepted — Closed (2026-08-01)
 **Context area:** 21_ADRs (Backend / Backoffice), Operational Readiness — Stage 5 of the Backoffice completion roadmap
 **Related:** ADR-098 (Backoffice RBAC Foundation — reserved the `BUILDING_VIEW`/`BUILDING_EDIT` keys this ADR is the first to actually wire to a route), ADR-102 (Operations Admin already holds both keys, Finance Admin/Support Admin hold `BUILDING_VIEW` alone, in the seed matrix), ADR-029 (Building Verification Queue — `updateBuildingStatus`/Recovery Mode's original owner), ADR-031 (Fraud & Abuse Center's `VERIFICATION_REVOCATION` enforcement effect — the other existing caller of `updateBuildingStatus`), ADR-111 (User Administration — Stage 4, the direct structural precedent this stage mirrors for `Person` → `Building`)
 
@@ -66,7 +66,52 @@ This stage introduces zero schema/migration changes, so no Prisma-client hand-pa
 - `npm run build` — succeeded (after moving aside a stale `dist/` directory the mounted filesystem could not overwrite in place, the same recurring device-bridge quirk noted in ADR-110/ADR-111).
 - `npm run test:e2e` was **not** run in this sandbox — this sandbox's `device_bash` shell has no reachable Postgres/Redis (established during ADR-110's own closure triage), so a real e2e run could not be executed here.
 
-**The operator still needs to run the real verification stack** (`npm run build`, `npm test`, `npm run test:e2e`) on their own machine before this ADR can move to Closed.
+**The operator ran the real verification stack** (`npm run build`, `npm test`, `npm run test:e2e`) on their own machine:
+
+## Final Verification (Closure Gate)
+
+- `npm run build` — succeeded.
+- `npm test` (full suite) — **577/577 passed, 47/47 suites**.
+- `npm run test:e2e` (first real run) — **three real bugs found, all inside this stage's own new
+  `test/building-administration.e2e-spec.ts`, all fixed with test-only changes**:
+  1. **Cleanup FK violation (`Test suite failed to run`).** `deleteOncePerPhoneBatch`'s
+     `prisma.person.deleteMany` failed on `building_setup_drafts_personId_fkey` — the suite's
+     `founder` goes through the real `/buildings/setup/draft` + `/buildings/setup/submit` flow, and
+     the resulting `BuildingSetupDraft` row (a required FK to `Person`) was never cleared first.
+     `building.e2e-spec.ts`'s own equivalent cleanup function already includes this step; this
+     suite's copy, adapted from `user-administration.e2e-spec.ts` (which never creates a building
+     and so never needed it), simply omitted it. Fixed by adding the same
+     `prisma.buildingSetupDraft.deleteMany(...)` call in the correct FK order.
+  2. **List-search assertion searched a field that could never match.** The test searched by the
+     fixture's `district` value, but reading `BuildingSetupService.submitReviewStep` showed
+     `Building.addressLine` (the field `searchBuildings` actually matches against) is composed only
+     from `mainStreet`/`subStreet`/`alley`/`plateNumber` — `district` is never part of it. Fixed by
+     searching on the fixture's own `postalCode` instead — one of `searchBuildings`' real OR fields,
+     and exact-unique per building.
+  3. **Post-mutation re-verification GETs used the wrong staff token.** The "locks..."/"reinstates..."
+     tests each followed their `POST .../lock` or `.../reinstate` with a `GET
+     /backoffice/buildings/:id` as `admin`, expecting `200` — but `admin` was only ever granted
+     `BUILDING_EDIT`, never `BUILDING_VIEW` (and by that point in the suite, `BUILDING_VIEW` had
+     already been revoked from `reviewer` too, in the prior describe block's own final test), so the
+     real, correct response was `403`. Removed both redundant GETs — the mutation's own response
+     body (`res.body.data`, already asserted immediately above each) is sufficient proof of the
+     state change, matching `user-administration.e2e-spec.ts`'s own precedent of never re-verifying
+     a mutation via a follow-up authenticated read.
+
+  No production code was implicated in any of the three — all were test-authoring bugs in this
+  stage's own new file, confirmed by inspection of `git diff` scope (only
+  `test/building-administration.e2e-spec.ts` changed in the fix commit) before the fix was applied.
+  Fixed in commit `ca1c628`.
+- **Isolated rerun confirmation**, on the operator's own machine:
+  `npx jest --config ./test/jest-e2e.json test/building-administration.e2e-spec.ts` — **14/14
+  passed**.
+- **Full re-run after the fix**: `npm run build` succeeded; `npm test` — **577/577 passed, 47/47
+  suites**; `npm run test:e2e` — **683/683 passed, 27/27 suites, zero failures** (including
+  `test/building-administration.e2e-spec.ts` itself and every other suite — no unrelated transient
+  observed this time, unlike ADR-110's/ADR-111's own closure runs).
+
+ADR-112 is CLOSED on this basis: its own code and both test suites (unit + e2e) are fully green, with
+no unresolved failure of any kind — the cleanest closure run of the roadmap so far.
 
 ## Non-Goals (Phase 1)
 
