@@ -217,6 +217,27 @@ rediscovered from scratch:
     to their local Postgres/Redis and could run the isolated command
     directly.
 
+  **Addendum (2026-08-01, during ADR-111 User Administration
+  verification):** one further occurrence, same general shape as the
+  six original entries above (an isolated, unexplained HTTP-status
+  mismatch that reproduces cleanly on isolated rerun), and specifically
+  in the same domain (`documents`) two of the original six already
+  flagged:
+  - `test/documents.e2e-spec.ts` — "shows a MANAGEMENT_ONLY document to
+    a privileged list caller" (`GET /buildings/:id/documents`) expected
+    `200`, got `404`, during a single full `npm run test:e2e` run (the
+    first run to include the new `test/user-administration.e2e-spec.ts`
+    alongside it). No commit in ADR-111's own change set (`7a46426`,
+    `f190094`) touches the `documents` module, `buildings` routes, or
+    any shared seed/RBAC code path — confirmed by inspecting both
+    commits' file lists — so an ADR-111 causal link is ruled out by
+    scope alone, the same way it was for ADR-108's and ADR-110's own
+    unrelated transients above. Confirmed transient via a genuine
+    **single-file-isolated** rerun on the operator's own machine:
+    `npx jest --config ./test/jest-e2e.json test/documents.e2e-spec.ts`
+    → **27/27 passed**, including the exact test that failed during the
+    full run.
+
 ## Lesson Learned / Testing Guideline (proposed, for this codebase's e2e conventions going forward)
 
 > **Parallel e2e suites must never perform cleanup using a predicate scoped only to a shared identifier** — a shared seeded phone number, a shared seeded `PlatformStaff`/staff id, a shared role name, or any other identifier more than one concurrently-running suite can legitimately touch.

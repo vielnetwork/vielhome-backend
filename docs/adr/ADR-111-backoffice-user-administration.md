@@ -1,6 +1,6 @@
 # ADR-111 — Backoffice User Administration
 
-**Status:** Proposed — pending the operator's real build/unit/e2e verification run
+**Status:** Accepted — Closed (2026-08-01)
 **Context area:** 21_ADRs (Backend / Backoffice), Operational Readiness — Stage 4 of the Backoffice completion roadmap
 **Related:** ADR-098 (Backoffice RBAC Foundation — reserved the `USER_VIEW`/`USER_EDIT` keys this ADR is the first to actually wire to a route), ADR-102 (Operations Admin already holds both keys in the seed matrix), ADR-031/ADR-043 (Fraud & Abuse Center's `isSuspended` flag and its live enforcement at login/every-request — this ADR reuses both without changing either), ADR-110 (Operational Dashboard — Stage 3, `MonitoringService`-reuse-not-reimplementation discipline followed here too for the Audit Center)
 
@@ -60,7 +60,33 @@ This stage introduces zero schema/migration changes, so no Prisma-client hand-pa
 - `npm run build` — succeeded (after moving aside a stale `dist/` directory the mounted filesystem could not overwrite in place, the same recurring device-bridge quirk noted in ADR-110).
 - `npm run test:e2e` was **not** run in this sandbox — this sandbox's `device_bash` shell has no reachable Postgres/Redis (established during ADR-110's own closure triage), so a real e2e run could not be executed here regardless of whether this stage touched the schema.
 
-**The operator must run, on their own machine:** `npm run build`, `npm test`, `npm run test:e2e` (no `prisma migrate dev`/`generate`/`db:seed:rbac` step is needed this stage — nothing in the schema or seed changed). This ADR is not Closed until that sequence is confirmed green (or any failure has been triaged per the roadmap's own Verification Gate — isolated rerun, root-cause, compare against ADR-107's known patterns, before attributing anything to this stage).
+**The operator ran the real verification stack** (`npm run build`, `npm test`, `npm run test:e2e`) on their own machine:
+
+## Final Verification (Closure Gate)
+
+- `npm run build` — succeeded.
+- `npm test` (full suite) — **569/569 passed, 46/46 suites**.
+- `npm run test:e2e` — **one real bug found and fixed, one unrelated transient triaged and recorded**:
+  1. **`test/user-administration.e2e-spec.ts`** — the "suspends the target..." and "reinstates the target..." tests
+     both expected `200`, got `201`. A real, deterministic bug in this stage's own e2e test, not a production
+     defect: NestJS's `@Post()` defaults to `201 Created`, unchanged in `UserAdministrationController.suspend`/
+     `reinstate` — the exact same convention every other POST-mutation-on-an-existing-resource route in this
+     codebase already follows (e.g. `PersonAccessController.set()`, whose own e2e suite already asserts `201` for
+     the identical shape). Fixed in commit `f190094` by correcting the test's expectation to `201`, with an inline
+     comment pointing at the precedent. No production code changed.
+  2. **`test/documents.e2e-spec.ts`** — "shows a MANAGEMENT_ONLY document to a privileged list caller" (`GET
+     /buildings/:id/documents`) failed with `expected 200, got 404` during the same full run. Untouched by this
+     stage's own change set (`7a46426`, `f190094`) — no shared module, route, or permission — so per the
+     roadmap's own Verification Gate this was not attributed to ADR-111. Confirmed as a transient via a genuine
+     single-file-isolated rerun on the operator's own machine: **27/27 passed**, including the exact failing test.
+     Recorded as a new ADR-107 addendum entry (the same `documents`-domain 404 symptom category ADR-107 already
+     catalogues twice among its original six unreproducible transients).
+  3. A subsequent isolated rerun of `test/user-administration.e2e-spec.ts` alone confirmed the fix: **14/14
+     passed**.
+
+ADR-111 is CLOSED on this basis: its own code and both test suites (unit + e2e) are fully green; the one
+unrelated failure observed during the full run has been triaged to a known, pre-existing category of e2e
+fragility, not a regression this stage introduced.
 
 ## Non-Goals (Phase 1)
 
