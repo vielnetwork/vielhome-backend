@@ -1,6 +1,6 @@
 # ADR-118 — Initial Backoffice Bootstrap
 
-**Status:** Proposed — pending the operator's real build/unit/e2e verification run
+**Status:** Accepted — Closed (2026-08-01)
 **Context area:** 21_ADRs (Backend / Backoffice), operational/deployment tooling — a follow-on ADR after the 10-stage Backoffice completion roadmap (Stages 1-10, ADR-108 through ADR-117, all Closed), not itself part of that roadmap's stage numbering
 **Related:** ADR-099 (Backoffice RBAC Foundation — the "deterministic seed creates no `StaffRole` rows for real staff" decision this ADR's whole premise rests on), ADR-098 (Bridge Migration architecture — `RbacManagementController`'s own "bootstrap problem, deliberately resolved this way" doc comment, unresolved until now), ADR-107 (e2e cleanup discipline — this ADR's e2e suite follows its "never write a risky/irreversible value against a real shared row" precaution)
 
@@ -79,6 +79,17 @@ Two `AuditLog` entries are written per successful bootstrap, both with `actorId:
 ## Build / Unit / E2E Verification
 
 Unlike ADR-116/ADR-117, this stage introduces **zero** Prisma schema changes — no new model, no new enum value — so, uniquely among the more recent stages, the full verification sequence could be run directly in-sandbox: `npx eslint --fix` clean on every touched file; `npx tsc --noEmit` across the whole project: **zero errors**; `npm run build`: succeeded; `npm test`: **636/636 passed, 54 suites** (up from 629/629, 53 suites — the +7 delta is exactly the 7 new tests in `bootstrap-backoffice-admin.service.spec.ts`). `npm run test:e2e` was not run in-sandbox — the full e2e run takes roughly 50 seconds on the operator's machine, past this sandbox's hard 45-second command ceiling — the operator is asked to run it directly.
+
+## Final Verification (Closure Gate)
+
+The operator ran the real verification sequence on the actual dev database and pasted back the full output:
+
+- `npm test` (unit): **636/636 passed, 54 suites** — matches the in-sandbox result exactly (no drift between sandbox and the operator's machine).
+- `npm run test:e2e`: **750/750 passed, 32 suites** — up from the prior confirmed baseline of 744/744, 31 suites (ADR-117 closure). The **+6 tests / +1 suite** delta is exactly the 6 new tests in `test/bootstrap-backoffice-admin.e2e-spec.ts`, with no other suite's count changed — confirming ADR-118 introduced no regression in any ADR-108–117 behavior.
+- `test/bootstrap-backoffice-admin.e2e-spec.ts` passed on its own line (`PASS test/bootstrap-backoffice-admin.e2e-spec.ts (11.627 s)`) including the full happy-path assertion (real OTP login + real `GET /api/v1/backoffice/dashboard/overview` call against the newly-bootstrapped account, using a throwaway role per the ADR-107-style safety note above).
+- No transient failures, no flaky reruns needed, no other suite's pass/fail status changed from the ADR-117 closure baseline.
+
+ADR-118 is closed. No further action is pending.
 
 ## Consequences
 
