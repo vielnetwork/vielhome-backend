@@ -11,6 +11,7 @@ import { AuditModule } from './common/audit/audit.module';
 import { StorageModule } from './common/storage/storage.module';
 import { NotificationProvidersModule } from './common/notification-providers/notification-providers.module';
 import { RequestContextMiddleware } from './common/middleware/request-context.middleware';
+import { MaintenanceModeMiddleware } from './common/middleware/maintenance-mode.middleware';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/foundation/auth/auth.module';
 import { ProfileModule } from './modules/foundation/profile/profile.module';
@@ -25,6 +26,7 @@ import { BackOfficeModule } from './modules/backoffice/backoffice.module';
 import { MarketplaceModule } from './modules/marketplace/marketplace.module';
 import { BackofficeRbacModule } from './modules/backoffice-rbac/backoffice-rbac.module';
 import { MonitoringModule } from './modules/monitoring/monitoring.module';
+import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 
 @Module({
@@ -97,6 +99,13 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     // (unlike SchedulerModule below): it only reads existing queue/DB/
     // Redis/storage state on-demand, per request, and starts nothing.
     MonitoringModule,
+    // 21_ADRs > ADR-109 — Maintenance Mode & Feature Flags. Same
+    // reasoning as MonitoringModule above (needs BackofficeRbacModule's
+    // exported PermissionsGuard, starts nothing at boot). Its exported
+    // MaintenanceModeService is also injected directly by this module's
+    // own `configure()` below, for the global maintenance-mode
+    // middleware.
+    MaintenanceModule,
     // Registered last — the first module in this codebase whose own
     // startup logic (`SchedulerBootstrapService.onApplicationBootstrap`)
     // actively calls into other domains' services, so every domain it
@@ -119,6 +128,10 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(RequestContextMiddleware).forRoutes('*');
+    // 21_ADRs > ADR-109 — MaintenanceModeMiddleware MUST run after
+    // RequestContextMiddleware (it reads `req.requestId` when building a
+    // 503 response) — order within one `.apply(...)` call is the array
+    // order, so this is guaranteed regardless of module load order.
+    consumer.apply(RequestContextMiddleware, MaintenanceModeMiddleware).forRoutes('*');
   }
 }

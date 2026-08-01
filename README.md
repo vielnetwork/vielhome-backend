@@ -144,6 +144,16 @@ this section is a map, not a replacement for those.
   scheduler's last successful/failed run — every check independent,
   timed-out, and aggregated into an overall `healthy`/`degraded`/`unhealthy`
   status, always returned as HTTP 200.
+- **Maintenance Mode & Feature Flags** (`ADR-109`): `GET`/`PATCH
+  /api/v1/backoffice/maintenance-mode` (`MAINTENANCE_MODE_VIEW`/`_MANAGE`)
+  — a global maintenance toggle enforced by a request-level middleware
+  that 503s all but three exempt route families (health probes, essential
+  auth, the maintenance-mode endpoints themselves — the last one is the
+  entire admin-lockout-prevention mechanism); and a full CRUD-minus-delete
+  `GET`/`GET :key`/`POST`/`PATCH :key /api/v1/backoffice/feature-flags`
+  (`FEATURE_FLAGS_VIEW`/`_MANAGE`) centralized operational feature-toggle
+  registry, distinct from the customer-facing `FeatureGrant` entitlement
+  model. Both mandate a `reason` on every mutation and are fully audited.
 - **Git / Migrations** (`ADR-063`): a real Git repository, tagged
   `v1.0-api-contract`; `prisma/migrations/0_baseline_v1_freeze/` — a real,
   committed baseline migration (the user's own local run against a real dev

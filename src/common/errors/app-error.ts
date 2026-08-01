@@ -15,6 +15,7 @@ export type AppErrorCode =
   | 'DUPLICATE'
   | 'RATE_LIMIT'
   | 'NOT_IMPLEMENTED'
+  | 'SERVICE_UNAVAILABLE'
   | 'UNEXPECTED_ERROR';
 
 export abstract class AppError extends Error {
@@ -90,4 +91,19 @@ export class NotImplementedAppError extends AppError {
 export class UnexpectedAppError extends AppError {
   readonly code: AppErrorCode = 'UNEXPECTED_ERROR';
   readonly httpStatus = 500;
+}
+
+/**
+ * 21_ADRs > ADR-109 — thrown (as a plain object, not via Nest's normal
+ * throw/filter pipeline) by `MaintenanceModeMiddleware` when global
+ * maintenance mode is enabled and the request path is not on the
+ * exemption allowlist. Middleware runs before Nest's exception-filter
+ * layer is guaranteed to apply to raw Express-style middleware, so the
+ * middleware constructs the response directly with `errorResponse(...)`
+ * using this class's `code`/`httpStatus`/`message` rather than throwing
+ * it — see that middleware's own doc comment for the full reasoning.
+ */
+export class ServiceUnavailableError extends AppError {
+  readonly code: AppErrorCode = 'SERVICE_UNAVAILABLE';
+  readonly httpStatus = 503;
 }

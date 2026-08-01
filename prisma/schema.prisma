@@ -162,6 +162,9 @@ model Person {
   complianceCaseSubjectOf ComplianceCase[] @relation("ComplianceCaseSubject")
   legalHoldsPlaced        AuditLegalHold[] @relation("LegalHoldPlacedBy")
   legalHoldsReleased      AuditLegalHold[] @relation("LegalHoldReleasedBy")
+  // 21_ADRs > ADR-109 — Maintenance Mode & Feature Flags.
+  maintenanceModeUpdatedBy MaintenanceModeState[] @relation("MaintenanceModeUpdatedBy")
+  featureFlagsUpdatedBy    FeatureFlag[]          @relation("FeatureFlagUpdatedBy")
 
   @@map("persons")
 }
@@ -2515,6 +2518,20 @@ enum PermissionKey {
   // GAMIFICATION_ANALYTICS_VIEW precedent for a small, uniform,
   // single-purpose domain.
   MONITORING_VIEW
+  // 21_ADRs > ADR-109 — Maintenance Mode & Feature Flags (Stage 2 of the
+  // Backoffice completion roadmap). A real VIEW/MANAGE split per domain,
+  // per this stage's explicit design mandate — unlike SYSTEM_SETTINGS/
+  // FEATURE_FLAGS above (kept as this codebase's single-key precedent for
+  // ADR-098/ADR-102's own small uniform domains), this stage was
+  // specifically asked for separate view/manage keys. The old bare
+  // FEATURE_FLAGS key is superseded by FEATURE_FLAGS_VIEW/
+  // FEATURE_FLAGS_MANAGE below and kept only for backward compatibility
+  // with any pre-existing grant — no new code checks it, and it is not
+  // granted to any new role by this stage's seed changes.
+  MAINTENANCE_MODE_VIEW
+  MAINTENANCE_MODE_MANAGE
+  FEATURE_FLAGS_VIEW
+  FEATURE_FLAGS_MANAGE
 }
 
 model Role {
@@ -3318,4 +3335,59 @@ model AuditLegalHold {
 
   @@index([entityType, entityId])
   @@map("audit_legal_holds")
+}
+// ---------------------------------------------------------------------------
+// 21_ADRs > ADR-109 — Maintenance Mode & Feature Flags (Backoffice
+// completion roadmap, Stage 2). Two independent, simple config domains,
+// each a single Backoffice-only admin surface with its own VIEW/MANAGE
+// permission pair, a full audit trail via `AuditService`, and a mandatory
+// `reason` on every mutation. Neither stores any provider configuration
+// (SMS/Email/Payment/Storage credentials) — that is explicitly deferred
+// to a later stage (Global Provider Settings).
+// ---------------------------------------------------------------------------
+
+// Deliberately a single-row table: `MaintenanceModeService` always reads/
+// writes the one row whose `id` is the fixed literal `"singleton"` (see
+// that service's own `SINGLETON_ID` constant) — there is exactly one
+// global maintenance-mode state for the whole platform, never one per
+// building/tenant. No DB-level constraint enforces "exactly one row"
+// (Postgres has no native singleton-table primitive); this is an
+// application-level convention, upheld entirely by every write going
+// through `upsert({ where: { id: SINGLETON_ID } })` and nothing else ever
+// calling `create` with a different id.
+model MaintenanceModeState {
+  id          String   @id @default("singleton")
+  enabled     Boolean  @default(false)
+  reason      String?
+  message     String?
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+  updatedBy   Person?  @relation("MaintenanceModeUpdatedBy", fields: [updatedById], references: [id])
+
+  @@map("maintenance_mode_state")
+}
+
+// Centralized, platform-wide operational feature-toggle registry —
+// ADR-098 item 9's originally-reserved `FEATURE_FLAGS` permission,
+// finally built out here with a real VIEW/MANAGE split. Deliberately
+// distinct from the customer-facing `FeatureGrant` entitlement model
+// (subscription-plan-driven, per-building) — this is a small, generic
+// on/off registry for engineering/ops use (e.g. gating a new endpoint's
+// rollout), queried by key at runtime by whatever code needs it, managed
+// exclusively through the Backoffice endpoints this ADR adds. No delete
+// route in Phase 1 — a flag can be created and toggled, never removed, so
+// any code still checking a key by name never silently starts hitting a
+// not-found/undefined state; see ADR-109 Non-Goals.
+model FeatureFlag {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  label       String
+  description String?
+  enabled     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+  updatedBy   Person?  @relation("FeatureFlagUpdatedBy", fields: [updatedById], references: [id])
+
+  @@map("feature_flags")
 }

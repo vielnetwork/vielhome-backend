@@ -50,6 +50,32 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     description:
       'Manage the platform-wide System Feature Toggle system (21_ADRs > ADR-098 item 9) — distinct from customer-facing FeatureGrant entitlements.',
   },
+  // 21_ADRs > ADR-109 — Maintenance Mode & Feature Flags (Stage 2). A
+  // real VIEW/MANAGE split per domain, per this stage's explicit design
+  // mandate (unlike SYSTEM_SETTINGS/FEATURE_FLAGS above, which predate
+  // this convention and are kept as-is). FEATURE_FLAGS above is
+  // superseded by FEATURE_FLAGS_VIEW/FEATURE_FLAGS_MANAGE below and is
+  // no longer granted to any role by this file.
+  {
+    key: 'MAINTENANCE_MODE_VIEW',
+    label: 'View Maintenance Mode Status',
+    description: 'View whether the platform is currently in global maintenance mode.',
+  },
+  {
+    key: 'MAINTENANCE_MODE_MANAGE',
+    label: 'Manage Maintenance Mode',
+    description: 'Enable or disable global platform maintenance mode.',
+  },
+  {
+    key: 'FEATURE_FLAGS_VIEW',
+    label: 'View Feature Flags',
+    description: 'View the platform-wide operational feature-toggle registry.',
+  },
+  {
+    key: 'FEATURE_FLAGS_MANAGE',
+    label: 'Manage Feature Flags',
+    description: 'Create and toggle entries in the platform-wide operational feature-toggle registry.',
+  },
   // 21_ADRs > ADR-101 — Subscription Management (07.04/ADR-033) is a
   // distinct domain from the Finance module even though both are
   // billing-adjacent; kept as its own permission pair rather than folded
@@ -210,6 +236,15 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
     'NOTIFICATION_TEMPLATE_MANAGE',
     'GAMIFICATION_ANALYTICS_VIEW',
     'MONITORING_VIEW',
+    // 21_ADRs > ADR-109 — natural home alongside this role's other
+    // platform-wide operational/system keys. Both VIEW and MANAGE granted
+    // together, matching this file's existing convention (e.g. Operations
+    // Admin's BUILDING_VERIFICATION_VIEW/MANAGE pair) of never granting
+    // MANAGE without its own VIEW counterpart.
+    'MAINTENANCE_MODE_VIEW',
+    'MAINTENANCE_MODE_MANAGE',
+    'FEATURE_FLAGS_VIEW',
+    'FEATURE_FLAGS_MANAGE',
   ],
   'Marketplace Admin': ['MARKETPLACE_REVIEW', 'MARKETPLACE_APPROVE'],
   // 21_ADRs > ADR-101 — a dedicated role, not folded into Finance Admin,
@@ -237,7 +272,7 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   'Operations Admin': 'Day-to-day user and building management, building/manager verification, and audit oversight.',
   'Finance Admin': 'Finance module access — view and refund, with read access to related users/buildings.',
   'Support Admin': 'Support case management, plus read-only user and building context.',
-  'Technical Admin': 'System-level configuration, feature toggles, scheduler, notification templates, system monitoring, and audit oversight.',
+  'Technical Admin': 'System-level configuration, feature toggles, maintenance mode, scheduler, notification templates, system monitoring, and audit oversight.',
   'Marketplace Admin': 'Marketplace listing review and approval — nothing else.',
   'Subscription Admin': 'Subscription Management access — view and manage building plan/status/feature grants.',
   'Fraud & Compliance Admin': 'Fraud case, compliance case, and legal hold management, with audit visibility.',
