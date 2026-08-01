@@ -441,11 +441,15 @@ describe('User Administration (e2e) — Backoffice User List/Detail/Suspend/Rein
     });
 
     it('suspends the target with a real reason, and the suspended Person is immediately blocked from a fresh login', async () => {
+      // 201, not 200 — NestJS's default @Post() status, unchanged here,
+      // matching PersonAccessController.set()'s own identical
+      // POST-mutation-on-an-existing-Person shape and its own e2e
+      // suite's `.expect(201)` for the same reason.
       const res = await request(app.getHttpServer())
         .post(`/api/v1/backoffice/users/${targetPerson.personId}/suspend`)
         .set('Authorization', `Bearer ${admin.accessToken}`)
         .send({ reason: 'ADR-111 e2e proof — suspected fraud.' })
-        .expect(200);
+        .expect(201);
 
       expect(res.body.data).toEqual({ personId: targetPerson.personId, isSuspended: true });
 
@@ -462,7 +466,7 @@ describe('User Administration (e2e) — Backoffice User List/Detail/Suspend/Rein
         .post(`/api/v1/backoffice/users/${targetPerson.personId}/reinstate`)
         .set('Authorization', `Bearer ${admin.accessToken}`)
         .send({ reason: 'ADR-111 e2e proof — appeal upheld.' })
-        .expect(200);
+        .expect(201);
 
       expect(res.body.data).toEqual({ personId: targetPerson.personId, isSuspended: false });
 
