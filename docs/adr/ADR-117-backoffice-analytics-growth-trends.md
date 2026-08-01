@@ -1,6 +1,6 @@
 # ADR-117 — Backoffice Analytics (Growth & Trend Reporting)
 
-**Status:** Proposed — pending the operator's real build/unit/e2e verification run
+**Status:** Accepted — Closed (2026-08-01)
 **Context area:** 21_ADRs (Backend / Backoffice), Analytics — Stage 10 (final stage) of the Backoffice completion roadmap
 **Related:** ADR-110 (Operational Dashboard — this ADR's own Non-Goals explicitly deferred "growth-over-time" and "any time-series/historical trend data" to "a later Analytics stage, per the roadmap's own stage ordering," the exact gap this ADR closes), ADR-108 (Monitoring & System Health — its own Future Review deferred *health-snapshot* trend history to this same Stage 10, a gap this ADR explicitly does NOT close — see Non-Goals), ADR-047 (Gamification Analytics — `GamificationController.getAnalytics()`/`GamificationService.getAnalytics()`, reused unchanged here rather than duplicated), ADR-115 (Reports & Export — establishes the sibling boundary: row-level CSV dumps vs. this ADR's aggregate trend series)
 
@@ -93,3 +93,15 @@ This endpoint is deliberately **not** wrapped in an `audit.record(...)` call, un
 - **Health-snapshot trend history:** ADR-108's own deferred gap remains open — would need a new persisted snapshot table and a scheduled job to populate it over time, a materially larger stage than this one.
 - **Additional domain series** (Notification delivery volume, Support/Fraud/Compliance case volume over time): natural extensions of this same endpoint's shape, not built in this stage since neither of the two schema comments motivating this ADR named them.
 - **`$queryRaw`/`date_trunc`-based aggregation:** if data volume ever grows past what a 90-day-capped `findMany` can comfortably bucket in application memory, a real Postgres-side aggregate query (with real integration-test coverage against a live database, not this stage's in-sandbox-only tsc check) would be the natural next step — deliberately not introduced pre-emptively in this stage, per the Decision above.
+
+## Final Verification (Closure Gate)
+
+Real, operator-run verification (not in-sandbox) confirmed green:
+
+- `npx prisma migrate dev`, `npx prisma generate`, `npm run db:seed:rbac` all completed without error — the new `ANALYTICS_VIEW` `PermissionKey` enum value is live in the real dev database and the generated Prisma Client, and the new permission + its `Operations Admin`/`Technical Admin` grants are seeded.
+- `npm run build` succeeded.
+- `npm test`: **629/629 passed, 53 suites** (up from 621/621, 52 suites at ADR-116's own closure) — the +8 delta is exactly the 8 new tests in `analytics.service.spec.ts` (6 date-range-resolution tests + 1 bucketing test + 1 gamification-reuse test), confirming the new suite is genuinely exercising the new code path, not a coincidental pass.
+- `npm run test:e2e`: **744/744 passed, 31 suites** (up from 734/734, 30 suites at ADR-116's own closure) — the +10 delta is exactly the 10 new test cases in `test/analytics.e2e-spec.ts` (401/403×3/granting+shape/explicit-range/400×2/leakage/revoking).
+- No transient failures, no triage needed, no comparison against ADR-107 required — every suite passed cleanly on the operator's first real run.
+
+This closes Stage 10, the final stage of the 10-stage Backoffice completion roadmap.
