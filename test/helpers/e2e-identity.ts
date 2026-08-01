@@ -92,6 +92,8 @@ export const E2E_SUITE_ID = {
   PROVIDER_SETTINGS: 29,
   // 21_ADRs > ADR-117 — Backoffice Analytics (Growth & Trend Reporting).
   ANALYTICS: 30,
+  // 21_ADRs > ADR-118 — Initial Backoffice Bootstrap.
+  BOOTSTRAP_BACKOFFICE_ADMIN: 31,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;

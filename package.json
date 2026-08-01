@@ -22,6 +22,7 @@
     "prisma:studio": "prisma studio",
     "db:seed": "ts-node prisma/seed.ts",
     "db:seed:rbac": "ts-node prisma/seed/rbac.seed.ts",
+    "bootstrap:backoffice": "ts-node scripts/bootstrap-backoffice-admin.ts",
     "docs:export-openapi": "ts-node scripts/export-openapi.ts",
     "storage:verify-roundtrip": "ts-node scripts/verify-storage-roundtrip.ts",
     "notifications:verify-providers": "ts-node scripts/verify-notification-providers.ts"

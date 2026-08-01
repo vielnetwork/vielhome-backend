@@ -59,6 +59,17 @@ export class BackofficeRbacRepository {
     return this.prisma.role.findUnique({ where: { id } });
   }
 
+  /**
+   * 21_ADRs > ADR-118 — Initial Backoffice Bootstrap. `Role.name` is
+   * `@unique` (see schema.prisma), so this is a safe direct lookup — used
+   * by `BootstrapBackofficeAdminService` to resolve the well-known
+   * `'Technical Admin'` role by its seeded name rather than a hardcoded
+   * id (ids are `cuid()`-generated, never stable across environments).
+   */
+  getRoleByName(name: string) {
+    return this.prisma.role.findUnique({ where: { name } });
+  }
+
   getPermissionByKey(key: PermissionKey) {
     return this.prisma.permission.findUnique({ where: { key } });
   }
@@ -94,7 +105,9 @@ export class BackofficeRbacRepository {
   // --- Role <-> Permission (ADR-099 §6 management surface) -------------
 
   getActiveRolePermission(roleId: string, permissionId: string) {
-    return this.prisma.rolePermission.findFirst({ where: { roleId, permissionId, revokedAt: null } });
+    return this.prisma.rolePermission.findFirst({
+      where: { roleId, permissionId, revokedAt: null },
+    });
   }
 
   getRolePermissionById(id: string) {

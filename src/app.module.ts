@@ -30,6 +30,7 @@ import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ProviderSettingsModule } from './modules/provider-settings/provider-settings.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { BackofficeBootstrapModule } from './modules/backoffice-bootstrap/backoffice-bootstrap.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 
 @Module({
@@ -137,6 +138,15 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     // "import the module directly for its exported service" pattern
     // DashboardModule established for MonitoringModule.
     AnalyticsModule,
+    // 21_ADRs > ADR-118 — Initial Backoffice Bootstrap. Registered purely
+    // so BootstrapBackofficeAdminService is reachable through Nest's DI
+    // container (by scripts/bootstrap-backoffice-admin.ts's manual
+    // instantiation path is separate/DI-free, but the real e2e test uses
+    // this registration to resolve the service from the real AppModule,
+    // same bootstrapTestApp() pattern every other e2e suite uses). No
+    // controller — deliberately no HTTP route (see the module's own doc
+    // comment). No startup-order dependency on anything else.
+    BackofficeBootstrapModule,
     // Registered last — the first module in this codebase whose own
     // startup logic (`SchedulerBootstrapService.onApplicationBootstrap`)
     // actively calls into other domains' services, so every domain it
