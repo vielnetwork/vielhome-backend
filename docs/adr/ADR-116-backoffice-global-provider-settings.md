@@ -1,6 +1,6 @@
 # ADR-116 — Global Provider Settings
 
-**Status:** Proposed — pending the operator's real build/unit/e2e verification run.
+**Status:** Accepted — Closed (2026-08-01)
 **Context area:** 21_ADRs (Backend / Backoffice), Global Provider Settings — Stage 9 of the Backoffice completion roadmap
 **Related:** ADR-088 (real SMS/Email/Push providers — `EmailProviderService`/`SmsProviderService`/`PushProviderService`, all reused unchanged here), ADR-109 (Maintenance Mode & Feature Flags — its own schema comment explicitly named "SMS/Email/Payment/Storage credentials... deferred to a later stage (Global Provider Settings)," the exact gap this ADR closes; also the direct structural precedent this ADR mirrors — singleton-shaped settings service, `isEnabled()` in-memory cache, VIEW/MANAGE permission pair, mandatory-reason audit trail), ADR-110 (Operational Dashboard — the "import the settings module directly for its exported service" wiring pattern this ADR reuses for `NotificationsModule` → `ProviderSettingsModule`)
 
@@ -73,3 +73,15 @@ Same situation ADR-109 was in: this stage adds a genuinely new Prisma model (`Pr
 - `npm test`/`npm run build`/`npm run test:e2e` were **not** run in this sandbox — `ts-jest`/`nest build` both hit the identical missing-Prisma-type errors as `tsc` above and cannot execute meaningfully until the operator's own `npx prisma migrate dev`/`npx prisma generate` produce a real client.
 
 **The operator must, in order, on their own machine:** `npx prisma migrate dev` (applies `20260801160000_add_provider_settings`), `npx prisma generate`, `npm run db:seed:rbac` (idempotent), then `npm run build`, `npm test`, `npm run test:e2e`. This ADR is not Closed until that full sequence is confirmed green (or any failure has been triaged per the roadmap's own Verification Gate — isolated rerun, root-cause, compare against ADR-107's known patterns, before attributing anything to this stage).
+
+## Final Verification (Closure Gate)
+
+The operator ran the real verification stack (their own Postgres/Redis) after applying this stage's changes:
+
+- `npx prisma migrate dev` — applied `20260801160000_add_provider_settings` successfully.
+- `npx prisma generate` — succeeded (overwrote the missing-type errors this sandbox's own `tsc --noEmit` run had documented, as expected).
+- `npm run db:seed:rbac` — succeeded.
+- `npm run build` — succeeded.
+- `npm test` (full suite) — **621/621 passed, 52/52 suites** (up from 611/611, 51 suites — exactly the 10 new tests this stage added: 7 in `provider-settings.service.spec.ts`, 3 in `notification-dispatch.processor.spec.ts`).
+- `npm run test:e2e` — **734/734 passed, 30/30 suites** (up from 722/722, 29 suites — exactly the 12 new tests in `test/provider-settings.e2e-spec.ts`), all green on the first real run. No transient, no isolated rerun needed, no Verification Gate triage required.
+
