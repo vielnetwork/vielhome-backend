@@ -1,6 +1,6 @@
 # ADR-115 — Backoffice Reports & Export
 
-**Status:** Proposed — pending the operator's real build/unit/e2e verification run.
+**Status:** Accepted — Closed (2026-08-01)
 **Context area:** 21_ADRs (Backend / Backoffice), Reports & Export — Stage 8 of the Backoffice completion roadmap
 **Related:** ADR-034 (Audit & Compliance Center's own CSV `export` route — the direct structural precedent this stage generalizes to four more domains), ADR-098/ADR-102 (Backoffice RBAC Foundation / Permission Migration Completion — this stage reuses, not extends, the permission matrix those ADRs already built), ADR-111/ADR-112/ADR-113/ADR-114 (User/Building/Financial/Notification Administration — Stages 4-7, the four `list` endpoints this stage adds a sibling `export` route to), ADR-110 (Operational Dashboard — Stage 3, real-time aggregate counts this stage's row-level CSV exports deliberately do not duplicate)
 
@@ -84,3 +84,14 @@ None. No new `PermissionKey`, no new model/field, no seed change — this is the
 This sandbox has no reachable Postgres/Redis of its own (the operator's own database is reached only via the device bridge, and long-running test commands exceed this sandbox's own tool timeout) — `npx eslint`/`npx tsc --noEmit` were run directly in-sandbox on every new/changed file; `npm test`/`npm run build`/`npm run test:e2e` must be run by the operator against their own real database. Because this stage introduces no schema change, **no migration step precedes this verification** — unlike every prior stage since ADR-110, the operator does not need to run `npx prisma migrate dev`/`npx prisma generate`/`npm run db:seed:rbac` before `npm run build && npm test && npm run test:e2e`.
 
 This ADR is not Closed until that full sequence is confirmed green (or any failure has been triaged per the roadmap's own Verification Gate — isolated rerun, root-cause, compare against ADR-107's known patterns, before attributing anything to this stage).
+
+## Final Verification (Closure Gate)
+
+The operator ran the real verification stack (their own Postgres/Redis) after applying this stage's changes — no migration step was required (this stage introduces no schema change):
+
+- `npm run build` — succeeded.
+- `npm test` (full suite) — **611/611 passed, 51/51 suites** (up from 595/595 pre-stage — exactly the 16 new tests this stage added: 8 in `csv.util.spec.ts`, 2 each in the four `*-administration.service.spec.ts` files).
+- `npm run test:e2e` — **722/722 passed, 29/29 suites**, all green on the first real run, including all four newly-modified suites (`test/user-administration.e2e-spec.ts`, `test/building-administration.e2e-spec.ts`, `test/finance-administration.e2e-spec.ts`, `test/notification-administration.e2e-spec.ts`) — exactly the 714/714 this codebase had after ADR-114's closure, plus the 8 new export-route e2e assertions (2 per file: a 401 with no token, and a 200 proving the CSV content-type/header/body). No transient, no isolated rerun needed, no Verification Gate triage required — a fully clean run on the first attempt.
+
+This is the first Backoffice-completion stage since ADR-110 (`DASHBOARD_VIEW`) not to require any `npx prisma migrate dev`/`npx prisma generate`/`npm run db:seed:rbac` step before verification, a direct, intended consequence of this stage's own permission-reuse decision.
+
