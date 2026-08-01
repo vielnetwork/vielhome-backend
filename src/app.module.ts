@@ -29,6 +29,7 @@ import { MonitoringModule } from './modules/monitoring/monitoring.module';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ProviderSettingsModule } from './modules/provider-settings/provider-settings.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 
 @Module({
@@ -124,6 +125,18 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     // module directly to inject the exported ProviderSettingsService into
     // NotificationDispatchProcessor.
     ProviderSettingsModule,
+    // 21_ADRs > ADR-117 — Backoffice Analytics (Growth & Trend Reporting),
+    // Stage 10 (final stage of the Backoffice completion roadmap). Same
+    // reasoning as every other Bridge Migration module above (needs
+    // BackofficeRbacModule's exported PermissionsGuard). No startup-order
+    // dependency on anything else — purely on-demand, per-request reads
+    // over existing, already-timestamped rows in other domains' own
+    // tables. Also imports GamificationModule directly (see
+    // AnalyticsModule's own doc comment) to reuse its exported
+    // GamificationService for the `gamification` section, the same
+    // "import the module directly for its exported service" pattern
+    // DashboardModule established for MonitoringModule.
+    AnalyticsModule,
     // Registered last — the first module in this codebase whose own
     // startup logic (`SchedulerBootstrapService.onApplicationBootstrap`)
     // actively calls into other domains' services, so every domain it

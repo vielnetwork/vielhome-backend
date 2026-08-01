@@ -2560,6 +2560,12 @@ enum PermissionKey {
   // domains" boundary discipline.
   PROVIDER_SETTINGS_VIEW
   PROVIDER_SETTINGS_MANAGE
+  // 21_ADRs > ADR-117 -- Backoffice Analytics (Growth & Trend Reporting,
+  // Stage 10 -- final stage). A single read-only key, no MANAGE -- this
+  // endpoint has no mutating action of its own, matching the AUDIT_VIEW/
+  // MONITORING_VIEW/DASHBOARD_VIEW/GAMIFICATION_ANALYTICS_VIEW precedent
+  // for a small, uniform, pure-read domain.
+  ANALYTICS_VIEW
 }
 
 model Role {

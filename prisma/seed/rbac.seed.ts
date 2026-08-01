@@ -257,6 +257,16 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     label: 'Manage Notification Deliveries',
     description: 'Resend a FAILED notification delivery.',
   },
+  // 21_ADRs > ADR-117 — Backoffice Analytics (Growth & Trend Reporting),
+  // Stage 10 (final stage). A single read-only key, matching the
+  // AUDIT_VIEW/MONITORING_VIEW/DASHBOARD_VIEW/GAMIFICATION_ANALYTICS_VIEW
+  // precedent — this endpoint has no mutating action of its own.
+  {
+    key: 'ANALYTICS_VIEW',
+    label: 'View Growth Analytics',
+    description:
+      'View day-bucketed platform growth trends (new users, new buildings, approved payments, XP awarded) and the Gamification analytics summary.',
+  },
 ];
 
 // 21_ADRs > ADR-099 §2 — the approved final permission matrix (Support
@@ -289,6 +299,9 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
     // includes the cross-domain dashboard, alongside this role's other
     // broad user/building/verification/audit access.
     'DASHBOARD_VIEW',
+    // 21_ADRs > ADR-117 — same "day-to-day / platform-wide operational
+    // visibility" reasoning as this role's own DASHBOARD_VIEW grant above.
+    'ANALYTICS_VIEW',
   ],
   'Finance Admin': ['FINANCE_VIEW', 'FINANCE_REFUND', 'USER_VIEW', 'BUILDING_VIEW'],
   // 21_ADRs > ADR-102 — Support Admin gains its own literally-named
@@ -333,6 +346,9 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
     // platform-wide operational concern.
     'PROVIDER_SETTINGS_VIEW',
     'PROVIDER_SETTINGS_MANAGE',
+    // 21_ADRs > ADR-117 — same "platform-wide operational visibility"
+    // reasoning as this role's own DASHBOARD_VIEW grant above.
+    'ANALYTICS_VIEW',
   ],
   'Marketplace Admin': ['MARKETPLACE_REVIEW', 'MARKETPLACE_APPROVE'],
   // 21_ADRs > ADR-101 — a dedicated role, not folded into Finance Admin,
@@ -358,12 +374,12 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
 const ROLE_DESCRIPTIONS: Record<string, string> = {
   'Super Admin': 'Unrestricted platform access — holds every defined permission.',
   'Operations Admin':
-    'Day-to-day user and building management, building/manager verification, audit oversight, and the operational dashboard.',
+    'Day-to-day user and building management, building/manager verification, audit oversight, the operational dashboard, and growth analytics.',
   'Finance Admin':
     'Finance module access — view and refund, with read access to related users/buildings.',
   'Support Admin': 'Support case management, plus read-only user and building context.',
   'Technical Admin':
-    'System-level configuration, feature toggles, maintenance mode, provider settings, scheduler, notification templates, notification delivery administration, system monitoring, the operational dashboard, and audit oversight.',
+    'System-level configuration, feature toggles, maintenance mode, provider settings, scheduler, notification templates, notification delivery administration, system monitoring, the operational dashboard, growth analytics, and audit oversight.',
   'Marketplace Admin': 'Marketplace listing review and approval — nothing else.',
   'Subscription Admin':
     'Subscription Management access — view and manage building plan/status/feature grants.',
