@@ -381,11 +381,18 @@ describe('Dashboard (e2e) — Backoffice Operational Dashboard (ADR-110)', () =>
       .set('Authorization', `Bearer ${admin.accessToken}`)
       .expect(200);
 
-    const serialized = JSON.stringify(res.body);
-    expect(serialized).not.toMatch(/"metadata"/);
-    expect(serialized).not.toMatch(/postgres(ql)?:\/\//i);
-    expect(serialized).not.toMatch(/at\s+\S+\s+\(.*:\d+:\d+\)/); // stack-trace-shaped line
-    expect(serialized).not.toMatch(/failedReason/i);
+    // Scoped to `data` only — the response envelope's own top-level
+    // `metadata` field (ResponseInterceptor's standard shape, always
+    // present, e.g. `null`) is unrelated to AuditLog.metadata and would
+    // otherwise false-positive a blanket `/"metadata"/` check against the
+    // whole `res.body`. The real assertion (no audit event object carries
+    // a `metadata` key) is already covered per-event in the previous
+    // test; this one additionally checks no other section leaked one.
+    const serializedData = JSON.stringify(res.body.data);
+    expect(serializedData).not.toMatch(/"metadata"/);
+    expect(serializedData).not.toMatch(/postgres(ql)?:\/\//i);
+    expect(serializedData).not.toMatch(/at\s+\S+\s+\(.*:\d+:\d+\)/); // stack-trace-shaped line
+    expect(serializedData).not.toMatch(/failedReason/i);
   });
 
   it('revoking DASHBOARD_VIEW takes effect immediately — the route closes again, live and uncached', async () => {
