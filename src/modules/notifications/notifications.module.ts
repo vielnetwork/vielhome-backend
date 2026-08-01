@@ -3,7 +3,9 @@ import { BullModule } from '@nestjs/bullmq';
 import { NotificationsController } from './controller/notifications.controller';
 import { NotificationPreferencesController } from './controller/notification-preferences.controller';
 import { NotificationTemplateController } from './controller/notification-template.controller';
+import { NotificationAdministrationController } from './controller/notification-administration.controller';
 import { NotificationsService } from './application/notifications.service';
+import { NotificationAdministrationService } from './application/notification-administration.service';
 import { NotificationEventListener } from './application/notification-event-listener.service';
 import { NotificationTemplateService } from './application/notification-template.service';
 import {
@@ -47,6 +49,13 @@ import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module'
   // moderation controller (ADR-030 point 6). No other part of this module
   // touches BackOffice.
   //
+  // 21_ADRs > ADR-114 additionally registers
+  // `NotificationAdministrationController`/`NotificationAdministrationService`
+  // HERE rather than in `BackOfficeModule` (unlike every other Backoffice
+  // admin domain, ADR-111/ADR-112/ADR-113) — `BackOfficeModule` cannot
+  // import `NotificationsModule` back without creating a cycle, since this
+  // module already imports `BackOfficeModule` for the reason above.
+  //
   // 21_ADRs > ADR-102 additionally imports `BackofficeRbacModule` for
   // `PermissionsGuard`, gating `NotificationTemplateController` alongside
   // the pre-existing `PlatformRolesGuard`. No cycle risk: this module is
@@ -61,11 +70,13 @@ import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module'
     NotificationsController,
     NotificationPreferencesController,
     NotificationTemplateController,
+    NotificationAdministrationController,
   ],
   providers: [
     NotificationsService,
     NotificationEventListener,
     NotificationTemplateService,
+    NotificationAdministrationService,
     NotificationDispatchProcessor,
     NotificationRepository,
     NotificationTemplateRepository,

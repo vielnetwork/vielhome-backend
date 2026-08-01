@@ -2539,6 +2539,18 @@ enum PermissionKey {
   // no mutating action of its own, matching the AUDIT_VIEW/MONITORING_VIEW
   // precedent for a pure-read domain.
   DASHBOARD_VIEW
+  // 21_ADRs > ADR-114 — Backoffice Notification Administration (Stage 7).
+  // A real VIEW/MANAGE split, per the ADR-101/ADR-109 convention for a
+  // domain with a genuine mutating action distinct from its own reads.
+  // Deliberately a DISTINCT pair from NOTIFICATION_TEMPLATE_VIEW/MANAGE
+  // (ADR-060/ADR-102) — that pair governs the staff-authored copy
+  // library (what a notification SAYS); this pair governs cross-recipient
+  // delivery visibility and the resend action (what actually got SENT to
+  // whom, and re-driving a FAILED one) — a distinct domain concern, same
+  // "no permission shared across domains" boundary discipline every prior
+  // stage in this matrix has followed.
+  NOTIFICATION_DELIVERY_VIEW
+  NOTIFICATION_DELIVERY_MANAGE
 }
 
 model Role {

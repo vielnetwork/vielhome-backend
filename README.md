@@ -204,6 +204,20 @@ this section is a map, not a replacement for those.
   `PaymentRefundedByAdmin` — from the in-building one), so the same real
   payer notification and Gamification score effect fire regardless of who
   initiated the reversal/refund.
+- **Backoffice Notification Administration** (`ADR-114`): `GET
+  /api/v1/backoffice/notifications` (paginated, `search`/`status`/`channel`/
+  `category` filters) and `GET /api/v1/backoffice/notifications/:deliveryId`
+  (`NOTIFICATION_DELIVERY_VIEW`) plus `POST
+  /api/v1/backoffice/notifications/:deliveryId/resend` (`NOTIFICATION_
+  DELIVERY_MANAGE`, mandatory `reason`) — the first genuinely new
+  `PermissionKey` pair (and real migration) since ADR-110's `DASHBOARD_VIEW`,
+  since no dormant `NOTIFICATION_*` pair existed to reuse. Resend resets a
+  `FAILED` delivery to `PENDING` and re-enqueues the same BullMQ dispatch job
+  `notify()` uses, so it goes through the exact same real Email/SMS/Push
+  providers (ADR-088). Lives inside `NotificationsModule`, not
+  `BackOfficeModule`, to avoid a module import cycle (`NotificationsModule`
+  already imports `BackOfficeModule` for `NotificationTemplateController`'s
+  own guard reuse).
 - **Git / Migrations** (`ADR-063`): a real Git repository, tagged
   `v1.0-api-contract`; `prisma/migrations/0_baseline_v1_freeze/` — a real,
   committed baseline migration (the user's own local run against a real dev

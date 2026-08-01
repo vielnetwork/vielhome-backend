@@ -12,7 +12,7 @@ import { NotificationPolicy } from '../domain/policies/notification.policy';
 import { UpdatePreferenceDto } from './dto/update-preference.dto';
 import { UpdatePushTokenDto } from './dto/update-push-token.dto';
 import { AuditService } from '../../../common/audit/audit.service';
-import { NotFoundAppError } from '../../../common/errors/app-error';
+import { BusinessRuleViolationError, NotFoundAppError } from '../../../common/errors/app-error';
 import {
   DISPATCH_DELIVERY_JOB,
   NOTIFICATION_DISPATCH_QUEUE,
@@ -282,6 +282,54 @@ export class NotificationsService {
       throw new NotFoundAppError('Device not found for this account.');
     }
     return { ok: true };
+  }
+
+  /**
+   * 21_ADRs > ADR-114 — the mechanical half of a staff-triggered resend
+   * (`NotificationAdministrationService.resend` owns the audit record —
+   * this method has no staff-actor context of its own to attribute one
+   * to). Guards the same precondition `NotificationDispatchProcessor
+   * .process()` itself enforces (only a `PENDING` delivery is dispatched)
+   * by requiring the delivery start out `FAILED` — resending a delivery
+   * that's still `PENDING` (already queued) or already terminal-successful
+   * (`SENT`/`DELIVERED`) is not a meaningful action and would either
+   * double-dispatch or silently no-op inside the processor.
+   *
+   * Deliberately does NOT reuse the fixed `jobId: delivery.id` shape
+   * `notify()` uses when first creating a delivery — that fixed ID exists
+   * so a delivery is never double-queued DURING its own creation, which
+   * does not apply to a deliberate, later, single admin-triggered resend
+   * of an already-completed (failed) job. Reusing the same jobId here
+   * risks BullMQ treating this as a duplicate of the original (already
+   * settled) job and silently declining to run it again — an omitted
+   * jobId lets BullMQ assign a fresh one, which is what an explicit
+   * resend actually needs.
+   */
+  async resendDelivery(deliveryId: string): Promise<{
+    deliveryId: string;
+    status: 'PENDING';
+    channel: NotificationChannel;
+    buildingId: string | null;
+  }> {
+    const delivery = await this.notifications.findDeliveryById(deliveryId);
+    if (!delivery) throw new NotFoundAppError('Notification delivery not found.');
+    if (delivery.status !== 'FAILED') {
+      throw new BusinessRuleViolationError('Only a delivery in FAILED status can be resent.');
+    }
+
+    await this.notifications.resetDeliveryForResend(deliveryId);
+    await this.dispatchQueue.add(
+      DISPATCH_DELIVERY_JOB,
+      { deliveryId },
+      { attempts: 3, backoff: { type: 'exponential', delay: 2000 } },
+    );
+
+    return {
+      deliveryId,
+      status: 'PENDING',
+      channel: delivery.channel,
+      buildingId: delivery.notification.buildingId,
+    };
   }
 
   async getPreferences(personId: string) {

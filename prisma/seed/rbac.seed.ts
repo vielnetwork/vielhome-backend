@@ -198,6 +198,21 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     description:
       'View the Backoffice operational dashboard (user/building counts, verification queues, fraud/compliance/support/finance summaries, system health, recent critical audit events).',
   },
+  // 21_ADRs > ADR-114 — Backoffice Notification Administration (Stage 7).
+  // Deliberately a distinct pair from NOTIFICATION_TEMPLATE_VIEW/MANAGE
+  // above (copy-library authoring vs. cross-recipient delivery
+  // visibility + resend), same "no permission shared across domains"
+  // discipline as every other pair in this file.
+  {
+    key: 'NOTIFICATION_DELIVERY_VIEW',
+    label: 'View Notification Deliveries',
+    description: 'View cross-recipient notification delivery records (status, channel, failure reason).',
+  },
+  {
+    key: 'NOTIFICATION_DELIVERY_MANAGE',
+    label: 'Manage Notification Deliveries',
+    description: 'Resend a FAILED notification delivery.',
+  },
 ];
 
 // 21_ADRs > ADR-099 §2 — the approved final permission matrix (Support
@@ -248,6 +263,12 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
     'SCHEDULER_TRIGGER',
     'NOTIFICATION_TEMPLATE_VIEW',
     'NOTIFICATION_TEMPLATE_MANAGE',
+    // 21_ADRs > ADR-114 — same home as this role's other Notification
+    // keys; Technical Admin already owns the platform-wide notification
+    // system's copy library, delivery visibility/resend is the same
+    // operational concern.
+    'NOTIFICATION_DELIVERY_VIEW',
+    'NOTIFICATION_DELIVERY_MANAGE',
     'GAMIFICATION_ANALYTICS_VIEW',
     'MONITORING_VIEW',
     // 21_ADRs > ADR-109 — natural home alongside this role's other
@@ -289,7 +310,7 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   'Operations Admin': 'Day-to-day user and building management, building/manager verification, audit oversight, and the operational dashboard.',
   'Finance Admin': 'Finance module access — view and refund, with read access to related users/buildings.',
   'Support Admin': 'Support case management, plus read-only user and building context.',
-  'Technical Admin': 'System-level configuration, feature toggles, maintenance mode, scheduler, notification templates, system monitoring, the operational dashboard, and audit oversight.',
+  'Technical Admin': 'System-level configuration, feature toggles, maintenance mode, scheduler, notification templates, notification delivery administration, system monitoring, the operational dashboard, and audit oversight.',
   'Marketplace Admin': 'Marketplace listing review and approval — nothing else.',
   'Subscription Admin': 'Subscription Management access — view and manage building plan/status/feature grants.',
   'Fraud & Compliance Admin': 'Fraud case, compliance case, and legal hold management, with audit visibility.',

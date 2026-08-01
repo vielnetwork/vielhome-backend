@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { NotificationCategory, NotificationChannel, NotificationPriority } from '@prisma/client';
+import {
+  NotificationCategory,
+  NotificationChannel,
+  NotificationDeliveryStatus,
+  NotificationPriority,
+} from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 @Injectable()
 export class NotificationRepository {
@@ -222,6 +227,133 @@ export class NotificationRepository {
     });
     return result.count > 0;
   }
+  /**
+   * 21_ADRs > ADR-114 — the mutation half of a staff-triggered resend.
+   * `NotificationDispatchProcessor.process()` early-exits on any status
+   * other than `PENDING`, so a FAILED delivery must be reset before
+   * re-enqueueing. `failureReason` is cleared rather than preserved —
+   * once a fresh dispatch attempt runs, the old failure reason no longer
+   * describes the delivery's current state; the prior reason is still
+   * visible via the `AuditLog` entry the caller writes for this action
+   * (metadata carries `previousStatus`/`channel`), so nothing is lost,
+   * only relocated off the live row. Callers are expected to have already
+   * checked `status === 'FAILED'` (see `NotificationsService.resendDelivery`)
+   * — this method performs the write unconditionally, matching every
+   * other single-purpose mutation method in this repository (existence/
+   * state checks belong one layer up, same as `markDeliverySent`/
+   * `markDeliveryFailed`).
+   */
+  async resetDeliveryForResend(deliveryId: string): Promise<void> {
+    await this.prisma.notificationDelivery.update({
+      where: { id: deliveryId },
+      data: { status: 'PENDING', failureReason: null },
+    });
+  }
+
+  /**
+   * 21_ADRs > ADR-114 — staff-facing cross-recipient search over
+   * `NotificationDelivery`, distinct from `listForPerson`/`searchForPerson`
+   * above (which are scoped to a single recipient's own inbox). `search`
+   * matches the parent Notification's `title` or the recipient's own
+   * `phone`/`fullName` — the same "OR across a few human-identifying
+   * fields" shape `BackOfficeRepository.searchPayments`/`searchBuildings`
+   * already established for this roadmap's other admin list endpoints.
+   */
+  async searchDeliveries(
+    filters: {
+      status?: NotificationDeliveryStatus;
+      channel?: NotificationChannel;
+      category?: NotificationCategory;
+      search?: string;
+    },
+    pagination: { skip: number; take: number },
+  ) {
+    const notificationWhere = {
+      ...(filters.category ? { category: filters.category } : {}),
+      ...(filters.search
+        ? {
+            OR: [
+              { title: { contains: filters.search, mode: 'insensitive' as const } },
+              { recipient: { phone: { contains: filters.search, mode: 'insensitive' as const } } },
+              {
+                recipient: { fullName: { contains: filters.search, mode: 'insensitive' as const } },
+              },
+            ],
+          }
+        : {}),
+    };
+    const where = {
+      status: filters.status,
+      channel: filters.channel,
+      ...(Object.keys(notificationWhere).length > 0 ? { notification: notificationWhere } : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.notificationDelivery.findMany({
+        where,
+        select: {
+          id: true,
+          notificationId: true,
+          channel: true,
+          status: true,
+          sentAt: true,
+          deliveredAt: true,
+          failureReason: true,
+          createdAt: true,
+          notification: {
+            select: {
+              id: true,
+              title: true,
+              category: true,
+              priority: true,
+              buildingId: true,
+              recipientId: true,
+              recipient: { select: { id: true, fullName: true, phone: true } },
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.notificationDelivery.count({ where }),
+    ]);
+    return { items, total };
+  }
+
+  /** 21_ADRs > ADR-114 — single-delivery staff detail view; a superset of `findDeliveryById`'s own include, adding the fields a staff detail screen needs (notification body, building, source/reference) that the dispatch processor itself has no use for. */
+  getDeliveryAdminDetail(deliveryId: string) {
+    return this.prisma.notificationDelivery.findUnique({
+      where: { id: deliveryId },
+      select: {
+        id: true,
+        notificationId: true,
+        channel: true,
+        status: true,
+        sentAt: true,
+        deliveredAt: true,
+        failureReason: true,
+        createdAt: true,
+        notification: {
+          select: {
+            id: true,
+            title: true,
+            body: true,
+            category: true,
+            priority: true,
+            buildingId: true,
+            building: { select: { id: true, name: true } },
+            recipientId: true,
+            recipient: { select: { id: true, fullName: true, phone: true } },
+            sourceEvent: true,
+            referenceType: true,
+            referenceId: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+  }
+
   updatePreference(
     personId: string,
     data: Partial<{

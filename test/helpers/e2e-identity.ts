@@ -86,6 +86,8 @@ export const E2E_SUITE_ID = {
   BUILDING_ADMINISTRATION: 26,
   // 21_ADRs > ADR-113 — Financial Administration.
   FINANCE_ADMINISTRATION: 27,
+  // 21_ADRs > ADR-114 — Notification Administration.
+  NOTIFICATION_ADMINISTRATION: 28,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;
