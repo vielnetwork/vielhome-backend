@@ -565,6 +565,124 @@ export class BackOfficeRepository {
     });
   }
 
+  // --- Building Administration (21_ADRs > ADR-112, Stage 5) ---------------
+  // `BUILDING_VIEW`/`BUILDING_EDIT` were reserved since ADR-098 (already
+  // granted to Operations Admin, and `BUILDING_VIEW` alone additionally
+  // to Finance Admin/Support Admin) but never wired to a real route —
+  // same reserved-but-unused shape `USER_VIEW`/`USER_EDIT` had before
+  // ADR-111. Mirrors that stage's own list/search/detail shape exactly,
+  // scoped to `Building` instead of `Person`. The mutating actions
+  // (`BuildingAdministrationService.lock`/`reinstate`) reuse `Building
+  // Repository.updateBuildingStatus` — previously reachable only via the
+  // Building Verification queue's own decide flow and `FraudCaseService`'s
+  // VERIFICATION_REVOCATION enforcement effect — giving staff a direct
+  // path for locking/reinstating a building's public status that never
+  // originated from either of those case-based workflows.
+
+  /** Minimal existence + current-status lookup, same shape as
+   * `findPersonForSuspensionState` above — 404 on an unknown target,
+   * previous value for the audit record's `metadata.previousValue`. */
+  findBuildingForAdminStatusChange(buildingId: string) {
+    return this.prisma.building.findUnique({
+      where: { id: buildingId },
+      select: { id: true, status: true },
+    });
+  }
+
+  /** Staff-facing list/search — `search` matches name/addressLine/
+   * postalCode/city (case-insensitive `contains`), `status` is an
+   * exact-match filter, `hasRecoveryMode` filters on whether
+   * `recoveryModeEnteredAt` is set. All optional; Prisma silently ignores
+   * an `undefined` `where` key, same convention as `searchPersons`. */
+  async searchBuildings(
+    filters: { search?: string; status?: BuildingStatus; hasRecoveryMode?: boolean },
+    pagination: { skip: number; take: number },
+  ) {
+    const where = {
+      status: filters.status,
+      ...(filters.hasRecoveryMode === undefined
+        ? {}
+        : filters.hasRecoveryMode
+          ? { recoveryModeEnteredAt: { not: null } }
+          : { recoveryModeEnteredAt: null }),
+      ...(filters.search
+        ? {
+            OR: [
+              { name: { contains: filters.search, mode: 'insensitive' as const } },
+              { addressLine: { contains: filters.search, mode: 'insensitive' as const } },
+              { postalCode: { contains: filters.search, mode: 'insensitive' as const } },
+              { city: { contains: filters.search, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.building.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          city: true,
+          district: true,
+          addressLine: true,
+          postalCode: true,
+          totalBlocks: true,
+          totalUnits: true,
+          recoveryModeEnteredAt: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.building.count({ where }),
+    ]);
+    return { items, total };
+  }
+
+  /** Staff-facing detail view — profile fields, Recovery Mode, and current
+   * (`isCurrent: true`) memberships. Deliberately does NOT include this
+   * building's own verification/fraud case history — the real Building
+   * Verification Queue and Fraud & Abuse Center already own that job,
+   * matching ADR-110's/ADR-111's own "don't re-implement another domain's
+   * job" discipline. */
+  getBuildingAdminDetail(buildingId: string) {
+    return this.prisma.building.findUnique({
+      where: { id: buildingId },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        buildingType: true,
+        country: true,
+        province: true,
+        city: true,
+        district: true,
+        addressLine: true,
+        postalCode: true,
+        totalBlocks: true,
+        totalUnits: true,
+        totalFloors: true,
+        recoveryModeEnteredAt: true,
+        createdById: true,
+        createdAt: true,
+        updatedAt: true,
+        memberships: {
+          where: { isCurrent: true },
+          select: {
+            id: true,
+            personId: true,
+            role: true,
+            managerState: true,
+            startedAt: true,
+            person: { select: { id: true, fullName: true, phone: true } },
+          },
+        },
+      },
+    });
+  }
+
   // --- Marketplace Access Gate --------------------------------------------
   // Person-level platform-approval fact backing the BACKOFFICE_APPROVED
   // `AccessLevel` (see `AccessGuard`/`PersonAccessController`). Lives here,

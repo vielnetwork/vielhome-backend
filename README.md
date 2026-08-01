@@ -176,6 +176,20 @@ this section is a map, not a replacement for those.
   `isSuspended` check); each action is audited under its own name
   (`PersonSuspendedByAdmin`/`PersonReinstatedByAdmin`), distinct from the
   Fraud Case enforcement path that can also suspend a Person.
+- **Backoffice Building Administration** (`ADR-112`): `GET
+  /api/v1/backoffice/buildings` (paginated, `search`/`status`/
+  `hasRecoveryMode` filters) and `GET /api/v1/backoffice/buildings/:id`
+  (`BUILDING_VIEW`) plus `POST /api/v1/backoffice/buildings/:id/lock`/
+  `/reinstate` (`BUILDING_EDIT`, mandatory `reason`) — the first real
+  routes either three-stage-old reserved permission key has ever had, and
+  a third, independent caller of `BuildingRepository.updateBuildingStatus`
+  alongside the Building Verification queue's decide flow and the Fraud
+  Case enforcement effect. `lock`/`reinstate` set `status` to the same
+  `REJECTED`/`VERIFIED` values those workflows already use, kept as the
+  single source of truth for a building's standing rather than a second,
+  competing flag; each action is audited under its own name
+  (`BuildingLockedByAdmin`/`BuildingReinstatedByAdmin`), distinct from
+  either of those two workflows' own audit trails.
 - **Git / Migrations** (`ADR-063`): a real Git repository, tagged
   `v1.0-api-contract`; `prisma/migrations/0_baseline_v1_freeze/` — a real,
   committed baseline migration (the user's own local run against a real dev

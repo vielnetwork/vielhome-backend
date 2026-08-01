@@ -82,6 +82,8 @@ export const E2E_SUITE_ID = {
   DASHBOARD: 24,
   // 21_ADRs > ADR-111 — User Administration.
   USER_ADMINISTRATION: 25,
+  // 21_ADRs > ADR-112 — Building Administration.
+  BUILDING_ADMINISTRATION: 26,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;
@@ -114,9 +116,7 @@ assertUniqueSuiteIds();
  */
 export function createE2eRunId(suiteId: number): string {
   if (!Number.isInteger(suiteId) || suiteId < 0 || suiteId > 99) {
-    throw new Error(
-      `createE2eRunId: suiteId must be an integer in [0, 99], got ${suiteId}.`,
-    );
+    throw new Error(`createE2eRunId: suiteId must be an integer in [0, 99], got ${suiteId}.`);
   }
   const timeComponent = (Date.now() % 1000).toString().padStart(3, '0');
   const suiteComponent = suiteId.toString().padStart(2, '0');
