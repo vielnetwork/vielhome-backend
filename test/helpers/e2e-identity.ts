@@ -88,6 +88,8 @@ export const E2E_SUITE_ID = {
   FINANCE_ADMINISTRATION: 27,
   // 21_ADRs > ADR-114 — Notification Administration.
   NOTIFICATION_ADMINISTRATION: 28,
+  // 21_ADRs > ADR-116 — Global Provider Settings.
+  PROVIDER_SETTINGS: 29,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;

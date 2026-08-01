@@ -5,6 +5,7 @@ import { NotificationRepository } from '../infrastructure/repositories/notificat
 import { EmailProviderService } from '../../../common/notification-providers/email-provider.service';
 import { SmsProviderService } from '../../../common/notification-providers/sms-provider.service';
 import { PushProviderService } from '../../../common/notification-providers/push-provider.service';
+import { ProviderSettingsService } from '../../provider-settings/application/provider-settings.service';
 
 export const NOTIFICATION_DISPATCH_QUEUE = 'notification-dispatch';
 export const DISPATCH_DELIVERY_JOB = 'dispatch-delivery';
@@ -44,6 +45,15 @@ export interface DispatchDeliveryJobData {
  * pre-ADR-088 doc comment already anticipated ("a real provider will be
  * able to throw").
  *
+ * 21_ADRs > ADR-116 — each channel's own env-var `isConfigured()` check
+ * above is now paired with `ProviderSettingsService.isEnabled(channel)`
+ * — a DB-backed, staff-controlled kill switch, independent of whether the
+ * env var is set. A provider administratively disabled falls back to the
+ * exact same stub path as an unconfigured one (same log line, same
+ * `markDeliverySent` call) — disabling a provider is never a silent drop,
+ * it degrades to the same pre-ADR-088 stub every environment without a
+ * real provider already relies on.
+ *
  * Still always marks `SENT`, never `DELIVERED`, on a successful provider
  * call — accepted-by-provider is not the same guarantee as
  * confirmed-delivered-to-device, and none of SendGrid/Twilio/FCM's synchronous
@@ -62,6 +72,7 @@ export class NotificationDispatchProcessor extends WorkerHost {
     private readonly emailProvider: EmailProviderService,
     private readonly smsProvider: SmsProviderService,
     private readonly pushProvider: PushProviderService,
+    private readonly providerSettings: ProviderSettingsService,
   ) {
     super();
   }
@@ -90,7 +101,11 @@ export class NotificationDispatchProcessor extends WorkerHost {
 
     switch (delivery.channel) {
       case 'EMAIL':
-        if (this.emailProvider.isConfigured() && recipient.email) {
+        if (
+          this.emailProvider.isConfigured() &&
+          this.providerSettings.isEnabled('EMAIL') &&
+          recipient.email
+        ) {
           await this.emailProvider.send({
             to: recipient.email,
             subject: notification.title,
@@ -105,7 +120,7 @@ export class NotificationDispatchProcessor extends WorkerHost {
         // it's how they authenticate), so this branch is reachable
         // whenever `SmsProviderService` is configured, regardless of what
         // else is filled in on the recipient's profile.
-        if (this.smsProvider.isConfigured()) {
+        if (this.smsProvider.isConfigured() && this.providerSettings.isEnabled('SMS')) {
           await this.smsProvider.send({
             to: recipient.phone,
             body: `${notification.title}: ${notification.body}`,
@@ -115,7 +130,11 @@ export class NotificationDispatchProcessor extends WorkerHost {
         }
         break;
       case 'PUSH':
-        if (this.pushProvider.isConfigured() && recipient.devices.length > 0) {
+        if (
+          this.pushProvider.isConfigured() &&
+          this.providerSettings.isEnabled('PUSH') &&
+          recipient.devices.length > 0
+        ) {
           await this.dispatchPush(deliveryId, recipient.devices, notification);
           return;
         }

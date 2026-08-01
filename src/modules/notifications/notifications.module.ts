@@ -19,6 +19,7 @@ import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
 import { BuildingModule } from '../building/building.module';
 import { BackOfficeModule } from '../backoffice/backoffice.module';
 import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
+import { ProviderSettingsModule } from '../provider-settings/provider-settings.module';
 
 @Module({
   // Reuses BuildingRepository's recipient-resolution helpers (added this
@@ -64,6 +65,14 @@ import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module'
     BuildingModule,
     BackOfficeModule,
     BackofficeRbacModule,
+    // 21_ADRs > ADR-116 — imported directly (not `@Global()`) so
+    // `NotificationDispatchProcessor` can inject its exported
+    // `ProviderSettingsService`, the same "import the settings module
+    // directly for its exported service" pattern `DashboardModule`
+    // established for `MonitoringModule` (ADR-110). No cycle risk:
+    // `ProviderSettingsModule` only imports `BackOfficeModule`/
+    // `BackofficeRbacModule`, neither of which imports this module back.
+    ProviderSettingsModule,
     BullModule.registerQueue({ name: NOTIFICATION_DISPATCH_QUEUE }),
   ],
   controllers: [

@@ -165,6 +165,8 @@ model Person {
   // 21_ADRs > ADR-109 — Maintenance Mode & Feature Flags.
   maintenanceModeUpdatedBy MaintenanceModeState[] @relation("MaintenanceModeUpdatedBy")
   featureFlagsUpdatedBy    FeatureFlag[]          @relation("FeatureFlagUpdatedBy")
+  // 21_ADRs > ADR-116 — Global Provider Settings.
+  providerSettingsUpdatedBy ProviderSetting[]     @relation("ProviderSettingUpdatedBy")
 
   @@map("persons")
 }
@@ -2551,6 +2553,13 @@ enum PermissionKey {
   // stage in this matrix has followed.
   NOTIFICATION_DELIVERY_VIEW
   NOTIFICATION_DELIVERY_MANAGE
+  // 21_ADRs > ADR-116 — Global Provider Settings (Stage 9). A real VIEW/
+  // MANAGE split — MANAGE genuinely mutates a live-consulted kill switch
+  // (see ProviderSetting's own schema comment), distinct from any prior
+  // pair, following this matrix's own "no permission shared across
+  // domains" boundary discipline.
+  PROVIDER_SETTINGS_VIEW
+  PROVIDER_SETTINGS_MANAGE
 }
 
 model Role {
@@ -3409,4 +3418,49 @@ model FeatureFlag {
   updatedBy   Person?  @relation("FeatureFlagUpdatedBy", fields: [updatedById], references: [id])
 
   @@map("feature_flags")
+}
+
+// ---------------------------------------------------------------------------
+// 21_ADRs > ADR-116 — Global Provider Settings (Backoffice completion
+// roadmap, Stage 9). ADR-109's own comment named this exact gap:
+// SMS/Email/Push credentials are, and remain, env-var-only — never
+// stored in this table, never exposed by any endpoint this ADR adds
+// (see ProviderSetting's own field list below: no secret value of any
+// kind is ever persisted here). What this table adds is a real, DB-
+// backed, per-provider kill switch — today the only way to stop the
+// platform from calling Twilio/SendGrid/FCM is to unset an env var and
+// redeploy; this table lets Backoffice staff disable a specific
+// provider live, with a mandatory reason and a full audit trail,
+// without touching any deployment.
+//
+// Deliberately excludes STORAGE (the other provider ADR-109's own
+// comment named): `StorageService.assertConfigured()` throws a hard
+// error with no graceful stub fallback, unlike Email/SMS/Push (all
+// three already fall back to `NotificationDispatchProcessor`'s own
+// pre-ADR-088 log-stub behavior when `isConfigured()` is false) — there
+// is no safe, already-established degradation path to wire a live
+// STORAGE kill switch into without risking a half-built, high-risk
+// mutation (Documents upload/download has no fallback if storage were
+// disabled mid-flight). See this ADR's own Non-Goals.
+// ---------------------------------------------------------------------------
+
+enum ProviderKey {
+  EMAIL
+  SMS
+  PUSH
+}
+
+// One row per `ProviderKey`, upserted by key — unlike
+// `MaintenanceModeState`'s own fixed-literal-id singleton (MANAGE here
+// operates per-provider, not on one shared global row).
+model ProviderSetting {
+  id          String      @id @default(cuid())
+  key         ProviderKey @unique
+  enabled     Boolean     @default(true)
+  reason      String?
+  updatedAt   DateTime    @updatedAt
+  updatedById String?
+  updatedBy   Person?     @relation("ProviderSettingUpdatedBy", fields: [updatedById], references: [id])
+
+  @@map("provider_settings")
 }

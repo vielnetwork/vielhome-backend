@@ -28,6 +28,7 @@ import { BackofficeRbacModule } from './modules/backoffice-rbac/backoffice-rbac.
 import { MonitoringModule } from './modules/monitoring/monitoring.module';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { ProviderSettingsModule } from './modules/provider-settings/provider-settings.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 
 @Module({
@@ -115,6 +116,14 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     // MonitoringService for the systemHealth section. No startup-order
     // dependency on anything else — purely on-demand, per-request reads.
     DashboardModule,
+    // 21_ADRs > ADR-116 — Global Provider Settings (Stage 9). Same
+    // reasoning as every other Bridge Migration module above (needs
+    // BackofficeRbacModule's exported PermissionsGuard). No startup-order
+    // dependency on anything else — its own onModuleInit only reads its
+    // own table. NotificationsModule (registered elsewhere) imports this
+    // module directly to inject the exported ProviderSettingsService into
+    // NotificationDispatchProcessor.
+    ProviderSettingsModule,
     // Registered last — the first module in this codebase whose own
     // startup logic (`SchedulerBootstrapService.onApplicationBootstrap`)
     // actively calls into other domains' services, so every domain it

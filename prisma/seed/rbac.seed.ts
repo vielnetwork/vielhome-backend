@@ -28,8 +28,16 @@ const prisma = new PrismaClient();
 const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: string }> = [
   { key: 'USER_VIEW', label: 'View Users', description: 'View person/user records in Backoffice.' },
   { key: 'USER_EDIT', label: 'Edit Users', description: 'Edit person/user records in Backoffice.' },
-  { key: 'BUILDING_VIEW', label: 'View Buildings', description: 'View building records in Backoffice.' },
-  { key: 'BUILDING_EDIT', label: 'Edit Buildings', description: 'Edit building records in Backoffice.' },
+  {
+    key: 'BUILDING_VIEW',
+    label: 'View Buildings',
+    description: 'View building records in Backoffice.',
+  },
+  {
+    key: 'BUILDING_EDIT',
+    label: 'Edit Buildings',
+    description: 'Edit building records in Backoffice.',
+  },
   {
     key: 'MARKETPLACE_REVIEW',
     label: 'Review Marketplace Listings',
@@ -40,10 +48,26 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     label: 'Approve/Reject Marketplace Listings',
     description: 'Approve, reject, or archive Marketplace service-provider listings.',
   },
-  { key: 'FINANCE_VIEW', label: 'View Finance', description: 'View Finance module data (Funds, Charges, Payments, Ledger).' },
-  { key: 'FINANCE_REFUND', label: 'Issue Refunds', description: 'Issue adjustments/refunds within the Finance module.' },
-  { key: 'AUDIT_VIEW', label: 'View Audit Log', description: 'View the platform-wide Audit Center.' },
-  { key: 'SYSTEM_SETTINGS', label: 'Manage System Settings', description: 'Manage platform-wide system configuration.' },
+  {
+    key: 'FINANCE_VIEW',
+    label: 'View Finance',
+    description: 'View Finance module data (Funds, Charges, Payments, Ledger).',
+  },
+  {
+    key: 'FINANCE_REFUND',
+    label: 'Issue Refunds',
+    description: 'Issue adjustments/refunds within the Finance module.',
+  },
+  {
+    key: 'AUDIT_VIEW',
+    label: 'View Audit Log',
+    description: 'View the platform-wide Audit Center.',
+  },
+  {
+    key: 'SYSTEM_SETTINGS',
+    label: 'Manage System Settings',
+    description: 'Manage platform-wide system configuration.',
+  },
   {
     key: 'FEATURE_FLAGS',
     label: 'Manage System Feature Toggles',
@@ -74,7 +98,8 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
   {
     key: 'FEATURE_FLAGS_MANAGE',
     label: 'Manage Feature Flags',
-    description: 'Create and toggle entries in the platform-wide operational feature-toggle registry.',
+    description:
+      'Create and toggle entries in the platform-wide operational feature-toggle registry.',
   },
   // 21_ADRs > ADR-101 — Subscription Management (07.04/ADR-033) is a
   // distinct domain from the Finance module even though both are
@@ -84,13 +109,13 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
   {
     key: 'SUBSCRIPTION_VIEW',
     label: 'View Subscriptions',
-    description: 'View a building\'s subscription state, effective features, and change history.',
+    description: "View a building's subscription state, effective features, and change history.",
   },
   {
     key: 'SUBSCRIPTION_MANAGE',
     label: 'Manage Subscriptions',
     description:
-      'Change a building\'s subscription plan/status, run the time-based lifecycle evaluation, and create/revoke feature grants.',
+      "Change a building's subscription plan/status, run the time-based lifecycle evaluation, and create/revoke feature grants.",
   },
   // 21_ADRs > ADR-102 — Backoffice Permission Migration Completion.
   // One dedicated VIEW/MANAGE pair per remaining domain (no key shared
@@ -126,7 +151,8 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
   {
     key: 'FRAUD_MANAGE',
     label: 'Manage Fraud Cases',
-    description: 'Create, assign, add evidence to, decide, reopen, enforce, and appeal-decide fraud cases.',
+    description:
+      'Create, assign, add evidence to, decide, reopen, enforce, and appeal-decide fraud cases.',
   },
   {
     key: 'SUPPORT_VIEW',
@@ -156,12 +182,12 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
   {
     key: 'PERSON_ACCESS_VIEW',
     label: 'View Backoffice Approval Status',
-    description: 'View a person\'s Backoffice-approval status.',
+    description: "View a person's Backoffice-approval status.",
   },
   {
     key: 'PERSON_ACCESS_MANAGE',
     label: 'Manage Backoffice Approval Status',
-    description: 'Change a person\'s Backoffice-approval status.',
+    description: "Change a person's Backoffice-approval status.",
   },
   {
     key: 'NOTIFICATION_TEMPLATE_VIEW',
@@ -186,7 +212,8 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
   {
     key: 'MONITORING_VIEW',
     label: 'View System Monitoring',
-    description: 'View the Backoffice system health/monitoring overview (database, Redis, storage, queues, scheduler).',
+    description:
+      'View the Backoffice system health/monitoring overview (database, Redis, storage, queues, scheduler).',
   },
   // 21_ADRs > ADR-110 — Backoffice Operational Dashboard (Stage 3). A
   // single read-only key, matching the AUDIT_VIEW/MONITORING_VIEW
@@ -198,6 +225,22 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     description:
       'View the Backoffice operational dashboard (user/building counts, verification queues, fraud/compliance/support/finance summaries, system health, recent critical audit events).',
   },
+  // 21_ADRs > ADR-116 — Global Provider Settings (Stage 9). A real
+  // VIEW/MANAGE split — MANAGE genuinely mutates a live-consulted
+  // per-provider kill switch (Email/SMS/Push), distinct from any prior
+  // pair.
+  {
+    key: 'PROVIDER_SETTINGS_VIEW',
+    label: 'View Provider Settings',
+    description:
+      'View each notification provider (Email/SMS/Push) configuration status and enabled/disabled state.',
+  },
+  {
+    key: 'PROVIDER_SETTINGS_MANAGE',
+    label: 'Manage Provider Settings',
+    description:
+      'Enable or disable a specific notification provider (Email/SMS/Push) platform-wide.',
+  },
   // 21_ADRs > ADR-114 — Backoffice Notification Administration (Stage 7).
   // Deliberately a distinct pair from NOTIFICATION_TEMPLATE_VIEW/MANAGE
   // above (copy-library authoring vs. cross-recipient delivery
@@ -206,7 +249,8 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
   {
     key: 'NOTIFICATION_DELIVERY_VIEW',
     label: 'View Notification Deliveries',
-    description: 'View cross-recipient notification delivery records (status, channel, failure reason).',
+    description:
+      'View cross-recipient notification delivery records (status, channel, failure reason).',
   },
   {
     key: 'NOTIFICATION_DELIVERY_MANAGE',
@@ -283,6 +327,12 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
     // 21_ADRs > ADR-110 — same "platform-wide operational visibility"
     // reasoning as Operations Admin's own grant above.
     'DASHBOARD_VIEW',
+    // 21_ADRs > ADR-116 — same home as this role's other platform-wide
+    // system/operational keys (Maintenance Mode, Feature Flags, System
+    // Settings) — provider enable/disable is the same category of
+    // platform-wide operational concern.
+    'PROVIDER_SETTINGS_VIEW',
+    'PROVIDER_SETTINGS_MANAGE',
   ],
   'Marketplace Admin': ['MARKETPLACE_REVIEW', 'MARKETPLACE_APPROVE'],
   // 21_ADRs > ADR-101 — a dedicated role, not folded into Finance Admin,
@@ -307,16 +357,26 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
   'Super Admin': 'Unrestricted platform access — holds every defined permission.',
-  'Operations Admin': 'Day-to-day user and building management, building/manager verification, audit oversight, and the operational dashboard.',
-  'Finance Admin': 'Finance module access — view and refund, with read access to related users/buildings.',
+  'Operations Admin':
+    'Day-to-day user and building management, building/manager verification, audit oversight, and the operational dashboard.',
+  'Finance Admin':
+    'Finance module access — view and refund, with read access to related users/buildings.',
   'Support Admin': 'Support case management, plus read-only user and building context.',
-  'Technical Admin': 'System-level configuration, feature toggles, maintenance mode, scheduler, notification templates, notification delivery administration, system monitoring, the operational dashboard, and audit oversight.',
+  'Technical Admin':
+    'System-level configuration, feature toggles, maintenance mode, provider settings, scheduler, notification templates, notification delivery administration, system monitoring, the operational dashboard, and audit oversight.',
   'Marketplace Admin': 'Marketplace listing review and approval — nothing else.',
-  'Subscription Admin': 'Subscription Management access — view and manage building plan/status/feature grants.',
-  'Fraud & Compliance Admin': 'Fraud case, compliance case, and legal hold management, with audit visibility.',
+  'Subscription Admin':
+    'Subscription Management access — view and manage building plan/status/feature grants.',
+  'Fraud & Compliance Admin':
+    'Fraud case, compliance case, and legal hold management, with audit visibility.',
 };
 
-async function auditSeedCreate(entityType: string, entityId: string, action: string, metadata: Record<string, unknown>) {
+async function auditSeedCreate(
+  entityType: string,
+  entityId: string,
+  action: string,
+  metadata: Record<string, unknown>,
+) {
   await prisma.auditLog.create({
     data: {
       actorId: null,
@@ -350,7 +410,9 @@ async function main() {
       roleIdByName.set(name, existing.id);
       continue;
     }
-    const created = await prisma.role.create({ data: { name, description: ROLE_DESCRIPTIONS[name] } });
+    const created = await prisma.role.create({
+      data: { name, description: ROLE_DESCRIPTIONS[name] },
+    });
     roleIdByName.set(name, created.id);
     await auditSeedCreate('Role', created.id, 'RoleSeeded', { name });
   }
@@ -378,7 +440,9 @@ async function main() {
       });
     }
   }
-  console.log(`RolePermission grants created this run: ${grantsCreated} (re-running this script creates 0).`);
+  console.log(
+    `RolePermission grants created this run: ${grantsCreated} (re-running this script creates 0).`,
+  );
 
   console.log(
     'No StaffRole rows were seeded — ADR-099 deliberately defers real staff-to-role assignment to ADR-100/ADR-101 or a dedicated follow-up.',
