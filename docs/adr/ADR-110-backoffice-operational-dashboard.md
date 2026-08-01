@@ -1,6 +1,6 @@
 # ADR-110 — Backoffice Operational Dashboard
 
-**Status:** Accepted — Pending Closure (2026-08-01) — one unrelated e2e item (see Final Verification below) needs an isolated rerun before this can be marked Closed
+**Status:** Accepted — Closed (2026-08-01)
 **Context area:** 21_ADRs (Backend / Backoffice), Operational Readiness — Stage 3 of the Backoffice completion roadmap
 **Related:** ADR-108 (Monitoring & System Health — Stage 1, this stage directly reuses `MonitoringService.getOverview()` for its own `systemHealth` section), ADR-109 (Maintenance Mode & Feature Flags — Stage 2), ADR-099/ADR-102 (VIEW/MANAGE permission-pair convention), ADR-034 (Audit & Compliance Center — the full-detail audit search this dashboard's own "recent critical events" widget deliberately does not replace), ADR-107 (E2E cleanup discipline — this ADR's own e2e suite follows its shared-fixture, no-exact-count-assertion rules)
 
@@ -88,7 +88,7 @@ Unlike ADR-109 (which added two entirely new Prisma models and judged the local 
 
 **The operator must, in order, on their own machine:** `npx prisma migrate dev` (applies `20260801150000_add_dashboard_view_permission`), `npx prisma generate` (this overwrites the local hand-patch above with the real generated client — expected and fine), `npm run db:seed:rbac` (idempotent), then `npm run build`, `npm test`, `npm run test:e2e`. This ADR is not Closed until that full sequence is confirmed green (or any failure has been triaged per the roadmap's own Verification Gate — isolated rerun, root-cause, compare against ADR-107's known patterns, before attributing anything to this stage).
 
-## Final Verification (Closure Gate) — Pending One Triage Item
+## Final Verification (Closure Gate)
 
 The operator ran the real verification stack (their own Postgres/Redis) after applying this stage's changes:
 
@@ -121,15 +121,15 @@ The operator ran the real verification stack (their own Postgres/Redis) after ap
      entries are FK/cleanup-race `PrismaClientKnownRequestError`s during `afterAll`, not mid-test HTTP-status
      mismatches). **This item is not yet closed** — see the immediate follow-up requested below.
 
-**Outstanding before this ADR is fully Closed:** the operator needs to run `npx jest --config
-./test/jest-e2e.json test/gamification.e2e-spec.ts` in isolation (no concurrently-running suites) on their own
-machine. If it passes cleanly in isolation, this confirms a shared-fixture/concurrency artifact of the kind
-ADR-107 already documents as a systemic property of this test setup (many suites against one shared dev
-database) — in which case it will be recorded as a new ADR-107 addendum entry (a previously-uncatalogued 404
-symptom) and this ADR closes on that basis. If it reproduces in isolation, it is a real, independent bug
-unrelated to this stage's own change set and will be investigated as its own item, not blocking ADR-110's
-closure (since ADR-110's own code and tests are otherwise fully verified above), but tracked before the roadmap
-proceeds to Stage 4.
+**Resolution:** the operator ran `npx jest --config ./test/jest-e2e.json test/gamification.e2e-spec.ts` in
+isolation (no concurrently-running suites) — **20/20 passed**, including the exact test that failed during the
+full run. This confirms a shared-fixture/concurrency artifact of the kind ADR-107 already documents as a
+systemic property of this test setup (many suites against one shared dev database), recorded as a new ADR-107
+addendum entry (a previously-uncatalogued 404-on-an-already-passing-RBAC-route symptom, the first entry in that
+list confirmed via true single-file isolation rather than a full-suite rerun). Not attributable to this stage's
+own change set, per the roadmap's own Verification Gate. ADR-110 is CLOSED on this basis: its own code, unit
+tests, and e2e suite are all fully green; the one unrelated failure observed during the full run has been
+triaged to a known, pre-existing category of e2e fragility, not a regression this stage introduced.
 
 ## Non-Goals (Phase 1)
 

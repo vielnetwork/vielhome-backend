@@ -187,6 +187,36 @@ rediscovered from scratch:
   full-suite evidence instead, with, as above, no demonstrable
   code-level or ADR-107 shared-state cause found for either.
 
+  **Addendum (2026-08-01, during ADR-110 Operational Dashboard
+  verification):** one further occurrence, a new symptom shape not
+  previously recorded in this list:
+  - `test/gamification.e2e-spec.ts` — the "ADR-102 — Gamification
+    Analytics Permission Migration" block's "granting
+    `GAMIFICATION_ANALYTICS_VIEW` takes effect immediately" test
+    expected `200`, got `404`, during a single full `npm run test:e2e`
+    run (the first run to include the new `test/dashboard.e2e-spec.ts`
+    alongside it). Unlike every prior entry in this list — all of which
+    are either FK/cleanup-race `PrismaClientKnownRequestError`s or a
+    404 on an *unauthenticated* route like `/auth/otp/request` — this
+    one is a 404 on an authenticated, permission-gated route that had
+    already passed its two preceding RBAC assertions (401, 403) inside
+    the very same test file, in the very same app instance, moments
+    earlier. No commit in this stage's own change set (`a4b8181`,
+    `c665903`, `3cd3522`) touches the `gamification` module, its
+    controller, its permission key, or any shared seed/RBAC code path —
+    confirmed by inspecting all three commits' file lists — so a Stage 3
+    causal link is ruled out by scope alone, the same way it was ruled
+    out for ADR-108 above. Confirmed transient (not a real, reproducible
+    bug) via a genuine **single-file-isolated** rerun on the operator's
+    own machine: `npx jest --config ./test/jest-e2e.json
+    test/gamification.e2e-spec.ts` → **20/20 passed**, including the
+    exact test that failed during the full run. This is the first entry
+    in this list confirmed via true single-file isolation rather than a
+    full-suite rerun — the operator's own machine (unlike this
+    engagement's sandboxed verification environment) has direct access
+    to their local Postgres/Redis and could run the isolated command
+    directly.
+
 ## Lesson Learned / Testing Guideline (proposed, for this codebase's e2e conventions going forward)
 
 > **Parallel e2e suites must never perform cleanup using a predicate scoped only to a shared identifier** — a shared seeded phone number, a shared seeded `PlatformStaff`/staff id, a shared role name, or any other identifier more than one concurrently-running suite can legitimately touch.
