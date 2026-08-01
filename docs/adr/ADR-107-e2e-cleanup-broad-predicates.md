@@ -155,6 +155,38 @@ rediscovered from scratch:
   dedicated investigation, but none had a demonstrated ADR-107
   shared-state cause, so none are fixed here.
 
+  **Addendum (2026-08-01, during ADR-108 Monitoring verification):** two
+  further occurrences of this same shape surfaced across the Stage 1
+  closure runs, both investigated with the same rigor as the six above:
+  - `test/building.e2e-spec.ts` — `verifyOtp(...)` expected `200`, got
+    `404`, once, on the very first full `npm run test:e2e` run after the
+    ADR-108 changes landed. Self-resolved with zero code changes on the
+    operator's own immediate rerun (624/624 passed), and did not
+    reappear in either of the two subsequent full runs.
+  - `test/building-verification.e2e-spec.ts` — thirteen tests in the
+    "Staff Review, Assign, Appeal (07.01)" describe block failed in a
+    single cascade, all traced to one root cause:
+    `requestOtpAndCaptureCode` expected `200`, got `404`, on
+    `POST /api/v1/auth/otp/request` inside that block's shared
+    `beforeAll`/`registerPerson` setup. This is the same route as the
+    already-recorded fraud-case entry above. Self-resolved with zero
+    code changes on the very next full run (624/624 passed), and did
+    not reappear in a further subsequent full run either.
+
+  Neither ADR-108 commit (`d3e3ecc`, `a88c12c`) touches
+  authentication, OTP, `building.e2e-spec.ts`, or
+  `building-verification.e2e-spec.ts` — confirmed by inspecting both
+  commits' file lists — so a Stage 1 causal link is ruled out by scope
+  alone. One methodological difference from the six above: these two
+  were confirmed via clean **full-suite** reruns rather than a
+  **single-file-isolated** rerun — this engagement's sandboxed
+  verification environment cannot reach the operator's local
+  Postgres/Redis (established earlier in this same engagement), so an
+  isolated single-file `jest` invocation could not be executed here.
+  They are recorded in this same category on the strength of the
+  full-suite evidence instead, with, as above, no demonstrable
+  code-level or ADR-107 shared-state cause found for either.
+
 ## Lesson Learned / Testing Guideline (proposed, for this codebase's e2e conventions going forward)
 
 > **Parallel e2e suites must never perform cleanup using a predicate scoped only to a shared identifier** — a shared seeded phone number, a shared seeded `PlatformStaff`/staff id, a shared role name, or any other identifier more than one concurrently-running suite can legitimately touch.

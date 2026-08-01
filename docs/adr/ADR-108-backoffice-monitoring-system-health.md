@@ -100,6 +100,48 @@ This sandbox cannot reach the user's local Postgres/Redis/BullMQ stack (establis
 
 Before running these, the operator must additionally run, once: `npx prisma migrate dev` (or `deploy`) to apply the new migration, `npx prisma generate` to regenerate the Prisma Client's `PermissionKey` type (needed for `@RequiresPermission('MONITORING_VIEW')` to type-check and for the seed script to accept the new key), and `npm run db:seed:rbac` (idempotent — safe to re-run) to grant `MONITORING_VIEW` to `Technical Admin`/`Super Admin`.
 
+## Final Verification (Closure Gate)
+
+The operator ran the real verification stack (their own Postgres/Redis,
+not this engagement's sandbox, which cannot reach either) after applying
+this stage's changes:
+
+- `npx prisma migrate dev` — applied `20260801031055_add_monitoring_view_permission` successfully.
+- `npx prisma generate` — succeeded.
+- `npm run db:seed:rbac` — succeeded: 31/31 permissions, 8/8 roles, 2 new
+  `RolePermission` grants this run (`MONITORING_VIEW` for `Technical Admin`
+  and `Super Admin`).
+- `npm run build` — succeeded.
+- `npm test` — succeeded (50 unit tests across `sigv4.spec.ts`,
+  `storage.service.spec.ts`, `monitoring.service.spec.ts` and the
+  pre-existing suite).
+- `npm run test:e2e` — three full runs across this closure cycle:
+  - **Run 1:** `test/monitoring.e2e-spec.ts` failed with
+    `PrismaClientKnownRequestError: notifications_recipientId_fkey` in
+    its own `deleteOncePerPhoneBatch` teardown — a real, deterministic
+    bug in this stage's own new test file (missing
+    notification/gamification FK-chain deletes before `Person`), fixed
+    in commit `a88c12c`. `test/building.e2e-spec.ts` also failed once in
+    this run (`verifyOtp` 404-vs-200), self-resolving on an immediate
+    rerun with zero code changes.
+  - **Run 2** (after `a88c12c`): `test/monitoring.e2e-spec.ts` passed.
+    `test/building-verification.e2e-spec.ts` failed (13 tests, one
+    cascading `otp/request` 404-vs-200 root cause).
+  - **Run 3:** all 23 suites passed, 624/624 tests, including
+    `test/monitoring.e2e-spec.ts`, `test/building.e2e-spec.ts`, and
+    `test/building-verification.e2e-spec.ts`.
+  - The `building.e2e-spec.ts` and `building-verification.e2e-spec.ts`
+    transients were investigated and, on the strength of full-suite
+    scope analysis and clean full-suite reruns, recorded as two further
+    instances of ADR-107's "Isolated, unreproducible HTTP-status
+    transients" — see that ADR's 2026-08-01 addendum. Neither ADR-108
+    commit touches auth, OTP, or either of those two test files.
+
+ADR-108 is CLOSED on this basis: the one real defect found
+(`monitoring.e2e-spec.ts`'s own teardown) was fixed and verified; the two
+unrelated transients were triaged, scoped out, and cross-referenced
+rather than assumed away.
+
 ## Non-Goals (Phase 1)
 
 Explicitly out of scope for this ADR, listed exhaustively:
