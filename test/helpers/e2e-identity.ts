@@ -78,6 +78,8 @@ export const E2E_SUITE_ID = {
   MONITORING: 22,
   // 21_ADRs > ADR-109 — Maintenance Mode & Feature Flags.
   MAINTENANCE: 23,
+  // 21_ADRs > ADR-110 — Backoffice Operational Dashboard.
+  DASHBOARD: 24,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;

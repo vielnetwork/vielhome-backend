@@ -40,5 +40,11 @@ import { MonitoringService } from './application/monitoring.service';
   ],
   controllers: [MonitoringController],
   providers: [MonitoringService, PlatformRolesGuard],
+  // 21_ADRs > ADR-110 — exported so DashboardModule can reuse the exact
+  // same system-health aggregation this module already built, rather
+  // than duplicating Postgres/Redis/BullMQ/Storage check logic. Purely
+  // additive: no existing consumer of this module is affected by gaining
+  // a new export.
+  exports: [MonitoringService],
 })
 export class MonitoringModule {}

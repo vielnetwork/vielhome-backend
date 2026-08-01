@@ -154,6 +154,17 @@ this section is a map, not a replacement for those.
   (`FEATURE_FLAGS_VIEW`/`_MANAGE`) centralized operational feature-toggle
   registry, distinct from the customer-facing `FeatureGrant` entitlement
   model. Both mandate a `reason` on every mutation and are fully audited.
+- **Backoffice Operational Dashboard** (`ADR-110`): a single, staff-only
+  `GET /api/v1/backoffice/dashboard/overview` (`PLATFORM_ADMIN` +
+  `DASHBOARD_VIEW`) aggregating user/building counts, building- and
+  manager-verification queues (by priority), fraud/compliance/support
+  triage summaries, a narrowly-scoped finance summary (pending/approved
+  payment totals, refund totals, open charge batches — deliberately no
+  derived "net revenue" metric), the same `MonitoringService` system-health
+  overview `ADR-108` already built, and a curated allowlist of recent
+  high-risk audit events. Every section is fetched independently
+  (`Promise.allSettled`) with a documented fallback, so one section
+  failing never turns the whole response into a 500.
 - **Git / Migrations** (`ADR-063`): a real Git repository, tagged
   `v1.0-api-contract`; `prisma/migrations/0_baseline_v1_freeze/` — a real,
   committed baseline migration (the user's own local run against a real dev

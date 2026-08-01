@@ -2532,6 +2532,13 @@ enum PermissionKey {
   MAINTENANCE_MODE_MANAGE
   FEATURE_FLAGS_VIEW
   FEATURE_FLAGS_MANAGE
+  // 21_ADRs > ADR-110 — Backoffice Operational Dashboard (Stage 3). A
+  // single read-only key — this endpoint aggregates existing data from
+  // other domains (users, buildings, verification queues, fraud/
+  // compliance/support/finance summaries, system health, audit) and has
+  // no mutating action of its own, matching the AUDIT_VIEW/MONITORING_VIEW
+  // precedent for a pure-read domain.
+  DASHBOARD_VIEW
 }
 
 model Role {
