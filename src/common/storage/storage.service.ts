@@ -14,6 +14,17 @@ export interface PresignedUpload {
 }
 
 /**
+ * 21_ADRs > ADR-108 — the three distinct, separately-reportable outcomes
+ * of a storage health check. See `StorageService.checkBucketHealth`'s own
+ * doc comment for what each field actually proves.
+ */
+export interface StorageHealthResult {
+  configured: boolean;
+  reachable: boolean;
+  bucketAccessible: boolean;
+}
+
+/**
  * 21_ADRs > ADR-087 — real S3/MinIO-compatible object storage for
  * Documents, closing `ADR-026`'s own Future Review item and the #1 entry
  * in `24_Release_Readiness_Audit_v1.0` §2.1 ("needs a new npm dependency
@@ -123,6 +134,57 @@ export class StorageService {
     return this.presign('GET', storageKey, expiresInSeconds);
   }
 
+  /**
+   * 21_ADRs > ADR-108 — real reachability check for the Monitoring
+   * overview endpoint, closing the gap this class's own `isConfigured()`
+   * doc comment names: it "only measures configured, not real health."
+   * Presigns a HeadBucket request (bucket-root path, no body,
+   * `UNSIGNED-PAYLOAD` — the exact same signing path
+   * `getPresignedUploadUrl`/`getPresignedDownloadUrl` already use) and
+   * issues it with Node's built-in `fetch` (Node 18+; no new npm
+   * dependency, same posture as the rest of this file) — an independent
+   * `AbortController` timeout, no retry.
+   *
+   * Three distinct, separately-reportable outcomes, per ADR-108's
+   * explicit requirement — a caller must never collapse these into one
+   * boolean:
+   * - `configured`: this server has all five `storage.*` values set. Says
+   *   nothing about whether the endpoint is actually reachable.
+   * - `reachable`: the HTTP request reached the storage endpoint and got
+   *   back *some* HTTP response (even a 403/404) — proves DNS/TLS/network
+   *   path is alive, independent of whether the specific bucket exists or
+   *   these credentials can read it.
+   * - `bucketAccessible`: the response status was exactly 200 — the
+   *   specific configured bucket exists and is readable with these
+   *   credentials.
+   *
+   * Never returns, logs, or throws the endpoint, bucket name, access key,
+   * secret, or any response body/XML — only these three booleans. A
+   * network-level failure (DNS, TLS, timeout, connection refused) logs
+   * only the error's `name` (e.g. `AbortError`, `TypeError`), never its
+   * `message` (which can embed the target URL/hostname).
+   */
+  async checkBucketHealth(timeoutMs = 3000): Promise<StorageHealthResult> {
+    if (!this.isConfigured()) {
+      return { configured: false, reachable: false, bucketAccessible: false };
+    }
+
+    const url = this.presignHeadBucket(30);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { method: 'HEAD', signal: controller.signal });
+      return { configured: true, reachable: true, bucketAccessible: res.status === 200 };
+    } catch (err) {
+      this.logger.warn(
+        `Storage bucket-health HEAD check failed: ${err instanceof Error ? err.name : 'unknown error'}`,
+      );
+      return { configured: true, reachable: false, bucketAccessible: false };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private presign(method: 'GET' | 'PUT', key: string, expiresInSeconds: number): string {
     const c = this.cfg;
     const host = c.forcePathStyle ? c.endpoint : `${c.bucket}.${c.endpoint}`;
@@ -136,5 +198,16 @@ export class StorageService {
     );
     this.logger.debug(`Presigned ${method} ${key} (expires in ${expiresInSeconds}s)`);
     return url;
+  }
+
+  /** Bucket-root path (path-style: `/{bucket}`; virtual-hosted: `/`, since the host itself is already bucket-scoped) — a HeadBucket request has no object key. */
+  private presignHeadBucket(expiresInSeconds: number): string {
+    const c = this.cfg;
+    const host = c.forcePathStyle ? c.endpoint : `${c.bucket}.${c.endpoint}`;
+    const canonicalUri = c.forcePathStyle ? `/${uriEncode(c.bucket, false)}` : `/`;
+    return presignUrl(
+      { method: 'HEAD', host, canonicalUri, expiresInSeconds, useSsl: c.useSsl },
+      { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey, region: c.region },
+    );
   }
 }

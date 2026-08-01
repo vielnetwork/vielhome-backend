@@ -24,6 +24,7 @@ import { GamificationModule } from './modules/gamification/gamification.module';
 import { BackOfficeModule } from './modules/backoffice/backoffice.module';
 import { MarketplaceModule } from './modules/marketplace/marketplace.module';
 import { BackofficeRbacModule } from './modules/backoffice-rbac/backoffice-rbac.module';
+import { MonitoringModule } from './modules/monitoring/monitoring.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 
 @Module({
@@ -90,6 +91,12 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     // BackOfficeModule/MarketplaceModule since it imports the former;
     // no existing controller is migrated to it yet (Bridge Migration).
     BackofficeRbacModule,
+    // 21_ADRs > ADR-108 — read-only staff telemetry, registered after
+    // BackofficeRbacModule for the same reason (needs its exported
+    // PermissionsGuard). No startup-ordering dependency on anything else
+    // (unlike SchedulerModule below): it only reads existing queue/DB/
+    // Redis/storage state on-demand, per request, and starts nothing.
+    MonitoringModule,
     // Registered last — the first module in this codebase whose own
     // startup logic (`SchedulerBootstrapService.onApplicationBootstrap`)
     // actively calls into other domains' services, so every domain it

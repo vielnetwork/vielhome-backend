@@ -134,6 +134,16 @@ this section is a map, not a replacement for those.
   Redis checks in parallel); a GitHub Actions CI pipeline
   (`.github/workflows/ci.yml`) running lint/test/e2e/build on every push
   against real Postgres + Redis service containers.
+- **Backoffice Monitoring & System Health** (`ADR-108`): a new, staff-only
+  `GET /api/v1/backoffice/monitoring/overview` (`PLATFORM_ADMIN` +
+  `MONITORING_VIEW`, unlike the unauthenticated `/health/*` probes above) —
+  Postgres connectivity + a `pg_stat_activity` activity summary, Redis
+  connectivity + a limited `INFO`-derived summary, both BullMQ queues
+  (`scheduled-jobs`/`notification-dispatch`) with worker-presence health,
+  object-storage reachability via a real SigV4 HeadBucket check, and the
+  scheduler's last successful/failed run — every check independent,
+  timed-out, and aggregated into an overall `healthy`/`degraded`/`unhealthy`
+  status, always returned as HTTP 200.
 - **Git / Migrations** (`ADR-063`): a real Git repository, tagged
   `v1.0-api-contract`; `prisma/migrations/0_baseline_v1_freeze/` — a real,
   committed baseline migration (the user's own local run against a real dev

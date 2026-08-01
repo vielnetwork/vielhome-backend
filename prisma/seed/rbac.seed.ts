@@ -157,6 +157,11 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     label: 'View Gamification Analytics',
     description: 'View platform-wide Gamification analytics.',
   },
+  {
+    key: 'MONITORING_VIEW',
+    label: 'View System Monitoring',
+    description: 'View the Backoffice system health/monitoring overview (database, Redis, storage, queues, scheduler).',
+  },
 ];
 
 // 21_ADRs > ADR-099 §2 — the approved final permission matrix (Support
@@ -193,6 +198,9 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
   // 21_ADRs > ADR-102 — Technical Admin gains the remaining
   // platform-wide operational/system concerns (Scheduler, Notification
   // Templates, Gamification Analytics).
+  // 21_ADRs > ADR-108 additionally adds MONITORING_VIEW — the natural
+  // home for system-health telemetry alongside this role's other
+  // platform-wide operational keys.
   'Technical Admin': [
     'SYSTEM_SETTINGS',
     'FEATURE_FLAGS',
@@ -201,6 +209,7 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
     'NOTIFICATION_TEMPLATE_VIEW',
     'NOTIFICATION_TEMPLATE_MANAGE',
     'GAMIFICATION_ANALYTICS_VIEW',
+    'MONITORING_VIEW',
   ],
   'Marketplace Admin': ['MARKETPLACE_REVIEW', 'MARKETPLACE_APPROVE'],
   // 21_ADRs > ADR-101 — a dedicated role, not folded into Finance Admin,
@@ -228,7 +237,7 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   'Operations Admin': 'Day-to-day user and building management, building/manager verification, and audit oversight.',
   'Finance Admin': 'Finance module access — view and refund, with read access to related users/buildings.',
   'Support Admin': 'Support case management, plus read-only user and building context.',
-  'Technical Admin': 'System-level configuration, feature toggles, scheduler, notification templates, and audit oversight.',
+  'Technical Admin': 'System-level configuration, feature toggles, scheduler, notification templates, system monitoring, and audit oversight.',
   'Marketplace Admin': 'Marketplace listing review and approval — nothing else.',
   'Subscription Admin': 'Subscription Management access — view and manage building plan/status/feature grants.',
   'Fraud & Compliance Admin': 'Fraud case, compliance case, and legal hold management, with audit visibility.',

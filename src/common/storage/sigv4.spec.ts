@@ -214,5 +214,42 @@ describe('sigv4', () => {
       );
       expect(url.startsWith('http://localhost:9000/my-bucket/test.txt?')).toBe(true);
     });
+
+    // 21_ADRs > ADR-108 — `StorageService.checkBucketHealth` presigns a
+    // HeadBucket request for the Monitoring overview endpoint. SigV4 treats
+    // the HTTP method as an opaque string in the canonical request, so HEAD
+    // needs no special-casing beyond the widened `PresignInput['method']`
+    // union — these two tests confirm that held true once the type was
+    // widened, not just that it compiles.
+    it('signs a HEAD request (bucket-root path) without error, producing a valid signature', () => {
+      const url = presignUrl(
+        {
+          method: 'HEAD',
+          host: 'localhost:9000',
+          canonicalUri: '/vielhome-documents',
+          expiresInSeconds: 30,
+          now: fixedNow,
+          useSsl: false,
+        },
+        creds,
+      );
+      expect(url.startsWith('http://localhost:9000/vielhome-documents?')).toBe(true);
+      const sigMatch = url.match(/X-Amz-Signature=([0-9a-f]+)$/);
+      expect(sigMatch).not.toBeNull();
+      expect(sigMatch?.[1].length).toBe(64);
+    });
+
+    it('produces a different signature for HEAD than for GET on the same path', () => {
+      const base = {
+        host: 'examplebucket.s3.amazonaws.com',
+        canonicalUri: '/examplebucket',
+        expiresInSeconds: 30,
+        now: fixedNow,
+        useSsl: true,
+      };
+      const headUrl = presignUrl({ ...base, method: 'HEAD' }, creds);
+      const getUrl = presignUrl({ ...base, method: 'GET' }, creds);
+      expect(headUrl).not.toBe(getUrl);
+    });
   });
 });

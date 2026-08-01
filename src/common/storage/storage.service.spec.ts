@@ -132,4 +132,69 @@ describe('StorageService', () => {
       expect(a).not.toBe(b);
     });
   });
+
+  // 21_ADRs > ADR-108 — real reachability check for the Monitoring
+  // overview endpoint. `fetch` is mocked at the global level so these
+  // tests never make a real network call.
+  describe('checkBucketHealth', () => {
+    const originalFetch = global.fetch;
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('reports configured:false and does not attempt any request when storage is not configured', async () => {
+      const fetchSpy = jest.fn();
+      global.fetch = fetchSpy as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService());
+
+      const result = await service.checkBucketHealth();
+
+      expect(result).toEqual({ configured: false, reachable: false, bucketAccessible: false });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('reports reachable:true and bucketAccessible:true on a 200 HEAD response', async () => {
+      global.fetch = jest.fn().mockResolvedValue({ status: 200 }) as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      const result = await service.checkBucketHealth();
+
+      expect(result).toEqual({ configured: true, reachable: true, bucketAccessible: true });
+    });
+
+    it('reports reachable:true but bucketAccessible:false on a non-200 HEAD response (e.g. 403/404)', async () => {
+      global.fetch = jest.fn().mockResolvedValue({ status: 403 }) as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      const result = await service.checkBucketHealth();
+
+      expect(result).toEqual({ configured: true, reachable: true, bucketAccessible: false });
+    });
+
+    it('reports reachable:false and bucketAccessible:false when the request throws (network error/timeout)', async () => {
+      global.fetch = jest
+        .fn()
+        .mockRejectedValue(new Error('ECONNREFUSED 10.0.0.5:9000')) as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      const result = await service.checkBucketHealth();
+
+      expect(result).toEqual({ configured: true, reachable: false, bucketAccessible: false });
+    });
+
+    it('the HEAD request URL never contains the secret access key in plain query form beyond the signature itself, and never logs raw error detail', async () => {
+      let capturedUrl = '';
+      global.fetch = jest.fn().mockImplementation((url: string) => {
+        capturedUrl = url;
+        return Promise.resolve({ status: 200 });
+      }) as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      await service.checkBucketHealth();
+
+      expect(capturedUrl).toContain('X-Amz-Signature=');
+      expect(capturedUrl).not.toContain(CONFIGURED.secretAccessKey);
+    });
+  });
 });

@@ -2508,6 +2508,13 @@ enum PermissionKey {
   // dedicated key for consistency with every other domain here, not
   // merged into a cross-cutting "analytics" permission.
   GAMIFICATION_ANALYTICS_VIEW
+  // 21_ADRs > ADR-108 — Backoffice Monitoring & System Health. A single
+  // read-only key (no MONITORING_MANAGE in Phase 1 — this endpoint has no
+  // mutating actions: no retry/pause/resume/clear-queue, no config
+  // writes, no queue mutation), matching the SCHEDULER_TRIGGER/
+  // GAMIFICATION_ANALYTICS_VIEW precedent for a small, uniform,
+  // single-purpose domain.
+  MONITORING_VIEW
 }
 
 model Role {

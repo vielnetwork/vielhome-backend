@@ -74,6 +74,8 @@ export const E2E_SUITE_ID = {
   SCHEDULER: 19,
   SUBSCRIPTION: 20,
   SUPPORT_CASE: 21,
+  // 21_ADRs > ADR-108 — Backoffice Monitoring & System Health.
+  MONITORING: 22,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;

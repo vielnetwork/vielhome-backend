@@ -14,6 +14,13 @@ import { createHash, createHmac } from 'crypto';
  * MinIO implements the identical scheme (S3-API-compatible by design), so
  * this same code presigns correctly against both a self-hosted MinIO
  * container and real AWS S3.
+ *
+ * 21_ADRs > ADR-108 extends the supported `method` union with `'HEAD'` —
+ * `StorageService.checkBucketHealth` presigns a HeadBucket request for the
+ * Monitoring overview endpoint's storage reachability check. No change to
+ * the signing algorithm itself: SigV4's canonical request already treats
+ * the HTTP method as an opaque string, so HEAD needs no special-casing
+ * beyond widening the type unions below.
  */
 
 export interface SigV4Credentials {
@@ -23,7 +30,7 @@ export interface SigV4Credentials {
 }
 
 export interface PresignInput {
-  method: 'GET' | 'PUT';
+  method: 'GET' | 'PUT' | 'HEAD';
   host: string;
   /** Already includes the bucket segment for path-style, or not, for virtual-hosted — see `StorageService.presign`. */
   canonicalUri: string;
@@ -78,7 +85,7 @@ export function buildCanonicalQueryString(params: Array<[string, string]>): stri
 }
 
 export function buildCanonicalRequest(params: {
-  method: 'GET' | 'PUT';
+  method: 'GET' | 'PUT' | 'HEAD';
   canonicalUri: string;
   canonicalQueryString: string;
   host: string;
