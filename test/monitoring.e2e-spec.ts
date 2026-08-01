@@ -56,6 +56,21 @@ async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: Pris
 }
 
 async function deleteOncePerPhoneBatch(prisma: PrismaService, phones: string[]): Promise<void> {
+  // A brand-new person's registration (registerPerson, used for
+  // plainPerson) can trigger a real Notification (+ 1:1
+  // NotificationPreference) via the domain-event pipeline — the same FK
+  // chain every other e2e file's own phone-cleanup helper already deletes
+  // before Person (see scheduler.e2e-spec.ts's own deleteOncePerPhoneBatch
+  // doc comment for the full history of this exact fkey violation).
+  await prisma.notificationDelivery.deleteMany({
+    where: { notification: { recipient: { phone: { in: phones } } } },
+  });
+  await prisma.notification.deleteMany({ where: { recipient: { phone: { in: phones } } } });
+  await prisma.notificationPreference.deleteMany({
+    where: { person: { phone: { in: phones } } },
+  });
+  await prisma.personAchievement.deleteMany({ where: { person: { phone: { in: phones } } } });
+  await prisma.xpTransaction.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
