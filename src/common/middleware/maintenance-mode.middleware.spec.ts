@@ -80,10 +80,15 @@ describe('MaintenanceModeMiddleware', () => {
     });
 
     it('falls back to "unknown" requestId if RequestContextMiddleware somehow did not run first', () => {
-      const { req, res, next, json } = makeReqRes(
-        '/api/v1/backoffice/monitoring/overview',
-        undefined as unknown as string,
-      );
+      // NOTE: this must NOT be done by passing `undefined as unknown as
+      // string` as makeReqRes's `requestId` argument — JS default
+      // parameters trigger on an explicitly-passed `undefined` exactly
+      // as they do on an omitted argument, so that would silently fall
+      // back to makeReqRes's own default ('req-1'), never exercising
+      // this path at all. Assigning directly to the already-built req
+      // object sidesteps that default-parameter boundary entirely.
+      const { req, res, next, json } = makeReqRes('/api/v1/backoffice/monitoring/overview');
+      req.requestId = undefined as unknown as string;
 
       middleware().use(req, res, next);
 
