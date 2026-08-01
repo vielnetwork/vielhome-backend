@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { BuildingAdministrationService } from '../application/building-administration.service';
 import { LockBuildingDto } from '../application/dto/lock-building.dto';
@@ -54,6 +55,37 @@ export class BuildingAdministrationController {
       parsePagination(page, limit),
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
+  }
+
+  /** 21_ADRs > ADR-115 — Reports & Export (Stage 8). CSV export of the
+   * same filtered result set `list` already returns, reusing
+   * `BUILDING_VIEW` rather than a separate export-specific permission —
+   * the same precedent `AuditController.export` already established for
+   * `AUDIT_VIEW` (ADR-034). Declared BEFORE `:buildingId` so `GET
+   * .../export` is not swallowed by the id-param route. */
+  @Get('export')
+  @PlatformRoles('REVIEWER')
+  @RequiresPermission('BUILDING_VIEW')
+  async exportCsv(
+    @Query('search') search: string | undefined,
+    @Query('status') status: BuildingStatus | undefined,
+    @Query('hasRecoveryMode') hasRecoveryMode: string | undefined,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const csv = await this.service.exportCsv(
+      {
+        search,
+        status,
+        hasRecoveryMode: parseOptionalBoolean(hasRecoveryMode),
+      },
+      user.sub,
+      requestId,
+    );
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="buildings-export.csv"');
+    res.send(csv);
   }
 
   @Get(':buildingId')

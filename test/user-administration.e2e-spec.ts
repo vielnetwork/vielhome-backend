@@ -380,6 +380,24 @@ describe('User Administration (e2e) — Backoffice User List/Detail/Suspend/Rein
         .expect(404);
     });
 
+    it('21_ADRs > ADR-115 — /export rejects an unauthenticated caller (401)', async () => {
+      await request(app.getHttpServer()).get('/api/v1/backoffice/users/export').expect(401);
+    });
+
+    it('21_ADRs > ADR-115 — GET /export returns a CSV of the same filtered result set, gated by the same USER_VIEW grant', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/backoffice/users/export?search=${encodeURIComponent(targetPerson.phone)}`)
+        .set('Authorization', `Bearer ${reviewer.accessToken}`)
+        .expect(200);
+
+      expect(res.headers['content-type']).toContain('text/csv');
+      expect(res.text.split('\n')[0]).toBe(
+        'id,phone,email,fullName,firstName,lastName,isSuspended,isBackofficeApproved,createdAt',
+      );
+      expect(res.text).toContain(targetPerson.personId);
+      expect(res.text).toContain(targetPerson.phone);
+    });
+
     it('revoking USER_VIEW takes effect immediately — the route closes again, live and uncached', async () => {
       const activeGrant = await prisma.rolePermission.findFirst({
         where: { roleId: viewRoleId, permissionId: viewPermissionId, revokedAt: null },

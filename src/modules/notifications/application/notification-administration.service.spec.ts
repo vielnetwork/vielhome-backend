@@ -124,4 +124,63 @@ describe('NotificationAdministrationService', () => {
       expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ buildingId: undefined }));
     });
   });
+
+  describe('exportCsv (ADR-115 — Reports & Export)', () => {
+    it('calls searchDeliveries with skip:0 and the export row cap, flattens notification/recipient, and returns a CSV string', async () => {
+      notifications.searchDeliveries.mockResolvedValue({
+        items: [
+          {
+            id: 'delivery-1',
+            notificationId: 'notif-1',
+            channel: 'EMAIL',
+            status: 'SENT',
+            sentAt: new Date('2026-08-01T00:00:00.000Z'),
+            deliveredAt: null,
+            failureReason: null,
+            createdAt: new Date('2026-08-01T00:00:00.000Z'),
+            notification: {
+              id: 'notif-1',
+              title: 'Welcome',
+              category: 'SYSTEM',
+              priority: 'NORMAL',
+              buildingId: null,
+              recipientId: 'person-1',
+              recipient: { id: 'person-1', fullName: 'Alice', phone: '+989120000099' },
+            },
+          },
+        ],
+        total: 1,
+      });
+
+      const csv = await service.exportCsv({ status: 'SENT' }, 'actor-1', 'req-1');
+
+      expect(notifications.searchDeliveries).toHaveBeenCalledWith(
+        { status: 'SENT' },
+        { skip: 0, take: 5000 },
+      );
+      expect(csv.split('\n')[0]).toBe(
+        'id,notificationId,channel,status,sentAt,deliveredAt,failureReason,createdAt,notificationTitle,notificationCategory,notificationPriority,buildingId,recipientId,recipientFullName,recipientPhone',
+      );
+      expect(csv).toContain('delivery-1');
+      expect(csv).toContain('Alice');
+      expect(csv).toContain('+989120000099');
+    });
+
+    it('records a NotificationDeliveryListExported audit event with the filters and row count, no reason', async () => {
+      notifications.searchDeliveries.mockResolvedValue({ items: [{ id: 'delivery-1' }], total: 1 });
+
+      await service.exportCsv({ status: 'SENT' }, 'actor-1', 'req-1');
+
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: 'actor-1',
+          action: 'NotificationDeliveryListExported',
+          entityType: 'NotificationDelivery',
+          entityId: 'search',
+          requestId: 'req-1',
+          metadata: { filters: { status: 'SENT' }, rowCount: 1 },
+        }),
+      );
+    });
+  });
 });

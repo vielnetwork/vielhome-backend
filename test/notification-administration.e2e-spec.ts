@@ -443,6 +443,26 @@ describe('Notification Administration (e2e) — Backoffice Delivery List/Detail/
         .expect(404);
     });
 
+    it('21_ADRs > ADR-115 — /export rejects an unauthenticated caller (401)', async () => {
+      await request(app.getHttpServer()).get('/api/v1/backoffice/notifications/export').expect(401);
+    });
+
+    it('21_ADRs > ADR-115 — GET /export returns a CSV of the same filtered result set, gated by the same NOTIFICATION_DELIVERY_VIEW grant', async () => {
+      const res = await request(app.getHttpServer())
+        .get(
+          `/api/v1/backoffice/notifications/export?search=${encodeURIComponent(`ADR-114 e2e Notification ${RUN_ID}`)}`,
+        )
+        .set('Authorization', `Bearer ${reviewer.accessToken}`)
+        .expect(200);
+
+      expect(res.headers['content-type']).toContain('text/csv');
+      expect(res.text.split('\n')[0]).toBe(
+        'id,notificationId,channel,status,sentAt,deliveredAt,failureReason,createdAt,notificationTitle,notificationCategory,notificationPriority,buildingId,recipientId,recipientFullName,recipientPhone',
+      );
+      expect(res.text).toContain(deliveryFailedId);
+      expect(res.text).toContain(deliverySentId);
+    });
+
     it('revoking NOTIFICATION_DELIVERY_VIEW takes effect immediately — the route closes again, live and uncached', async () => {
       const activeGrant = await prisma.rolePermission.findFirst({
         where: { roleId: viewRoleId, permissionId: viewPermissionId, revokedAt: null },

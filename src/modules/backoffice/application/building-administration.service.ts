@@ -9,6 +9,7 @@ import {
   toSkipTake,
   type PaginationParams,
 } from '../../../common/pagination/pagination.util';
+import { toCsv, DEFAULT_EXPORT_ROW_CAP } from '../../../common/csv/csv.util';
 
 /**
  * 21_ADRs > ADR-112 — Building Administration (Stage 5). List/search/
@@ -44,6 +45,46 @@ export class BuildingAdministrationService {
   ) {
     const { items, total } = await this.backOffice.searchBuildings(filters, toSkipTake(pagination));
     return { items, meta: buildPaginationMeta(pagination, total) };
+  }
+
+  /** 21_ADRs > ADR-115 — Reports & Export (Stage 8). Calls the exact
+   * same `searchBuildings` query `list` already uses (same filters, no
+   * new Prisma query), capped at `DEFAULT_EXPORT_ROW_CAP` rows instead
+   * of paginated, and records a read-access audit event — same
+   * precedent as `UserAdministrationService.exportCsv`. No `reason` —
+   * export is a read, not a mutation. */
+  async exportCsv(
+    filters: { search?: string; status?: BuildingStatus; hasRecoveryMode?: boolean },
+    actorPersonId: string,
+    requestId: string,
+  ): Promise<string> {
+    const { items } = await this.backOffice.searchBuildings(filters, {
+      skip: 0,
+      take: DEFAULT_EXPORT_ROW_CAP,
+    });
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      action: 'BuildingListExported',
+      entityType: 'Building',
+      entityId: 'search',
+      requestId,
+      metadata: { filters, rowCount: items.length },
+    });
+
+    return toCsv(items, [
+      'id',
+      'name',
+      'status',
+      'city',
+      'district',
+      'addressLine',
+      'postalCode',
+      'totalBlocks',
+      'totalUnits',
+      'recoveryModeEnteredAt',
+      'createdAt',
+    ]);
   }
 
   async getDetail(buildingId: string) {

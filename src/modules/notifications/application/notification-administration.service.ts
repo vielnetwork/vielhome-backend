@@ -14,6 +14,7 @@ import {
   toSkipTake,
   type PaginationParams,
 } from '../../../common/pagination/pagination.util';
+import { toCsv, DEFAULT_EXPORT_ROW_CAP } from '../../../common/csv/csv.util';
 
 /**
  * 21_ADRs > ADR-114 — Notification Administration (Stage 7). Lives inside
@@ -60,6 +61,76 @@ export class NotificationAdministrationService {
       toSkipTake(pagination),
     );
     return { items, meta: buildPaginationMeta(pagination, total) };
+  }
+
+  /** 21_ADRs > ADR-115 — Reports & Export (Stage 8). Calls the exact
+   * same `searchDeliveries` query `list` already uses (same filters, no
+   * new Prisma query), capped at `DEFAULT_EXPORT_ROW_CAP` rows instead
+   * of paginated, and records a read-access audit event — same
+   * precedent as `UserAdministrationService.exportCsv`. The nested
+   * `notification`/`notification.recipient` objects `searchDeliveries`
+   * returns are flattened into their own columns — `toCsv` reads flat
+   * `row[column]` values only. No `reason` — export is a read, not a
+   * mutation. */
+  async exportCsv(
+    filters: {
+      status?: NotificationDeliveryStatus;
+      channel?: NotificationChannel;
+      category?: NotificationCategory;
+      search?: string;
+    },
+    actorPersonId: string,
+    requestId: string,
+  ): Promise<string> {
+    const { items } = await this.notifications.searchDeliveries(filters, {
+      skip: 0,
+      take: DEFAULT_EXPORT_ROW_CAP,
+    });
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      action: 'NotificationDeliveryListExported',
+      entityType: 'NotificationDelivery',
+      entityId: 'search',
+      requestId,
+      metadata: { filters, rowCount: items.length },
+    });
+
+    const rows = items.map((item) => ({
+      id: item.id,
+      notificationId: item.notificationId,
+      channel: item.channel,
+      status: item.status,
+      sentAt: item.sentAt,
+      deliveredAt: item.deliveredAt,
+      failureReason: item.failureReason,
+      createdAt: item.createdAt,
+      notificationTitle: item.notification?.title ?? null,
+      notificationCategory: item.notification?.category ?? null,
+      notificationPriority: item.notification?.priority ?? null,
+      buildingId: item.notification?.buildingId ?? null,
+      recipientId: item.notification?.recipientId ?? null,
+      recipientFullName: item.notification?.recipient?.fullName ?? null,
+      recipientPhone: item.notification?.recipient?.phone ?? null,
+    }));
+
+    return toCsv(rows, [
+      'id',
+      'notificationId',
+      'channel',
+      'status',
+      'sentAt',
+      'deliveredAt',
+      'failureReason',
+      'createdAt',
+      'notificationTitle',
+      'notificationCategory',
+      'notificationPriority',
+      'buildingId',
+      'recipientId',
+      'recipientFullName',
+      'recipientPhone',
+    ]);
   }
 
   async getDetail(deliveryId: string) {

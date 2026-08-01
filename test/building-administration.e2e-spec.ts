@@ -493,6 +493,26 @@ describe('Building Administration (e2e) — Backoffice Building List/Detail/Lock
         .expect(404);
     });
 
+    it('21_ADRs > ADR-115 — /export rejects an unauthenticated caller (401)', async () => {
+      await request(app.getHttpServer()).get('/api/v1/backoffice/buildings/export').expect(401);
+    });
+
+    it('21_ADRs > ADR-115 — GET /export returns a CSV of the same filtered result set, gated by the same BUILDING_VIEW grant', async () => {
+      const res = await request(app.getHttpServer())
+        .get(
+          `/api/v1/backoffice/buildings/export?search=${encodeURIComponent(targetBuildingPostalCode)}`,
+        )
+        .set('Authorization', `Bearer ${reviewer.accessToken}`)
+        .expect(200);
+
+      expect(res.headers['content-type']).toContain('text/csv');
+      expect(res.text.split('\n')[0]).toBe(
+        'id,name,status,city,district,addressLine,postalCode,totalBlocks,totalUnits,recoveryModeEnteredAt,createdAt',
+      );
+      expect(res.text).toContain(targetBuildingId);
+      expect(res.text).toContain(targetBuildingPostalCode);
+    });
+
     it('revoking BUILDING_VIEW takes effect immediately — the route closes again, live and uncached', async () => {
       const activeGrant = await prisma.rolePermission.findFirst({
         where: { roleId: viewRoleId, permissionId: viewPermissionId, revokedAt: null },

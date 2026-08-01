@@ -156,4 +156,56 @@ describe('BuildingAdministrationService', () => {
       expect(result).toEqual({ buildingId: 'b1', status: 'VERIFIED' });
     });
   });
+
+  describe('exportCsv (ADR-115 — Reports & Export)', () => {
+    it('calls searchBuildings with skip:0 and the export row cap, and returns a CSV string', async () => {
+      backOffice.searchBuildings.mockResolvedValue({
+        items: [
+          {
+            id: 'b1',
+            name: 'Sunrise Towers',
+            status: 'VERIFIED',
+            city: 'Tehran',
+            district: 'District 1',
+            addressLine: '123 Main St',
+            postalCode: '1234567890',
+            totalBlocks: 2,
+            totalUnits: 40,
+            recoveryModeEnteredAt: null,
+            createdAt: new Date('2026-08-01T00:00:00.000Z'),
+          },
+        ],
+        total: 1,
+      });
+
+      const csv = await service.exportCsv({ status: 'VERIFIED' }, 'actor-1', 'req-1');
+
+      expect(backOffice.searchBuildings).toHaveBeenCalledWith(
+        { status: 'VERIFIED' },
+        { skip: 0, take: 5000 },
+      );
+      expect(csv.split('\n')[0]).toBe(
+        'id,name,status,city,district,addressLine,postalCode,totalBlocks,totalUnits,recoveryModeEnteredAt,createdAt',
+      );
+      expect(csv).toContain('b1');
+      expect(csv).toContain('Sunrise Towers');
+    });
+
+    it('records a BuildingListExported audit event with the filters and row count, no reason', async () => {
+      backOffice.searchBuildings.mockResolvedValue({ items: [{ id: 'b1' }], total: 1 });
+
+      await service.exportCsv({ status: 'VERIFIED' }, 'actor-1', 'req-1');
+
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: 'actor-1',
+          action: 'BuildingListExported',
+          entityType: 'Building',
+          entityId: 'search',
+          requestId: 'req-1',
+          metadata: { filters: { status: 'VERIFIED' }, rowCount: 1 },
+        }),
+      );
+    });
+  });
 });

@@ -4,6 +4,7 @@ import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
 import type { PaginationParams } from '../../../common/pagination/pagination.util';
 import { buildPaginationMeta, toSkipTake } from '../../../common/pagination/pagination.util';
+import { toCsv, DEFAULT_EXPORT_ROW_CAP } from '../../../common/csv/csv.util';
 
 /**
  * 21_ADRs > ADR-111 — User Administration (Stage 4). List/search/detail
@@ -30,6 +31,46 @@ export class UserAdministrationService {
   ) {
     const { items, total } = await this.backOffice.searchPersons(filters, toSkipTake(pagination));
     return { items, meta: buildPaginationMeta(pagination, total) };
+  }
+
+  /** 21_ADRs > ADR-115 — Reports & Export (Stage 8). Calls the exact
+   * same `searchPersons` query `list` already uses (same filters, no
+   * new Prisma query), capped at `DEFAULT_EXPORT_ROW_CAP` rows instead
+   * of paginated, and records a read-access audit event — the same
+   * "sensitive bulk data access is itself auditable" precedent
+   * `AuditController.export`'s own `AuditLogExported` action already
+   * established, generalized here. No `reason` — export is a read, not
+   * a mutation. */
+  async exportCsv(
+    filters: { search?: string; isSuspended?: boolean; isBackofficeApproved?: boolean },
+    actorPersonId: string,
+    requestId: string,
+  ): Promise<string> {
+    const { items } = await this.backOffice.searchPersons(filters, {
+      skip: 0,
+      take: DEFAULT_EXPORT_ROW_CAP,
+    });
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      action: 'UserListExported',
+      entityType: 'Person',
+      entityId: 'search',
+      requestId,
+      metadata: { filters, rowCount: items.length },
+    });
+
+    return toCsv(items, [
+      'id',
+      'phone',
+      'email',
+      'fullName',
+      'firstName',
+      'lastName',
+      'isSuspended',
+      'isBackofficeApproved',
+      'createdAt',
+    ]);
   }
 
   async getDetail(personId: string) {

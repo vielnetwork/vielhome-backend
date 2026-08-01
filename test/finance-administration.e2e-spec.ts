@@ -571,6 +571,24 @@ describe('Financial Administration (e2e) — Backoffice Payment List/Detail/Reve
         .expect(404);
     });
 
+    it('21_ADRs > ADR-115 — /export rejects an unauthenticated caller (401)', async () => {
+      await request(app.getHttpServer()).get('/api/v1/backoffice/payments/export').expect(401);
+    });
+
+    it('21_ADRs > ADR-115 — GET /export returns a CSV of the same filtered result set, gated by the same FINANCE_VIEW grant', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/backoffice/payments/export?search=${encodeURIComponent(manager.phone)}`)
+        .set('Authorization', `Bearer ${reviewer.accessToken}`)
+        .expect(200);
+
+      expect(res.headers['content-type']).toContain('text/csv');
+      expect(res.text.split('\n')[0]).toBe(
+        'id,buildingId,unitId,fundId,amount,method,status,reference,createdAt,payerId,payerFullName,payerPhone',
+      );
+      expect(res.text).toContain(paymentAId);
+      expect(res.text).toContain(manager.phone);
+    });
+
     it('revoking FINANCE_VIEW takes effect immediately — the route closes again, live and uncached', async () => {
       const activeGrant = await prisma.rolePermission.findFirst({
         where: { roleId: viewRoleId, permissionId: viewPermissionId, revokedAt: null },

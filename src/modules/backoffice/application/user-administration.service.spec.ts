@@ -144,4 +144,54 @@ describe('UserAdministrationService', () => {
       expect(result).toEqual({ personId: 'p1', isSuspended: false });
     });
   });
+
+  describe('exportCsv (ADR-115 — Reports & Export)', () => {
+    it('calls searchPersons with skip:0 and the export row cap, and returns a CSV string', async () => {
+      backOffice.searchPersons.mockResolvedValue({
+        items: [
+          {
+            id: 'p1',
+            phone: '+989120000099',
+            email: 'a@example.com',
+            fullName: 'Alice',
+            firstName: 'Alice',
+            lastName: null,
+            isSuspended: false,
+            isBackofficeApproved: true,
+            createdAt: new Date('2026-08-01T00:00:00.000Z'),
+          },
+        ],
+        total: 1,
+      });
+
+      const csv = await service.exportCsv({ search: 'alice' }, 'actor-1', 'req-1');
+
+      expect(backOffice.searchPersons).toHaveBeenCalledWith(
+        { search: 'alice' },
+        { skip: 0, take: 5000 },
+      );
+      expect(csv.split('\n')[0]).toBe(
+        'id,phone,email,fullName,firstName,lastName,isSuspended,isBackofficeApproved,createdAt',
+      );
+      expect(csv).toContain('p1');
+      expect(csv).toContain('+989120000099');
+    });
+
+    it('records a UserListExported audit event with the filters and row count, no reason', async () => {
+      backOffice.searchPersons.mockResolvedValue({ items: [{ id: 'p1' }], total: 1 });
+
+      await service.exportCsv({ search: 'alice' }, 'actor-1', 'req-1');
+
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: 'actor-1',
+          action: 'UserListExported',
+          entityType: 'Person',
+          entityId: 'search',
+          requestId: 'req-1',
+          metadata: { filters: { search: 'alice' }, rowCount: 1 },
+        }),
+      );
+    });
+  });
 });
