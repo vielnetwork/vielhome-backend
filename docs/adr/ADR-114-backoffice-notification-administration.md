@@ -1,6 +1,6 @@
 # ADR-114 — Backoffice Notification Administration
 
-**Status:** Proposed — pending the operator's real build/unit/e2e verification run
+**Status:** Accepted — Closed (2026-08-01)
 **Context area:** 21_ADRs (Backend / Backoffice), Operational Readiness — Stage 7 of the Backoffice completion roadmap
 **Related:** ADR-098/ADR-099 (Backoffice RBAC Foundation), ADR-060 (Notification Templates — the `NOTIFICATION_TEMPLATE_VIEW`/`MANAGE` pair this ADR's own pair is deliberately distinct from), ADR-039/ADR-088 (real async BullMQ dispatch + real Email/SMS/Push providers — the mechanism `resend` re-drives), ADR-102 (Backoffice Permission Migration Completion — the one-VIEW/MANAGE-pair-per-domain convention this stage follows), ADR-111/ADR-112/ADR-113 (User/Building/Financial Administration — Stage 4/5/6, the direct structural precedent this stage mirrors, with one deliberate module-placement deviation — see Decision below)
 
@@ -66,7 +66,7 @@ No change to `BackOfficeModule`, `BackOfficeRepository`, or any file under `src/
 
 - `src/modules/notifications/application/notifications.service.spec.ts` — **new file**; `NotificationsService` itself predates this stage and had no prior unit spec, so this file is deliberately scoped to `resendDelivery` only (the single new method this stage adds), not a retroactive full-coverage spec for the rest of the class — that pre-existing gap is residual debt this stage inherits but does not introduce (see Risks below). Covers: the happy path (FAILED → reset + re-enqueue with no `jobId`, correct return shape); `NotFoundAppError` on a missing delivery; `BusinessRuleViolationError` for each of `PENDING`/`SENT`/`DELIVERED` (i.e. every non-`FAILED` status, via `it.each`) — and in every rejection case, neither the repository reset nor the queue `add` is called.
 - `src/modules/notifications/application/notification-administration.service.spec.ts` — **new file**; `NotificationRepository`/`NotificationsService`/`AuditService` all fully mocked. Covers: `list`/`getDetail` pass filters/pagination through unmodified and `getDetail` 404s on an unknown id; `resend` delegates the mutation to `NotificationsService.resendDelivery` (never touches the repository's mutation method directly) and only records the `NotificationDeliveryResentByAdmin` audit entry (with the real `reason`, correct `metadata.channel`/`previousStatus`) after that call succeeds — including an explicit test that a rejected resend records **no** audit entry at all, and a test that a `buildingId: null` delivery is audited with `buildingId: undefined` (not `null`), matching this repository's own `??` convention elsewhere.
-- `test/notification-administration.e2e-spec.ts` — **new file**; the first e2e coverage either new key has ever had. Two independent 401/403×2/403-no-grant/granted-live/revoked-live blocks (List & Detail on `NOTIFICATION_DELIVERY_VIEW`, Resend on `NOTIFICATION_DELIVERY_MANAGE`), against two `NotificationDelivery` rows seeded directly via Prisma (one `FAILED`, one already `SENT`) — direct seeding, not a real dispatch failure, since reaching a genuine `FAILED` delivery through the real pipeline would require an actual provider to exhaust three real BullMQ retries, not a practical or deterministic e2e setup. Functional assertions: `search`/`status` filter/paginate correctly; the detail response's shape; 404 on an unknown `deliveryId` (both list-detail and resend); a missing `reason` 400s on resend; resending the already-`SENT` delivery 422s (`BUSINESS_RULE_VIOLATION`) before ever touching the `FAILED` one; resending the `FAILED` delivery flips its `status` to `PENDING` and clears `failureReason` (verified via a direct `prisma.notificationDelivery.findUnique` read, the same technique `finance-administration.e2e-spec.ts` itself uses for its own reverse/refund assertions) and records `NotificationDeliveryResentByAdmin` with the real reason; and resending that same delivery again immediately afterward (now `PENDING`, not `FAILED`) correctly 422s again — the state-guard-as-idempotency-protection behavior the Decision section above describes.
+- `test/notification-administration.e2e-spec.ts` — **new file**; the first e2e coverage either new key has ever had. Two independent 401/403×2/403-no-grant/granted-live/revoked-live blocks (List & Detail on `NOTIFICATION_DELIVERY_VIEW`, Resend on `NOTIFICATION_DELIVERY_MANAGE`), against two `NotificationDelivery` rows seeded directly via Prisma (one `FAILED`, one already `SENT`) — direct seeding, not a real dispatch failure, since reaching a genuine `FAILED` delivery through the real pipeline would require an actual provider to exhaust three real BullMQ retries, not a practical or deterministic e2e setup. Functional assertions: `search`/`status` filter/paginate correctly; the detail response's shape; 404 on an unknown `deliveryId` (both list-detail and resend); a missing `reason` 400s on resend; resending the already-`SENT` delivery 422s (`BUSINESS_RULE_VIOLATION`) before ever touching the `FAILED` one; resending the `FAILED` delivery flips its `status` to `PENDING` and clears `failureReason` (verified via a direct `prisma.notificationDelivery.findUnique` read, the same technique `finance-administration.e2e-spec.ts` itself uses for its own reverse/refund assertions) and records `NotificationDeliveryResentByAdmin` with the real reason; and resending that same delivery again immediately afterward (now `PENDING`, not `FAILED`) correctly 422s again — the state-guard-as-idempotency-protection behavior the Decision section above describes. The list/search assertion filters by the fixture notification's own RUN_ID-scoped **title**, not the recipient's phone — see Final Verification below for why a phone-based search, while functioning exactly as designed, is the wrong dimension for this specific assertion's fixture.
 
 ## Build / Unit / E2E Verification
 
@@ -79,6 +79,76 @@ No change to `BackOfficeModule`, `BackOfficeRepository`, or any file under `src/
 - `npm run test:e2e` was **not** run in this sandbox — `NOTIFICATION_DELIVERY_VIEW`/`NOTIFICATION_DELIVERY_MANAGE` do not yet exist in the operator's real Postgres `PermissionKey` enum (only the local, type-only `.d.ts` hand-patch exists), so seeding a `Permission` row with either key would fail against the real database until the operator's own `npx prisma migrate dev` actually applies the new migration. Running e2e before that migration is applied would not be a meaningful signal — it is expected to fail for a reason entirely unrelated to this stage's code. Separately, no reachable Postgres/Redis exists in this sandbox at all (established since ADR-110).
 
 **The operator must, in order, on their own machine:** `npx prisma migrate dev` (generates and applies the new migration adding `NOTIFICATION_DELIVERY_VIEW`/`NOTIFICATION_DELIVERY_MANAGE` to the real `PermissionKey` enum), `npx prisma generate` (this overwrites the local hand-patch above with the real generated client — expected and fine), `npm run db:seed:rbac` (idempotent — grants both new keys to `Technical Admin`), then `npm run build`, `npm test`, `npm run test:e2e`. This ADR is not Closed until that full sequence is confirmed green (or any failure has been triaged per the roadmap's own Verification Gate — isolated rerun, root-cause, compare against ADR-107's known patterns, before attributing anything to this stage).
+
+## Final Verification (Closure Gate)
+
+The operator ran the full real sequence in order: `npx prisma migrate dev` (created and applied
+`20260801144912_add_notification_delivery_permissions`, adding `NOTIFICATION_DELIVERY_VIEW`/
+`NOTIFICATION_DELIVERY_MANAGE` to the real `PermissionKey` enum), `npx prisma generate` (overwrote
+the sandbox's local hand-patch as expected), `npm run db:seed:rbac`, then `npm run build`, `npm
+test`, `npm run test:e2e`.
+
+**First real e2e run: one failure, entirely inside this stage's own new file** —
+`test/notification-administration.e2e-spec.ts`'s list/search assertion (9 other suites passed
+clean; `test/governance.e2e-spec.ts` also failed, in a file this stage never touched — see below).
+Per the roadmap's own Verification Gate, the in-scope failure was root-caused here rather than
+deferred, and the out-of-scope one was isolated-rerun before any conclusion was drawn.
+
+**Root-cause investigation (`test/notification-administration.e2e-spec.ts`).** The failing
+assertion searched by the fixture recipient's own phone number and expected exactly the two
+directly-seeded fixture deliveries back. Three rounds of hypothesis-driven diagnostics were run
+against the operator's real database before concluding anything:
+
+1. An isolated single-file rerun with `--runInBand` (eliminating any cross-suite concurrent-load
+   theory) reproduced the identical failure shape — ruling out ADR-107-style transient/pollution
+   as the cause for this file.
+2. A standalone throwaway script (real `PrismaClient`, real fixture, query logging via
+   `$on('query', ...)`) reproduced `searchDeliveries`'s exact `where`-clause construction in
+   isolation and found it worked correctly — proving the query logic itself was not defective.
+3. Three temporary `console.log` markers (tagged `TEMP-ADR-114-DIAG`, added only to
+   `NotificationRepository.searchDeliveries`, never committed) logged the real `filters` received
+   from the live HTTP request, the constructed `where` object, and the query's actual `total`/`ids`
+   from inside the running app. This proved the filter *was* being applied correctly — with
+   `total: 11`, not `2`.
+
+**The real cause: a test-fixture design flaw, not a production defect.** `search`'s `OR` clause
+correctly matches on `notification.recipient.phone` by design — a staff member searching "everything
+sent to this person" is exactly the intended behavior. But the suite's own `plainPerson` fixture is
+created via the real `registerPerson()`/OTP-verify flow, which triggers real registration-side-effect
+notifications (a welcome notification, an XP-award notification, etc. — see
+`NotificationEventListener`) for that same recipient. A phone-based search therefore correctly
+returned all 11 notifications ever sent to that person, not just the 2 this suite directly seeded;
+with `ORDER BY createdAt DESC LIMIT 10`, the older of the two fixture deliveries fell outside the
+page window. **`searchDeliveries`, `NotificationAdministrationService`, and the controller needed
+zero changes** — only the test's own assertion was wrong to assume phone-based search would return a
+closed set of exactly two rows.
+
+**Fix:** the test's list/search assertions now search by the fixture notification's own
+RUN_ID-scoped, suite-unique title (`ADR-114 e2e Notification ${RUN_ID}`) instead of the recipient's
+phone — a dimension no other notification in the database can coincidentally share — and additionally
+assert `pagination.total === 2` (list) / `1` (the `status=FAILED`-filtered call), closing the loop so
+a future regression that widens the match set again would fail loudly instead of silently.
+
+**Final results, after the fix:**
+
+- Isolated rerun of `test/notification-administration.e2e-spec.ts` alone — **16/16 passed**.
+- `npm run build` — succeeded.
+- `npm test` (full suite) — **595/595 passed, 50/50 suites**.
+- `npm run test:e2e` (full suite) — **714/714 passed, 29/29 suites**, including both
+  `test/notification-administration.e2e-spec.ts` and `test/governance.e2e-spec.ts` — confirming the
+  Governance failure in the first run was exactly the transient it looked like (that suite passed
+  41/41 in its own isolated rerun earlier, and passed again here in a full, unmodified run), not a
+  regression this stage introduced. No changes were made to `src/modules/governance/` or the auth
+  flow at any point.
+- All three `TEMP-ADR-114-DIAG` diagnostic lines were removed from
+  `NotificationRepository.searchDeliveries`; `grep -Rni "TEMP-ADR-114-DIAG" src test` confirmed zero
+  matches before this closing commit. The throwaway standalone diagnostic script was never staged or
+  committed.
+
+ADR-114 is CLOSED on this basis: production code required no fix; the one real bug found was
+entirely inside this stage's own e2e fixture design, root-caused via direct evidence rather than
+guesswork, and is now closed with a regression guard (the `total` assertions) that would catch a
+recurrence.
 
 ## Non-Goals (Phase 1)
 

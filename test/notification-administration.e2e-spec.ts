@@ -388,9 +388,21 @@ describe('Notification Administration (e2e) — Backoffice Delivery List/Detail/
         data: { roleId: viewRoleId, permissionId: viewPermissionId },
       });
 
+      // Search by the notification's own RUN_ID-scoped title, not the
+      // recipient's phone. `search`'s OR also matches on
+      // `notification.recipient.phone` (by design — a staff member
+      // legitimately wants to find "everything sent to this person"), and
+      // real registration-flow side effects (welcome notification, XP
+      // award, etc. — see NotificationEventListener) send this same
+      // plainPerson several OTHER notifications during `registerPerson()`.
+      // A phone-based search is therefore correctly broader than "just my
+      // two seeded deliveries" — proven by a real toolchain run that
+      // returned `total: 11` for this exact recipient, not 2. The title is
+      // unique to this suite's own fixture, so it is the correct dimension
+      // to assert an exact, closed set of results against.
       const listRes = await request(app.getHttpServer())
         .get(
-          `/api/v1/backoffice/notifications?search=${encodeURIComponent(plainPerson.phone)}&page=1&limit=10`,
+          `/api/v1/backoffice/notifications?search=${encodeURIComponent(`ADR-114 e2e Notification ${RUN_ID}`)}&page=1&limit=10`,
         )
         .set('Authorization', `Bearer ${reviewer.accessToken}`)
         .expect(200);
@@ -399,17 +411,18 @@ describe('Notification Administration (e2e) — Backoffice Delivery List/Detail/
       const ids = listRes.body.data.map((d: { id: string }) => d.id);
       expect(ids).toEqual(expect.arrayContaining([deliveryFailedId, deliverySentId]));
       expect(listRes.body.metadata.pagination).toEqual(
-        expect.objectContaining({ page: 1, limit: 10, total: expect.any(Number) }),
+        expect.objectContaining({ page: 1, limit: 10, total: 2 }),
       );
 
       const filteredRes = await request(app.getHttpServer())
         .get(
-          `/api/v1/backoffice/notifications?search=${encodeURIComponent(plainPerson.phone)}&status=FAILED&page=1&limit=10`,
+          `/api/v1/backoffice/notifications?search=${encodeURIComponent(`ADR-114 e2e Notification ${RUN_ID}`)}&status=FAILED&page=1&limit=10`,
         )
         .set('Authorization', `Bearer ${reviewer.accessToken}`)
         .expect(200);
       const filteredIds = filteredRes.body.data.map((d: { id: string }) => d.id);
       expect(filteredIds).toEqual([deliveryFailedId]);
+      expect(filteredRes.body.metadata.pagination.total).toBe(1);
 
       const detailRes = await request(app.getHttpServer())
         .get(`/api/v1/backoffice/notifications/${deliveryFailedId}`)
