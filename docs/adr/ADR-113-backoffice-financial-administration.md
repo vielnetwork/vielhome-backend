@@ -1,6 +1,6 @@
 # ADR-113 — Backoffice Financial Administration
 
-**Status:** Proposed — pending the operator's real build/unit/e2e verification run
+**Status:** Accepted — Closed (2026-08-01)
 **Context area:** 21_ADRs (Backend / Backoffice), Operational Readiness — Stage 6 of the Backoffice completion roadmap
 **Related:** ADR-098 (Backoffice RBAC Foundation — reserved the `FINANCE_VIEW`/`FINANCE_REFUND` keys this ADR is the first to actually wire to a route), ADR-037 (Payment Reversal & Refund — `FinanceService.reversePayment`/`refundPayment`'s original, still-sole in-building caller, `FinanceController`), ADR-111/ADR-112 (User/Building Administration — Stage 4/5, the direct structural precedent this stage mirrors, with one deliberate deviation — see Decision below)
 
@@ -63,7 +63,19 @@ This stage introduces zero schema/migration changes, so no Prisma-client hand-pa
 - `npm run build` — succeeded (after moving aside a stale `dist/` directory the mounted filesystem could not overwrite in place, the same recurring device-bridge quirk noted since ADR-110).
 - `npm run test:e2e` was **not** run in this sandbox — no reachable Postgres/Redis in this sandbox's `device_bash` shell (established during ADR-110's own closure triage).
 
-**The operator still needs to run the real verification stack** (`npm run build`, `npm test`, `npm run test:e2e`) on their own machine before this ADR can move to Closed.
+**The operator ran the real verification stack** (`npm run build`, `npm test`, `npm run test:e2e`) on their own machine:
+
+## Final Verification (Closure Gate)
+
+- `npm run build` — succeeded.
+- `npm test` (full suite) — **584/584 passed, 48/48 suites**.
+- `npm run test:e2e` (first real run) — **698/698 passed, 28/28 suites, zero failures**, including
+  `test/finance-administration.e2e-spec.ts` itself and every other suite. No bug found, no unrelated
+  transient observed — the second consecutive clean first-pass closure in this roadmap (after
+  ADR-112's own post-fix re-run), and the first stage where the *initial* real e2e run itself came
+  back fully green with no fix cycle needed at all.
+
+ADR-113 is CLOSED on this basis: its own code and both test suites (unit + e2e) are fully green.
 
 ## Non-Goals (Phase 1)
 
