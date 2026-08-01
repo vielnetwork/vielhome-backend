@@ -222,7 +222,10 @@ export class FinanceService {
     return {
       items: units
         .filter((u) => u.areaSqm && u.areaSqm > 0)
-        .map((u) => ({ unitId: u.id, amount: Math.round(dto.ratePerSqm! * (u.areaSqm as number)) })),
+        .map((u) => ({
+          unitId: u.id,
+          amount: Math.round(dto.ratePerSqm! * (u.areaSqm as number)),
+        })),
       effectiveUnitScope,
     };
   }
@@ -386,7 +389,9 @@ export class FinanceService {
       validationWarnings.push(`${noOwnerCount} unit(s) have no current owner on record.`);
     }
     if (previewItems.length === 0) {
-      validationWarnings.push('No units matched the requested scope — this batch would have zero items.');
+      validationWarnings.push(
+        'No units matched the requested scope — this batch would have zero items.',
+      );
     }
 
     return {
@@ -632,7 +637,13 @@ export class FinanceService {
 
     this.events.emit(
       'AdjustmentCreated',
-      new AdjustmentCreatedEvent(adjustment.id, buildingId, unitId, eligibility.amount, actorPersonId),
+      new AdjustmentCreatedEvent(
+        adjustment.id,
+        buildingId,
+        unitId,
+        eligibility.amount,
+        actorPersonId,
+      ),
     );
 
     return adjustment;
@@ -870,13 +881,29 @@ export class FinanceService {
     return rejected;
   }
 
-  /** Undoes an erroneous/bounced/fraudulent APPROVED payment (08.06 Rule 010/014 — see 21_ADRs > ADR-037). */
+  /**
+   * Undoes an erroneous/bounced/fraudulent APPROVED payment (08.06 Rule
+   * 010/014 — see 21_ADRs > ADR-037).
+   *
+   * 21_ADRs > ADR-113 — `options.auditAction` lets a second caller (the
+   * Backoffice Financial Administration endpoint, gated by
+   * `FINANCE_REFUND` rather than a building membership role) reuse this
+   * exact method — same policy check, same repository mutation, same
+   * event emission (so payer notification/gamification effects fire
+   * identically regardless of who initiated the reversal) — while still
+   * recording a distinctly-named audit action
+   * (`PaymentReversedByAdmin`) so the Audit Center can always tell a
+   * staff-direct override apart from this in-building workflow's own
+   * `PaymentReversed`. Omitting it (every existing call site) preserves
+   * the exact pre-ADR-113 behavior.
+   */
   async reversePayment(
     buildingId: string,
     paymentId: string,
     dto: ReversePaymentDto,
     actorPersonId: string,
     requestId: string,
+    options?: { auditAction?: string },
   ) {
     const payment = await this.getOwnPayment(buildingId, paymentId);
     this.paymentPolicy.assertReversible(payment.status);
@@ -893,7 +920,7 @@ export class FinanceService {
     await this.audit.record({
       actorId: actorPersonId,
       buildingId,
-      action: 'PaymentReversed',
+      action: options?.auditAction ?? 'PaymentReversed',
       entityType: 'Payment',
       entityId: paymentId,
       requestId,
@@ -915,13 +942,20 @@ export class FinanceService {
     return reversed;
   }
 
-  /** Returns cash to the payer on a valid, already-APPROVED payment (08.06 Rules 010/013/015 — see 21_ADRs > ADR-037). */
+  /**
+   * Returns cash to the payer on a valid, already-APPROVED payment (08.06
+   * Rules 010/013/015 — see 21_ADRs > ADR-037).
+   *
+   * 21_ADRs > ADR-113 — `options.auditAction`, same reuse-with-a-
+   * distinct-audit-name shape as `reversePayment` above.
+   */
   async refundPayment(
     buildingId: string,
     paymentId: string,
     dto: RefundPaymentDto,
     actorPersonId: string,
     requestId: string,
+    options?: { auditAction?: string },
   ) {
     const payment = await this.getOwnPayment(buildingId, paymentId);
     const existingRefunds = await this.finance.findRefundsByPayment(paymentId);
@@ -948,7 +982,7 @@ export class FinanceService {
     await this.audit.record({
       actorId: actorPersonId,
       buildingId,
-      action: 'PaymentRefunded',
+      action: options?.auditAction ?? 'PaymentRefunded',
       entityType: 'Payment',
       entityId: paymentId,
       requestId,

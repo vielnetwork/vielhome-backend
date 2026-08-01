@@ -190,6 +190,20 @@ this section is a map, not a replacement for those.
   competing flag; each action is audited under its own name
   (`BuildingLockedByAdmin`/`BuildingReinstatedByAdmin`), distinct from
   either of those two workflows' own audit trails.
+- **Backoffice Financial Administration** (`ADR-113`): `GET
+  /api/v1/backoffice/payments` (paginated, `search`/`status`/`buildingId`
+  filters, the first payment query with no building scope required) and
+  `GET /api/v1/backoffice/payments/:id` (`FINANCE_VIEW`) plus `POST
+  /api/v1/backoffice/payments/:id/reverse`/`/refund` (`FINANCE_REFUND`,
+  mandatory `reason`) — the first real routes either three-stage-old
+  reserved permission key has ever had. Unlike User/Building
+  Administration's own direct-repository-call shape, these two actions
+  call the full `FinanceService.reversePayment`/`refundPayment` directly
+  (a small additive `options.auditAction` parameter lets the audit trail
+  still distinguish this staff-direct path — `PaymentReversedByAdmin`/
+  `PaymentRefundedByAdmin` — from the in-building one), so the same real
+  payer notification and Gamification score effect fire regardless of who
+  initiated the reversal/refund.
 - **Git / Migrations** (`ADR-063`): a real Git repository, tagged
   `v1.0-api-contract`; `prisma/migrations/0_baseline_v1_freeze/` — a real,
   committed baseline migration (the user's own local run against a real dev

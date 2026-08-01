@@ -15,6 +15,7 @@ import { LegalHoldController } from './controller/legal-hold.controller';
 import { PersonAccessController } from './controller/person-access.controller';
 import { UserAdministrationController } from './controller/user-administration.controller';
 import { BuildingAdministrationController } from './controller/building-administration.controller';
+import { FinanceAdministrationController } from './controller/finance-administration.controller';
 import { BuildingVerificationService } from './application/building-verification.service';
 import { ManagerVerificationService } from './application/manager-verification.service';
 import { FraudCaseService } from './application/fraud-case.service';
@@ -25,6 +26,7 @@ import { LegalHoldService } from './application/legal-hold.service';
 import { PersonAccessService } from './application/person-access.service';
 import { UserAdministrationService } from './application/user-administration.service';
 import { BuildingAdministrationService } from './application/building-administration.service';
+import { FinanceAdministrationService } from './application/finance-administration.service';
 import { BackOfficeEventListener } from './application/backoffice-event-listener.service';
 import { BackOfficeRepository } from './infrastructure/repositories/backoffice.repository';
 import { BuildingVerificationPolicy } from './domain/policies/building-verification.policy';
@@ -38,6 +40,7 @@ import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { MembershipGuard } from '../../common/guards/membership.guard';
 import { BuildingModule } from '../building/building.module';
+import { FinanceModule } from '../finance/finance.module';
 import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
 
 @Module({
@@ -53,7 +56,12 @@ import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module'
   // to import here (no cycle): `BackofficeRbacModule` was changed as
   // part of this same ADR to depend on `PlatformStaffModule` instead of
   // this module, specifically to make this import possible.
-  imports: [BuildingModule, BackofficeRbacModule],
+  // 21_ADRs > ADR-113 additionally imports `FinanceModule` — it already
+  // exports both `FinanceService` and `FinanceRepository` (for its own
+  // reasons, unrelated to this stage), which `FinanceAdministrationService`
+  // needs to reuse the existing payment reversal/refund logic rather than
+  // reimplement it.
+  imports: [BuildingModule, FinanceModule, BackofficeRbacModule],
   controllers: [
     BuildingVerificationController,
     BuildingVerificationAppealController,
@@ -71,6 +79,7 @@ import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module'
     PersonAccessController,
     UserAdministrationController,
     BuildingAdministrationController,
+    FinanceAdministrationController,
   ],
   providers: [
     BuildingVerificationService,
@@ -83,6 +92,7 @@ import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module'
     PersonAccessService,
     UserAdministrationService,
     BuildingAdministrationService,
+    FinanceAdministrationService,
     BackOfficeEventListener,
     BackOfficeRepository,
     BuildingVerificationPolicy,

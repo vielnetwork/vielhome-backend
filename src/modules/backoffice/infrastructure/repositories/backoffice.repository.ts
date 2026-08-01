@@ -14,6 +14,7 @@ import type {
   ManagerVerificationDecision,
   ManagerVerificationSource,
   ManagerVerificationStatus,
+  PaymentStatus,
   SubscriptionFeatureKey,
   SubscriptionPlan,
   SubscriptionStatus,
@@ -678,6 +679,111 @@ export class BackOfficeRepository {
             startedAt: true,
             person: { select: { id: true, fullName: true, phone: true } },
           },
+        },
+      },
+    });
+  }
+
+  // --- Financial Administration (21_ADRs > ADR-113, Stage 6) ---------------
+  // `FINANCE_VIEW`/`FINANCE_REFUND` were reserved since ADR-098 (granted to
+  // Finance Admin, plus every key to Super Admin) but never wired to a real
+  // route — same reserved-but-unused shape `USER_VIEW`/`USER_EDIT` and
+  // `BUILDING_VIEW`/`BUILDING_EDIT` had before ADR-111/ADR-112. Unlike
+  // those two, the reversal/refund mutations themselves are NOT
+  // reimplemented here — `FinanceAdministrationService` calls
+  // `FinanceService.reversePayment`/`refundPayment` directly (see
+  // ADR-113), because those methods' own event emission drives real payer
+  // notifications and gamification effects this stage must not silently
+  // drop. Only the cross-building list/search/detail reads are new,
+  // staff-facing queries, added here rather than in `FinanceRepository`
+  // to keep the "Backoffice-facing query lives in `BackOfficeRepository`"
+  // convention `searchPersons`/`searchBuildings` already established.
+
+  /** Cross-building staff list/search over `Payment` — `FinanceRepository
+   * .listPayments`/`listPaymentsByUnit` are both single-building-scoped
+   * (the in-building Finance module's own routes never needed anything
+   * broader); this is the first payment query with no building filter
+   * required. `search` matches the payer's phone/full name or the
+   * payment's own `reference`/`note` (case-insensitive `contains`);
+   * `status`/`buildingId` are exact-match filters. All optional. */
+  async searchPayments(
+    filters: { search?: string; status?: PaymentStatus; buildingId?: string },
+    pagination: { skip: number; take: number },
+  ) {
+    const where = {
+      status: filters.status,
+      buildingId: filters.buildingId,
+      ...(filters.search
+        ? {
+            OR: [
+              { reference: { contains: filters.search, mode: 'insensitive' as const } },
+              { note: { contains: filters.search, mode: 'insensitive' as const } },
+              {
+                payer: {
+                  OR: [
+                    { phone: { contains: filters.search, mode: 'insensitive' as const } },
+                    { fullName: { contains: filters.search, mode: 'insensitive' as const } },
+                  ],
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        select: {
+          id: true,
+          buildingId: true,
+          unitId: true,
+          fundId: true,
+          amount: true,
+          method: true,
+          status: true,
+          reference: true,
+          createdAt: true,
+          payer: { select: { id: true, fullName: true, phone: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+    return { items, total };
+  }
+
+  /** Staff-facing detail view — payment fields plus basic building/payer
+   * context and the full refund history for this payment. Deliberately
+   * does NOT include this building's own ledger/adjustment history — the
+   * in-building Finance module already owns that view, matching ADR-110's/
+   * ADR-111's/ADR-112's own "don't reimplement another domain's job"
+   * discipline. */
+  getPaymentAdminDetail(paymentId: string) {
+    return this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      select: {
+        id: true,
+        buildingId: true,
+        building: { select: { id: true, name: true } },
+        unitId: true,
+        fundId: true,
+        payerId: true,
+        payer: { select: { id: true, fullName: true, phone: true } },
+        amount: true,
+        method: true,
+        status: true,
+        reference: true,
+        note: true,
+        approvedById: true,
+        approvedAt: true,
+        rejectedReason: true,
+        reversedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        refunds: {
+          select: { id: true, amount: true, reason: true, createdById: true, createdAt: true },
         },
       },
     });
