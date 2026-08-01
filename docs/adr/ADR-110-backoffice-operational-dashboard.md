@@ -1,6 +1,6 @@
 # ADR-110 — Backoffice Operational Dashboard
 
-**Status:** Accepted — Closed (2026-08-01)
+**Status:** Accepted — Pending Closure (2026-08-01) — one unrelated e2e item (see Final Verification below) needs an isolated rerun before this can be marked Closed
 **Context area:** 21_ADRs (Backend / Backoffice), Operational Readiness — Stage 3 of the Backoffice completion roadmap
 **Related:** ADR-108 (Monitoring & System Health — Stage 1, this stage directly reuses `MonitoringService.getOverview()` for its own `systemHealth` section), ADR-109 (Maintenance Mode & Feature Flags — Stage 2), ADR-099/ADR-102 (VIEW/MANAGE permission-pair convention), ADR-034 (Audit & Compliance Center — the full-detail audit search this dashboard's own "recent critical events" widget deliberately does not replace), ADR-107 (E2E cleanup discipline — this ADR's own e2e suite follows its shared-fixture, no-exact-count-assertion rules)
 
@@ -88,7 +88,52 @@ Unlike ADR-109 (which added two entirely new Prisma models and judged the local 
 
 **The operator must, in order, on their own machine:** `npx prisma migrate dev` (applies `20260801150000_add_dashboard_view_permission`), `npx prisma generate` (this overwrites the local hand-patch above with the real generated client — expected and fine), `npm run db:seed:rbac` (idempotent), then `npm run build`, `npm test`, `npm run test:e2e`. This ADR is not Closed until that full sequence is confirmed green (or any failure has been triaged per the roadmap's own Verification Gate — isolated rerun, root-cause, compare against ADR-107's known patterns, before attributing anything to this stage).
 
+## Final Verification (Closure Gate) — Pending One Triage Item
+
+The operator ran the real verification stack (their own Postgres/Redis) after applying this stage's changes:
+
+- `npx prisma migrate dev` — applied `20260801150000_add_dashboard_view_permission` successfully.
+- `npx prisma generate` — succeeded (overwrote this sandbox's local hand-patch, as expected).
+- `npm run db:seed:rbac` — succeeded.
+- `npm run build` — succeeded.
+- `npm test` (full suite) — **561/561 passed, 45/45 suites**, including all 10 new `dashboard.service.spec.ts` tests.
+- `npm run test:e2e` — **653/655 passed, 23/25 suites**, with exactly two failures:
+  1. **`test/dashboard.e2e-spec.ts` — "never leaks AuditLog.metadata..."**: a real, deterministic bug in this
+     stage's own e2e test, not a transient and not a security defect. The assertion serialized the *entire*
+     `res.body` and checked it never contains the string `"metadata"` — but this codebase's standard
+     `ResponseInterceptor` envelope always carries its own top-level `metadata` field (e.g. `null`), unrelated to
+     `AuditLog.metadata`, on every single response regardless of endpoint. The test's own blanket regex matched
+     that harmless envelope key. Fixed in commit `c665903` by scoping the check to `res.body.data` only, where
+     the real assertion belongs — the actual "no `AuditLog.metadata` leak" guarantee remains independently
+     verified per-event in the preceding "well-shaped overview" test (`expect(event).not.toHaveProperty('metadata')`).
+     No production code changed.
+  2. **`test/gamification.e2e-spec.ts` — "granting GAMIFICATION_ANALYTICS_VIEW takes effect immediately"**: failed
+     with `expected 200, got 404` during this same full run. This file is **untouched by this stage** — no shared
+     module, controller path, permission key, or seed entry overlaps between `dashboard`/`ADR-110` and
+     `gamification`/`ADR-079`/`ADR-102`'s own Gamification Analytics migration. Per the roadmap's own Verification
+     Gate ("do not immediately attribute a full-suite failure to the current stage — isolated rerun, root-cause,
+     compare against ADR-107 first"), this was **not** attributed to ADR-110. An isolated rerun of this one file
+     was attempted from this sandbox but could not be completed — this sandbox's `device_bash` shell has no
+     reachable Postgres/Redis (`ECONNREFUSED 127.0.0.1:6379`) even against the operator's own machine, a tooling
+     limitation discovered during this triage, distinct from anything ADR-107 catalogues. A 404 (route not found)
+     rather than a 403 (permission denied) is an unusual shape for what this test otherwise expects to be a
+     pure-RBAC assertion, which does not match any pattern ADR-107 has previously recorded (all of ADR-107's own
+     entries are FK/cleanup-race `PrismaClientKnownRequestError`s during `afterAll`, not mid-test HTTP-status
+     mismatches). **This item is not yet closed** — see the immediate follow-up requested below.
+
+**Outstanding before this ADR is fully Closed:** the operator needs to run `npx jest --config
+./test/jest-e2e.json test/gamification.e2e-spec.ts` in isolation (no concurrently-running suites) on their own
+machine. If it passes cleanly in isolation, this confirms a shared-fixture/concurrency artifact of the kind
+ADR-107 already documents as a systemic property of this test setup (many suites against one shared dev
+database) — in which case it will be recorded as a new ADR-107 addendum entry (a previously-uncatalogued 404
+symptom) and this ADR closes on that basis. If it reproduces in isolation, it is a real, independent bug
+unrelated to this stage's own change set and will be investigated as its own item, not blocking ADR-110's
+closure (since ADR-110's own code and tests are otherwise fully verified above), but tracked before the roadmap
+proceeds to Stage 4.
+
 ## Non-Goals (Phase 1)
+
+
 
 Explicitly out of scope for this ADR, listed exhaustively:
 
