@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-085 — Testing Phase 4f: Audit & Compliance Center
 // (BackOffice, the sixth and final sub-domain).
@@ -80,9 +81,14 @@ import type { AppConfig } from '../src/config/configuration';
 // Reuses `deleteFraudArtifactsOnceBatch`'s own FraudCase/EnforcementAction
 // deletion shape (copied, not imported, per every prior file's own
 // no-cross-file-imports-between-test-files discipline) since describe 2
-// creates those too. `RUN_ID` continues mixing in `process.pid`
-// (`ADR-073`'s own round-1 fix).
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+// creates those too. `RUN_ID` now comes from the centralized
+// `createE2eRunId` helper (`test/helpers/e2e-identity.ts`, ADR-107
+// closure follow-up) instead of mixing in `process.pid` — slicing a PID
+// to its last two digits never actually guaranteed cross-process
+// uniqueness; the new helper assigns this suite a stable,
+// centrally-registered id instead, so no two suites can ever derive the
+// same `RUN_ID` within one run.
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.COMPLIANCE_CASE);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 
@@ -622,8 +628,14 @@ describe('Audit & Compliance Center (e2e) — Compliance Cases: Manual Lifecycle
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, reviewerGrantId);
-    await revokeStaffRoleGrant(prisma, adminGrantId);
+    // Teardown hardening only (not a fix for the underlying setup
+    // failure): if `beforeAll` above threw partway through — e.g. an
+    // intermittent OTP-request 400 — a grant-id variable below may still
+    // be its unassigned `undefined` at runtime despite its non-optional
+    // `string` type, and calling `revokeStaffRoleGrant` with `undefined`
+    // would throw a secondary teardown error that masks the real cause.
+    if (reviewerGrantId) await revokeStaffRoleGrant(prisma, reviewerGrantId);
+    if (adminGrantId) await revokeStaffRoleGrant(prisma, adminGrantId);
     await cleanupAuditComplianceArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });
     await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await cleanupPhones(prisma, createdPhones);
@@ -800,9 +812,17 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, reviewerFraudGrantId);
-    await revokeStaffRoleGrant(prisma, adminFraudGrantId);
-    await revokeStaffRoleGrant(prisma, adminComplianceGrantId);
+    // Teardown hardening only (not a fix for the underlying setup
+    // failure): if `beforeAll` above threw partway through — e.g. an
+    // intermittent OTP-request 400 during `registerPerson`/
+    // `loginAsSeededStaff` — one or more grant-id variables below may
+    // still be their unassigned `undefined` at runtime despite their
+    // non-optional `string` type, and calling `revokeStaffRoleGrant` with
+    // `undefined` would throw a secondary teardown error that masks the
+    // real cause.
+    if (reviewerFraudGrantId) await revokeStaffRoleGrant(prisma, reviewerFraudGrantId);
+    if (adminFraudGrantId) await revokeStaffRoleGrant(prisma, adminFraudGrantId);
+    if (adminComplianceGrantId) await revokeStaffRoleGrant(prisma, adminComplianceGrantId);
     await cleanupAuditComplianceArtifacts(prisma, {
       personIds: createdPersonIds,
       buildingIds: createdBuildingIds,
@@ -984,8 +1004,16 @@ describe('Audit & Compliance Center (e2e) — Legal Hold & Raw Audit Log (07.06)
     // first, not just revoked, or the still-live FK to that PlatformStaff
     // row blocks the delete with `staff_roles_staffId_fkey`. Same
     // ADR-100 teardown fix reused.
-    await prisma.staffRole.delete({ where: { id: seniorReviewerGrantId } });
-    await revokeStaffRoleGrant(prisma, adminGrantId);
+    if (seniorReviewerGrantId) {
+      await prisma.staffRole.delete({ where: { id: seniorReviewerGrantId } });
+    }
+    // Teardown hardening only (not a fix for the underlying setup
+    // failure): if `beforeAll` above threw partway through, `adminGrantId`
+    // may still be its unassigned `undefined` at runtime despite its
+    // non-optional `string` type, and calling `revokeStaffRoleGrant` with
+    // `undefined` would throw a secondary teardown error that masks the
+    // real cause.
+    if (adminGrantId) await revokeStaffRoleGrant(prisma, adminGrantId);
     await cleanupAuditComplianceArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });
     await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await cleanupPhones(prisma, createdPhones);
@@ -1406,6 +1434,7 @@ describe('ADR-102 — Legal Hold & Audit Log Permission Migration (PermissionsGu
       .get('/api/v1/backoffice/legal-holds')
       .set('Authorization', `Bearer ${plainPerson.accessToken}`)
       .expect(403);
+
     await request(app.getHttpServer())
       .get('/api/v1/backoffice/audit-logs')
       .set('Authorization', `Bearer ${plainPerson.accessToken}`)

@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-077 — Testing Phase 3c: Documents domain e2e coverage.
 // Continues directly from Testing Phase 3a (`ADR-075`, Governance, delivered
@@ -66,11 +67,18 @@ import type { AppConfig } from '../src/config/configuration';
 // schema.prisma, so a required relation defaults to RESTRICT. Both batches
 // retry on Prisma P2003 with backoff, identical to every other e2e file.
 //
-// Cross-file phone/postal-code collision: `RUN_ID` mixes in `process.pid`
-// exactly like every prior e2e file (`ADR-073`'s own round-1 finding) — the
-// fix generalizes to any number of files by construction, now proven
-// across six files running together in the same `npm run test:e2e` pass
-// (`ADR-076`'s own confirmed Post-Delivery Verification).
+// Cross-file phone/postal-code collision: `RUN_ID` now comes from the
+// centralized `createE2eRunId` helper (`test/helpers/e2e-identity.ts`,
+// ADR-107 closure follow-up), not from mixing in `process.pid`. The prior
+// scheme (`ADR-073`'s own round-1 finding, later shared by every e2e
+// file) relied on `process.pid`'s trailing two digits, which never
+// actually guaranteed cross-process uniqueness — two distinct PIDs can
+// share the same trailing digits, and Jest's `maxWorkers` config means
+// one worker process runs multiple spec files sequentially in the same
+// invocation regardless. The new helper assigns every suite a
+// centrally-registered, stable id, so two files can never derive the
+// same `RUN_ID` in the same run — see that helper's own doc comment for
+// the full design.
 //
 // Same disclosed trade-off every prior Testing-phase file already made:
 // within each describe below, later `it`s deliberately reuse state set by
@@ -78,7 +86,7 @@ import type { AppConfig } from '../src/config/configuration';
 // in-order sequential execution — to keep every describe's own
 // `otp/request` budget low. A real, disclosed reduction in per-test
 // isolation, not an oversight.
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.DOCUMENTS);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 

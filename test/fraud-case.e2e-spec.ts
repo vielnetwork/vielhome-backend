@@ -9,6 +9,7 @@ import { ResponseInterceptor } from '../src/common/interceptors/response.interce
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { AuthService } from '../src/modules/foundation/auth/application/auth.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-083 — Testing Phase 4d: Fraud & Abuse Center (BackOffice,
 // narrowly scoped).
@@ -125,9 +126,13 @@ import type { AppConfig } from '../src/config/configuration';
 // first file to create `FraudCase`/`EnforcementAction` rows, and the first
 // to create a non-seeded `PlatformStaff` row — both need explicit,
 // FK-ordered deletion before `cleanupBuildings`/`cleanupPhones` run. See
-// that helper's own doc comment for exact ordering. `RUN_ID` continues
-// mixing in `process.pid` (`ADR-073`'s own round-1 fix).
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+// that helper's own doc comment for exact ordering. `RUN_ID` now comes
+// from the centralized `createE2eRunId` helper
+// (`test/helpers/e2e-identity.ts`, ADR-107 closure follow-up) instead of
+// mixing in `process.pid` — slicing a PID to its last two digits never
+// actually guaranteed cross-process uniqueness; see that helper's own
+// doc comment for the full design.
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.FRAUD_CASE);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 

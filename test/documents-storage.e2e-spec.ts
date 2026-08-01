@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-087 — real S3/MinIO-compatible object storage for
 // Documents. This is a NEW, self-contained file — deliberately not a diff
@@ -48,7 +49,7 @@ const STORAGE_CONFIGURED_FOR_TEST = Boolean(
   process.env.STORAGE_SECRET_ACCESS_KEY,
 );
 
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.DOCUMENTS_STORAGE);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 

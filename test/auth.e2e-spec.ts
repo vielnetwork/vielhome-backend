@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-070 — Testing: Auth flow e2e coverage.
 //
@@ -67,11 +68,24 @@ import type { AppConfig } from '../src/config/configuration';
 // corrupting whichever file's OTP request/verify lost the resulting race
 // (confirmed: this exact collision caused this file's own "isNewPerson"
 // failure and its cleanup FK failure on `building_setup_drafts` — that
-// Person turned out to belong to `building.e2e-spec.ts`). Fixed by mixing
-// in `process.pid`, the one value the OS guarantees differs between any
-// two concurrently-running processes — `building.e2e-spec.ts` carries the
-// identical fix for the invariant to actually hold in both directions.
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+// Person turned out to belong to `building.e2e-spec.ts`). Fixed at the
+// time by mixing in `process.pid`, believed then to be the one value the
+// OS guarantees differs between any two concurrently-running processes —
+// `building.e2e-spec.ts` carried the identical fix for the invariant to
+// actually hold in both directions.
+//
+// Update (ADR-107 closure follow-up): that belief was only half right —
+// the full `process.pid` is unique per process, but this scheme only ever
+// used its LAST TWO DIGITS, which two distinct PIDs can trivially share,
+// and Jest's `maxWorkers` config means one worker process runs multiple
+// spec files sequentially within a single `test:e2e` invocation anyway —
+// so PID-slicing was never actually a reliable per-suite identity, only a
+// coincidentally-unique one. This file (like every other e2e file) now
+// derives `RUN_ID` from the centralized `createE2eRunId` helper
+// (`test/helpers/e2e-identity.ts`), which assigns a stable,
+// centrally-registered id per suite and rules out cross-file collisions
+// structurally rather than by coincidence of process scheduling.
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.AUTH);
 let phoneCounter = 0;
 
 function nextPhone(): string {

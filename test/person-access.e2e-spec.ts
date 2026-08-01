@@ -9,6 +9,7 @@ import { ResponseInterceptor } from '../src/common/interceptors/response.interce
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { AuthService } from '../src/modules/foundation/auth/application/auth.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // Marketplace Access-Gate Implementation Phase — covers
 // `PersonAccessController` (`/backoffice/persons/:personId/backoffice-approval`),
@@ -26,7 +27,7 @@ import type { AppConfig } from '../src/config/configuration';
 // competes with the shared `POST /auth/otp/request` throttle budget), a
 // disclosed test-only `prisma.platformStaff.create(...)` elevation for
 // SENIOR_REVIEWER (no seeded rank-2 account exists).
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.PERSON_ACCESS);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 

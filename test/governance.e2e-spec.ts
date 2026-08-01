@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-075 — Testing Phase 3a: Governance domain e2e coverage.
 //
@@ -69,9 +70,13 @@ import type { AppConfig } from '../src/config/configuration';
 // sequential execution, to keep every describe's own `otp/request` budget
 // low (all ≤4 calls, stated in a comment on every describe).
 //
-// `RUN_ID` continues mixing in `process.pid` (`ADR-073`'s own round-1 fix)
-// — this is now a fourth e2e file sharing that scheme.
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+// `RUN_ID` now comes from the centralized `createE2eRunId` helper
+// (`test/helpers/e2e-identity.ts`, ADR-107 closure follow-up) instead of
+// mixing in `process.pid` — slicing a PID to its last two digits never
+// actually guaranteed cross-process uniqueness; the new helper assigns
+// this suite a stable, centrally-registered id instead, so no two suites
+// can ever derive the same `RUN_ID` within one run.
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.GOVERNANCE);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 

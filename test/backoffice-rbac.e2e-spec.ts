@@ -9,6 +9,7 @@ import { ResponseInterceptor } from '../src/common/interceptors/response.interce
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { AuthService } from '../src/modules/foundation/auth/application/auth.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 /**
  * 21_ADRs > ADR-099 (architecture: ADR-098) — Backoffice RBAC Foundation.
@@ -32,7 +33,7 @@ import type { AppConfig } from '../src/config/configuration';
  * in `beforeAll`, not assumed pre-seeded by `npm run db:seed:rbac` — this
  * file does not depend on seed execution order.
  */
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.BACKOFFICE_RBAC);
 let phoneCounter = 0;
 
 function nextPhone(): string {

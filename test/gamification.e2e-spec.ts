@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-079 — Testing Phase 3e: Gamification domain e2e coverage.
 //
@@ -98,13 +99,15 @@ import type { AppConfig } from '../src/config/configuration';
 // Cleanup here reuses `cases.e2e-spec.ts`'s own `deleteBuildingsOnceBatch`/
 // `cleanupPhones` verbatim — this file introduces no new tables of its own
 // (`XpTransaction`/`PersonAchievement`/`BuildingScore`/`BuildingScoreEvent`
-// are already covered by the existing batches). `RUN_ID` continues mixing
-// in `process.pid` (`ADR-073`'s own round-1 fix) — now a sixth e2e file
-// sharing that scheme (alongside the two currently-unmerged-in-this-sandbox
-// files, `documents.e2e-spec.ts`/`notifications.e2e-spec.ts`, both already
-// confirmed running clean together on the user's real machine per
-// `ADR-077`/`ADR-078`'s own Post-Delivery Verification).
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+// are already covered by the existing batches). `RUN_ID` now comes from
+// the centralized `createE2eRunId` helper (`test/helpers/e2e-identity.ts`,
+// ADR-107 closure follow-up) instead of mixing in `process.pid` — the
+// historical `ADR-073`/`ADR-077`/`ADR-078` round of fixes made PID-mixing
+// work well enough to run clean in practice, but slicing a PID to its
+// last two digits never actually guaranteed cross-process uniqueness; the
+// new helper assigns this suite a stable, centrally-registered id instead,
+// so no two suites can ever derive the same `RUN_ID` within one run.
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.GAMIFICATION);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 

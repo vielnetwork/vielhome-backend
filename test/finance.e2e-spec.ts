@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-074 — Testing Phase 2b: Finance domain e2e coverage.
 //
@@ -47,13 +48,18 @@ import type { AppConfig } from '../src/config/configuration';
 // out for Membership/Ownership/Tenancy. Both batches retry on Prisma P2003
 // with backoff, identical to the other two e2e files.
 //
-// Cross-file phone/postal-code collision: `RUN_ID` mixes in `process.pid`
-// exactly like `auth.e2e-spec.ts`/`building.e2e-spec.ts` were fixed to do
-// in ADR-073's own round-1 finding — this is now a THIRD file sharing that
-// scheme, and the fix already generalizes to any number of files (the
-// invariant is "no two Jest worker processes started in the same
-// wall-clock second share the same last-two-digits of pid", not "exactly
-// two files exist").
+// Cross-file phone/postal-code collision: `RUN_ID` now comes from the
+// centralized `createE2eRunId` helper (`test/helpers/e2e-identity.ts`,
+// ADR-107 closure follow-up), not from mixing in `process.pid`. The prior
+// scheme's stated invariant — "no two Jest worker processes started in
+// the same wall-clock second share the same last-two-digits of pid" —
+// was never actually guaranteed: two distinct PIDs can share the same
+// trailing digits regardless of start time, and Jest's `maxWorkers`
+// config means one worker process runs multiple spec files sequentially
+// in the same invocation anyway. The new helper assigns every suite a
+// centrally-registered, stable id instead, so two files can never derive
+// the same `RUN_ID` in the same run — see that helper's own doc comment
+// for the full design.
 //
 // Same disclosed trade-off ADR-073's own Building suite made: within each
 // describe below, later `it`s deliberately reuse state set by an earlier
@@ -61,7 +67,7 @@ import type { AppConfig } from '../src/config/configuration';
 // Jest's guaranteed in-order sequential execution — to keep every
 // describe's own `otp/request` budget low. A real, disclosed reduction in
 // per-test isolation, not an oversight.
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.FINANCE);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 

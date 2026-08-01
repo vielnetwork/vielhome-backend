@@ -9,6 +9,7 @@ import { ResponseInterceptor } from '../src/common/interceptors/response.interce
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { AuthService } from '../src/modules/foundation/auth/application/auth.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-081 — Testing Phase 4b: Building Verification (BackOffice,
 // narrowly scoped).
@@ -109,9 +110,14 @@ import type { AppConfig } from '../src/config/configuration';
 // `deleteBuildingsOnceBatch`/`cleanupPhones` verbatim — that batch already
 // deletes `buildingVerificationCase` rows (added when Manager
 // Verification's own sibling file needed it), so this file introduces no
-// new table of its own. `RUN_ID` continues mixing in `process.pid`
-// (`ADR-073`'s own round-1 fix).
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+// new table of its own. `RUN_ID` now comes from the centralized
+// `createE2eRunId` helper (`test/helpers/e2e-identity.ts`, ADR-107
+// closure follow-up) instead of mixing in `process.pid` — slicing a PID
+// to its last two digits never actually guaranteed cross-process
+// uniqueness; the new helper assigns this suite a stable,
+// centrally-registered id instead, so no two suites can ever derive the
+// same `RUN_ID` within one run.
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.BUILDING_VERIFICATION);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 

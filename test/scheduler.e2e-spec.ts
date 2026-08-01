@@ -9,6 +9,7 @@ import { ResponseInterceptor } from '../src/common/interceptors/response.interce
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { AuthService } from '../src/modules/foundation/auth/application/auth.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-102 — `SchedulerController` (`POST /backoffice/scheduler/
 // trigger`) previously had zero e2e coverage at all (a pre-existing gap,
@@ -33,7 +34,7 @@ import type { AppConfig } from '../src/config/configuration';
 // find-or-create `Role`/`Permission`/`StaffRole` fixture created and torn
 // down entirely inside this file (no permanent grant ever added to
 // `prisma/seed.ts`).
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.SCHEDULER);
 let phoneCounter = 0;
 
 function nextPhone(): string {

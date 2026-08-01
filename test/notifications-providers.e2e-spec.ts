@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-088 — real Push/Email/SMS provider integration for
 // Notifications. New, self-contained file — deliberately not a diff
@@ -39,7 +40,7 @@ const NOTIFICATION_PROVIDERS_CONFIGURED_FOR_TEST = Boolean(
   process.env.EMAIL_PROVIDER_API_KEY && process.env.EMAIL_FROM_ADDRESS,
 );
 
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.NOTIFICATIONS_PROVIDERS);
 let phoneCounter = 0;
 
 function nextPhone(): string {

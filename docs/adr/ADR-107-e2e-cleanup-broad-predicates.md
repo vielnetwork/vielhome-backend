@@ -143,15 +143,17 @@ rediscovered from scratch:
   scoped to its own suite's `buildingId` array), so it sits entirely
   outside this ADR's shared-predicate root cause. Left as follow-up.
 - **Isolated, unreproducible HTTP-status transients.** Across separate
-  gate runs, four different routes each produced one unexplained
+  gate runs, six different routes each produced one unexplained
   HTTP-status mismatch in isolation (support-case metrics 404-vs-403,
   marketplace does-not-exist 400-vs-404, fraud-case otp/request
-  404-vs-200, finance charge-creation 404-vs-201). Each was traced
-  exhaustively with no demonstrable code-level cause found, and each
-  reproduced cleanly when run in isolation afterward. They are flagged as
-  a possible shared systemic issue (e.g. HTTP-adapter/connection-handling
-  behavior under load) worth its own dedicated investigation, but none
-  had a demonstrated ADR-107 shared-state cause, so none are fixed here.
+  404-vs-200, finance charge-creation 404-vs-201, documents-storage 25MB
+  ceiling 404-vs-400, documents re-upload (Rule 021) 404-vs-201). Each was
+  traced exhaustively with no demonstrable code-level cause found, and
+  each reproduced cleanly when run in isolation afterward. They are
+  flagged as a possible shared systemic issue (e.g.
+  HTTP-adapter/connection-handling behavior under load) worth its own
+  dedicated investigation, but none had a demonstrated ADR-107
+  shared-state cause, so none are fixed here.
 
 ## Lesson Learned / Testing Guideline (proposed, for this codebase's e2e conventions going forward)
 

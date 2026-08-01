@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
+import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
 // 21_ADRs > ADR-078 — Testing Phase 3d: Notifications domain e2e coverage.
 // Follows directly from Testing Phase 3c (`ADR-077`, Documents, confirmed
@@ -91,11 +92,19 @@ import type { AppConfig } from '../src/config/configuration';
 // `cleanupStaffLoginArtifacts` helper distinct from every other describe's
 // `cleanupPhones`.
 //
-// Cross-file phone/postal-code collision: `RUN_ID` mixes in `process.pid`
-// exactly like every prior e2e file (`ADR-073`'s own round-1 finding) —
-// proven across seven files running together in the same
-// `npm run test:e2e` pass as of `ADR-077`'s own confirmed Post-Delivery
-// Verification.
+// Cross-file phone/postal-code collision: `RUN_ID` now comes from the
+// centralized `createE2eRunId` helper (`test/helpers/e2e-identity.ts`,
+// ADR-107 closure follow-up), not from mixing in `process.pid`. The prior
+// scheme (`ADR-073`'s own round-1 finding, later shared by every e2e
+// file, including this one as of `ADR-077`'s own Post-Delivery
+// Verification) relied on `process.pid`'s trailing two digits, which
+// never actually guaranteed cross-process uniqueness — two distinct
+// PIDs can share the same trailing digits, and Jest's `maxWorkers`
+// config means one worker process runs multiple spec files sequentially
+// in the same invocation regardless. The new helper assigns every suite
+// a centrally-registered, stable id, so two files can never derive the
+// same `RUN_ID` in the same run — see that helper's own doc comment for
+// the full design.
 //
 // Same disclosed trade-off every prior Testing-phase file already made:
 // within each describe below, later `it`s deliberately reuse state set by
@@ -103,7 +112,7 @@ import type { AppConfig } from '../src/config/configuration';
 // in-order sequential execution — to keep every describe's own
 // `otp/request` budget low. A real, disclosed reduction in per-test
 // isolation, not an oversight.
-const RUN_ID = `${Date.now().toString().slice(-3)}${process.pid.toString().slice(-2)}`;
+const RUN_ID = createE2eRunId(E2E_SUITE_ID.NOTIFICATIONS);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
 
@@ -1362,8 +1371,14 @@ describe('Notifications (e2e) — NotificationTemplate Staff CRUD (ADR-060)', ()
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, adminGrantId);
-    await revokeStaffRoleGrant(prisma, reviewerGrantId);
+    // Teardown hardening only (not a fix for the underlying setup
+    // failure): if `beforeAll` above threw partway through, a grant-id
+    // variable below may still be its unassigned `undefined` at runtime
+    // despite its non-optional `string` type, and calling
+    // `revokeStaffRoleGrant` with `undefined` would throw a secondary
+    // teardown error that masks the real cause.
+    if (adminGrantId) await revokeStaffRoleGrant(prisma, adminGrantId);
+    if (reviewerGrantId) await revokeStaffRoleGrant(prisma, reviewerGrantId);
     await prisma.notificationTemplate.deleteMany({ where: { id: { in: createdTemplateIds } } });
     await cleanupStaffLoginArtifacts(
       prisma,
