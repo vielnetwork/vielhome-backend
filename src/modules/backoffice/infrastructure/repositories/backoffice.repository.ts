@@ -461,6 +461,110 @@ export class BackOfficeRepository {
     return this.prisma.person.update({ where: { id: personId }, data: { isSuspended: false } });
   }
 
+  // --- User Administration (21_ADRs > ADR-111, Stage 4) -------------------
+  // Reuses `suspendPerson`/`reinstatePerson` above (previously only ever
+  // called from `FraudCaseService`'s ACCOUNT_SUSPENSION enforcement
+  // effect) as a direct, general-purpose staff action — `reinstatePerson`
+  // in particular had no caller anywhere in this codebase until this
+  // stage gave it one via `UserAdministrationService.reinstate()`.
+
+  /** Minimal existence + current-value lookup, same shape as
+   * `findPersonForBackofficeApproval` above — 404 on an unknown target,
+   * previous value for the audit record's `metadata.previousValue`. */
+  findPersonForSuspensionState(personId: string) {
+    return this.prisma.person.findUnique({
+      where: { id: personId },
+      select: { id: true, isSuspended: true },
+    });
+  }
+
+  /** Staff-facing list/search — `search` matches phone/email/first/last/
+   * full name (case-insensitive `contains`), `isSuspended`/
+   * `isBackofficeApproved` are exact-match filters. All three are
+   * optional; Prisma silently ignores an `undefined` `where` key, so
+   * passing every filter through unconditionally (matching
+   * `listSupportCases`'s own convention above) is safe. No password/OTP
+   * secret ever lived on `Person` to begin with, so the selected field
+   * list here is already exhaustive-safe by construction. */
+  async searchPersons(
+    filters: { search?: string; isSuspended?: boolean; isBackofficeApproved?: boolean },
+    pagination: { skip: number; take: number },
+  ) {
+    const where = {
+      isSuspended: filters.isSuspended,
+      isBackofficeApproved: filters.isBackofficeApproved,
+      ...(filters.search
+        ? {
+            OR: [
+              { phone: { contains: filters.search, mode: 'insensitive' as const } },
+              { email: { contains: filters.search, mode: 'insensitive' as const } },
+              { firstName: { contains: filters.search, mode: 'insensitive' as const } },
+              { lastName: { contains: filters.search, mode: 'insensitive' as const } },
+              { fullName: { contains: filters.search, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.person.findMany({
+        where,
+        select: {
+          id: true,
+          phone: true,
+          email: true,
+          fullName: true,
+          firstName: true,
+          lastName: true,
+          isSuspended: true,
+          isBackofficeApproved: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.person.count({ where }),
+    ]);
+    return { items, total };
+  }
+
+  /** Staff-facing detail view — profile fields, the two administrative
+   * flags, current (`isCurrent: true`) building memberships, and the
+   * `PlatformStaff` record if this Person is also platform staff.
+   * Deliberately does NOT include this person's own audit history — the
+   * real Audit Center search (ADR-029/ADR-034) already exists and is not
+   * duplicated here, matching ADR-110's own "don't re-implement another
+   * domain's job" discipline for its `recentCriticalAuditEvents` widget. */
+  getPersonAdminDetail(personId: string) {
+    return this.prisma.person.findUnique({
+      where: { id: personId },
+      select: {
+        id: true,
+        phone: true,
+        email: true,
+        fullName: true,
+        firstName: true,
+        lastName: true,
+        locale: true,
+        createdAt: true,
+        updatedAt: true,
+        isSuspended: true,
+        isBackofficeApproved: true,
+        memberships: {
+          where: { isCurrent: true },
+          select: {
+            id: true,
+            buildingId: true,
+            role: true,
+            startedAt: true,
+            building: { select: { id: true, name: true } },
+          },
+        },
+        platformStaff: { select: { id: true, role: true, isActive: true } },
+      },
+    });
+  }
+
   // --- Marketplace Access Gate --------------------------------------------
   // Person-level platform-approval fact backing the BACKOFFICE_APPROVED
   // `AccessLevel` (see `AccessGuard`/`PersonAccessController`). Lives here,

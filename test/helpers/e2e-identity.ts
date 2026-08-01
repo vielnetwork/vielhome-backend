@@ -80,6 +80,8 @@ export const E2E_SUITE_ID = {
   MAINTENANCE: 23,
   // 21_ADRs > ADR-110 — Backoffice Operational Dashboard.
   DASHBOARD: 24,
+  // 21_ADRs > ADR-111 — User Administration.
+  USER_ADMINISTRATION: 25,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;

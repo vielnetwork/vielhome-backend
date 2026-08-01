@@ -13,6 +13,7 @@ import { SubscriptionReportController } from './controller/subscription-report.c
 import { ComplianceCaseController } from './controller/compliance-case.controller';
 import { LegalHoldController } from './controller/legal-hold.controller';
 import { PersonAccessController } from './controller/person-access.controller';
+import { UserAdministrationController } from './controller/user-administration.controller';
 import { BuildingVerificationService } from './application/building-verification.service';
 import { ManagerVerificationService } from './application/manager-verification.service';
 import { FraudCaseService } from './application/fraud-case.service';
@@ -21,6 +22,7 @@ import { SubscriptionService } from './application/subscription.service';
 import { ComplianceCaseService } from './application/compliance-case.service';
 import { LegalHoldService } from './application/legal-hold.service';
 import { PersonAccessService } from './application/person-access.service';
+import { UserAdministrationService } from './application/user-administration.service';
 import { BackOfficeEventListener } from './application/backoffice-event-listener.service';
 import { BackOfficeRepository } from './infrastructure/repositories/backoffice.repository';
 import { BuildingVerificationPolicy } from './domain/policies/building-verification.policy';
@@ -65,6 +67,7 @@ import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module'
     ComplianceCaseController,
     LegalHoldController,
     PersonAccessController,
+    UserAdministrationController,
   ],
   providers: [
     BuildingVerificationService,
@@ -75,6 +78,7 @@ import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module'
     ComplianceCaseService,
     LegalHoldService,
     PersonAccessService,
+    UserAdministrationService,
     BackOfficeEventListener,
     BackOfficeRepository,
     BuildingVerificationPolicy,

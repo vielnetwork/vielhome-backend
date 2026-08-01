@@ -165,6 +165,17 @@ this section is a map, not a replacement for those.
   high-risk audit events. Every section is fetched independently
   (`Promise.allSettled`) with a documented fallback, so one section
   failing never turns the whole response into a 500.
+- **Backoffice User Administration** (`ADR-111`): `GET
+  /api/v1/backoffice/users` (paginated, `search`/`isSuspended`/
+  `isBackofficeApproved` filters) and `GET /api/v1/backoffice/users/:id`
+  (`USER_VIEW`) plus `POST /api/v1/backoffice/users/:id/suspend`/
+  `/reinstate` (`USER_EDIT`, mandatory `reason`) — the first real routes
+  either three-stage-old reserved permission key has ever had, and the
+  first caller `BackOfficeRepository.reinstatePerson()` has ever had.
+  Suspending a user immediately blocks their next login (`ADR-043`'s live
+  `isSuspended` check); each action is audited under its own name
+  (`PersonSuspendedByAdmin`/`PersonReinstatedByAdmin`), distinct from the
+  Fraud Case enforcement path that can also suspend a Person.
 - **Git / Migrations** (`ADR-063`): a real Git repository, tagged
   `v1.0-api-contract`; `prisma/migrations/0_baseline_v1_freeze/` — a real,
   committed baseline migration (the user's own local run against a real dev
