@@ -1,6 +1,6 @@
 # ADR-109 — Maintenance Mode & Feature Flags
 
-**Status:** Proposed — pending the operator's own `prisma migrate dev`/`generate`/`db:seed:rbac`/build/unit/e2e verification (this sandbox cannot run any of them for schema-changing work — see "Build / Unit / E2E Verification" below)
+**Status:** Accepted — Closed (2026-08-01)
 **Context area:** 21_ADRs (Backend / Backoffice), Operational Readiness — Stage 2 of the Backoffice completion roadmap
 **Related:** ADR-098 (Backoffice RBAC Foundation — item 9 originally reserved the bare `FEATURE_FLAGS` key this ADR now supersedes), ADR-099/ADR-102 (VIEW/MANAGE permission-pair convention), ADR-108 (Monitoring & System Health — Stage 1, same module-wiring template), ADR-107 (E2E cleanup discipline — this ADR's own e2e suite follows its shared-fixture rules and adds a new category of cross-suite risk it explicitly designs around)
 
@@ -86,6 +86,31 @@ What this sandbox *could* still verify:
 - `npm test` was not run in-sandbox: `ts-jest` type-checks by default, so any spec file that imports the new service/module code hits the exact same missing-Prisma-type errors as `tsc` above and cannot execute.
 
 **The operator must, in order, on their own machine:** `npx prisma migrate dev` (applies `20260801120000_add_maintenance_feature_flags`), `npx prisma generate`, `npm run db:seed:rbac` (idempotent), then `npm run build`, `npm test`, `npm run test:e2e`. This ADR is not Closed until that full sequence is confirmed green (or any failure has been triaged per the roadmap's own Verification Gate — isolated rerun, root-cause, compare against ADR-107's known patterns, before attributing anything to this stage).
+
+## Final Verification (Closure Gate)
+
+The operator ran the real verification stack (their own Postgres/Redis) after applying this stage's changes:
+
+- `npx prisma migrate dev` — applied `20260801120000_add_maintenance_feature_flags` successfully.
+- `npx prisma generate` — succeeded.
+- `npm run db:seed:rbac` — succeeded: 35/35 permissions, 8/8 roles, 8 new `RolePermission` grants this run (the 4 new keys × `Technical Admin` + `Super Admin`).
+- `npm run build` — succeeded.
+- `npm test` — **1 failed, 550 passed** on the first real run: a genuine, deterministic bug in this stage's own new
+  `maintenance-mode.middleware.spec.ts` — the "falls back to unknown requestId" test passed
+  `undefined as unknown as string` as the `makeReqRes` helper's `requestId` argument, expecting it to bypass that
+  helper's own `requestId = 'req-1'` default parameter. JavaScript default parameters trigger on an
+  explicitly-passed `undefined` exactly as they do on an omitted argument, so the test silently exercised the
+  *wrong* code path (never actually testing the fallback) and happened to still pass against the pre-fix
+  middleware by coincidence of its own assertion shape — until the operator's real run caught the mismatch. Fixed
+  in commit `26c460e` by assigning `req.requestId = undefined` directly on the already-built request object,
+  sidestepping the function-call default-parameter boundary entirely. No production code changed. This is a real,
+  deterministic test-authoring bug, not a transient — it does not belong in ADR-107.
+- `npm run test:e2e` — **24/24 suites, 648/648 tests, all green**, including the new `test/maintenance.e2e-spec.ts`
+  (both the Maintenance Mode and Feature Flags describe blocks) on the very first run. No transient of any kind
+  appeared in this cycle's e2e run.
+
+ADR-109 is CLOSED on this basis: the one real defect found (a test-only bug, never exercising its intended
+assertion) was fixed and verified; e2e was clean on the first attempt.
 
 ## Non-Goals (Phase 1)
 
