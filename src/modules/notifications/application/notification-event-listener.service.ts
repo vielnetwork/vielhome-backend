@@ -25,6 +25,10 @@ import type {
   VotePublishedEvent,
 } from '../../governance/events/vote.events';
 import type {
+  MeetingArchivedEvent,
+  MeetingCreatedEvent,
+} from '../../governance/events/meeting.events';
+import type {
   CaseAssignedEvent,
   CaseCreatedEvent,
   CaseStatusChangedEvent,
@@ -78,7 +82,12 @@ const PRIVILEGED_DOCUMENT_CATEGORIES = ['GOVERNANCE', 'FINANCIAL', 'LEGAL'];
  * "you voted" confirmation wasn't asked for and stays deferred; the field
  * was added for Gamification's XP attribution, not for this module.
  * `BuildingScoreChangedEvent` is also deliberately NOT wired here — see
- * that event's own doc comment in `gamification.events.ts`.
+ * that event's own doc comment in `gamification.events.ts`. Governance
+ * Hardening Phase 3 (audit §25) wired `MeetingCreated`/`MeetingArchived`
+ * below — Meeting lifecycle had no notification wiring (and, until this
+ * phase, no domain events at all) previously; `MeetingUpdated`/
+ * `MeetingAttendanceRecorded` remain deliberately unwired — see
+ * `meeting.events.ts`'s own doc comment for why.
  */
 @Injectable()
 export class NotificationEventListener {
@@ -470,6 +479,36 @@ export class NotificationEventListener {
       body: 'یک رأی‌گیری برای ساختمان شما لغو شد.',
       referenceType: 'VOTE',
       referenceId: event.voteId,
+      sourceEvent: event.eventName,
+    });
+  }
+
+  /** Governance Hardening Phase 3 (audit §25) — the Meeting equivalent of `onVotePublished`'s "actionable moment" broadcast: a meeting is worth knowing about the moment it's scheduled. */
+  @OnEvent('MeetingCreated')
+  async onMeetingCreated(event: MeetingCreatedEvent) {
+    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    await this.notifications.notifyMany(memberIds, {
+      buildingId: event.buildingId,
+      category: 'GOVERNANCE',
+      title: 'جلسه جدید',
+      body: 'یک جلسه جدید برای ساختمان شما برنامه‌ریزی شد.',
+      referenceType: 'MEETING',
+      referenceId: event.meetingId,
+      sourceEvent: event.eventName,
+    });
+  }
+
+  /** Governance Hardening Phase 3 (audit §25) — the Meeting equivalent of `onVoteClosed`: minutes become final/read-only the moment a meeting archives. */
+  @OnEvent('MeetingArchived')
+  async onMeetingArchived(event: MeetingArchivedEvent) {
+    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    await this.notifications.notifyMany(memberIds, {
+      buildingId: event.buildingId,
+      category: 'GOVERNANCE',
+      title: 'جلسه بایگانی شد',
+      body: 'صورتجلسه یکی از جلسات ساختمان شما نهایی و بایگانی شد.',
+      referenceType: 'MEETING',
+      referenceId: event.meetingId,
       sourceEvent: event.eventName,
     });
   }

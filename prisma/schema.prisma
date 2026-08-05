@@ -1696,13 +1696,15 @@ model CaseAssignment {
 //  - `DocumentReference.entityId` is NOT a foreign key — it is
 //    intentionally polymorphic (per the v1.0 schema's own design) so a
 //    reference can point at a Building, Unit, Vote, ChargeBatch, Payment,
-//    or Case row without this module importing every other feature
-//    module. Referential integrity for a reference's target is therefore
-//    an application-level, not database-level, guarantee — the same
-//    trade-off the source docs' own polymorphic design implies. This is
-//    exactly how Case attachments (ADR-025's deferred item) get wired up:
-//    a document's `DocumentReference` with `entityType: 'CASE'` requires
-//    no change at all to the Cases module.
+//    Case, ServiceProvider, SupportCase, or (Governance Hardening Phase
+//    3, audit §23) Meeting row without this module importing every other
+//    feature module. Referential integrity for a reference's target is
+//    therefore an application-level, not database-level, guarantee — the
+//    same trade-off the source docs' own polymorphic design implies. This
+//    is exactly how Case attachments (ADR-025's deferred item) get wired
+//    up: a document's `DocumentReference` with `entityType: 'CASE'`
+//    requires no change at all to the Cases module — and the same is now
+//    true for `entityType: 'MEETING'` and the Governance module.
 //  - Access is two-tier for MVP: `visibility` (PUBLIC/MEMBERS_ONLY open to
 //    any current building member, MANAGEMENT_ONLY restricted to
 //    MANAGER/BOARD_MEMBER/ACCOUNTANT) plus a category-based upload/manage
@@ -1748,6 +1750,14 @@ enum DocumentReferenceEntityType {
   CASE
   SERVICE_PROVIDER
   SUPPORT_CASE
+  // Governance Hardening Phase 3 (audit §23) — closes the asymmetry where
+  // a Vote could be referenced (`VOTE`, above) but a Meeting could not,
+  // despite both being fully-fledged Governance entities. Same unchecked
+  // pattern every other value here already uses — see `CreateReferenceDto`
+  // 's own comment for why `entityId` existence is deliberately never
+  // cross-checked against the target domain (keeps DocumentsModule from
+  // needing to import GovernanceModule/CasesModule/etc.).
+  MEETING
 }
 
 model Document {

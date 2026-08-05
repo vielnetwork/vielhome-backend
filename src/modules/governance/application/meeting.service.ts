@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   buildPaginationMeta,
   toSkipTake,
@@ -12,6 +13,7 @@ import { UpdateMeetingDto } from './dto/update-meeting.dto';
 import { RecordAttendanceDto } from './dto/record-attendance.dto';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
+import { MeetingArchivedEvent, MeetingCreatedEvent } from '../events/meeting.events';
 
 /**
  * Governance / Meetings (04.06_Governance_Rules Rules 11-13, 20 — see
@@ -26,6 +28,7 @@ export class MeetingService {
     private readonly buildings: BuildingRepository,
     private readonly policy: MeetingPolicy,
     private readonly audit: AuditService,
+    private readonly events: EventEmitter2,
   ) {}
 
   private async getBuilding(buildingId: string) {
@@ -67,6 +70,8 @@ export class MeetingService {
       entityId: meeting.id,
       requestId,
     });
+
+    this.events.emit('MeetingCreated', new MeetingCreatedEvent(meeting.id, buildingId, actorPersonId));
 
     return meeting;
   }
@@ -130,6 +135,8 @@ export class MeetingService {
       entityId: meetingId,
       requestId,
     });
+
+    this.events.emit('MeetingArchived', new MeetingArchivedEvent(meetingId, buildingId, actorPersonId));
 
     return updated;
   }
