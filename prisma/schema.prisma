@@ -1416,6 +1416,15 @@ model VoteResult {
 // `VoteProxyRepository.grant` instead (ends any existing current row in
 // the same transaction that creates the new one).
 //
+// Governance Hardening Phase 1 (audit §31) — that transaction alone, under
+// Postgres's default READ COMMITTED isolation, did NOT actually guarantee
+// the invariant this comment used to claim: two overlapping `grant()`
+// calls for the same unit could each see zero rows left to end and both
+// still unconditionally create their own `isCurrent: true` row. Fixed by
+// running the transaction at `Serializable` isolation with a single retry
+// on the resulting `P2034` write-conflict — see `VoteProxyRepository
+// .grant`'s own updated comment for the mechanism.
+//
 // `VotingService.castBallot` matches a proxy at cast time by checking
 // whether `proxyPersonId` currently stands in for the vote's
 // `VoteEligibilitySnapshot.eligiblePersonId` — a LIVE check against this

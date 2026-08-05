@@ -63,6 +63,10 @@ import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 // `MeetingAttendance`, `Meeting` — deleted before the existing `Membership`/
 // `Unit`/`Building` chain, since none of them carry an explicit `onDelete`
 // directive in `schema.prisma` (a required relation defaults to RESTRICT).
+// Governance Hardening Phase 1 added `BuildingSettings` to this same list
+// (deleted just before `Building` itself) once the new "Tenant Voting
+// Eligibility" describe became this file's first-ever exerciser of
+// `PATCH :id/settings`.
 //
 // Same disclosed within-describe state-reuse trade-off as `ADR-073`/
 // `ADR-074`'s own describes: later `it`s deliberately reuse state set by an
@@ -249,6 +253,15 @@ async function deleteBuildingsOnceBatch(
   await prisma.membership.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.ownership.deleteMany({ where: { unit: { buildingId: { in: buildingIds } } } });
   await prisma.unit.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  // Governance Hardening Phase 1 — `BuildingSettings` carries a required FK
+  // to `Building` (`building_settings_buildingId_fkey`) and, like every
+  // other table in this function, has no `onDelete` directive in
+  // `schema.prisma`, so it defaults to RESTRICT. No prior Governance e2e
+  // describe ever exercised `PATCH :id/settings` (`allowTenantVoting`)
+  // before the "Tenant Voting Eligibility" describe added here — the gap
+  // existed from ADR-089 itself (this table was never actually populated
+  // by a Governance e2e run before), just never triggered until now.
+  await prisma.buildingSettings.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.building.deleteMany({ where: { id: { in: buildingIds } } });
 }
 
@@ -1304,5 +1317,230 @@ describe('Governance (e2e) — Standing Proxy Voting: Vote Proxy Lookup Hardenin
       .send({ proxyPersonId: outsider.personId })
       .expect(422);
     expect(rejected.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+});
+
+describe('Governance (e2e) — Tenant Voting Eligibility (21_ADRs > ADR-089, allowTenantVoting)', () => {
+  // Budget: 3 calls to POST /auth/otp/request
+  // (establishVerifiedManagerBuilding's own founder+owner [2] + a real
+  // tenant registered on the owner's own unit [1]).
+  //
+  // Governance Hardening Phase 1 (audit §17/§51) — `allowTenantVoting` had
+  // zero e2e coverage anywhere in this file before this describe: every
+  // prior Voting Lifecycle test relies on the OWNER-only default. This
+  // describe proves the actual eligibility hand-off
+  // `VotingRepository.publishVote` performs when the toggle is on: a unit
+  // with a real current Owner AND a real current Tenant hands its ballot
+  // to the TENANT, not the owner — confirmed both directly (the persisted
+  // `VoteEligibilitySnapshot` row) and behaviorally (the tenant can cast a
+  // ballot; the absentee owner is rejected).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let founder: RegisteredPerson; // VERIFIED MANAGER
+  let owner: RegisteredPerson; // sole current Owner of unitIds[0] — the absentee owner once tenant voting is on
+  let tenant: RegisteredPerson; // sole current Tenant of unitIds[0]
+  let buildingId: string;
+  let unitIds: string[];
+  let voteId: string;
+  let yesOptionId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    ({ founder, owner, buildingId, unitIds } = await establishVerifiedManagerBuilding(
+      app,
+      prisma,
+      2,
+    ));
+    createdPhones.push(founder.phone, owner.phone);
+    createdBuildingIds.push(buildingId);
+
+    // Turns on tenant voting for this building — `RolesGuard('OWNER',
+    // 'MANAGER')`; the founder's MANAGER role passes it regardless of
+    // `managerState`, same as every other plain-`RolesGuard` route.
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/settings`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send({ allowTenantVoting: true })
+      .expect(200);
+
+    // A real Tenancy via the legitimate manager-driven flow
+    // (`TenancyPolicy.assertCanCreate`) — not a fixture shortcut, same
+    // discipline `building.e2e-spec.ts`'s own Tenancy describe established.
+    tenant = await registerPerson(app);
+    createdPhones.push(tenant.phone);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitIds[0]}/tenancy`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send({ tenantPersonId: tenant.personId })
+      .expect(201);
+
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send(votePayload({ scopeType: 'SELECTED_UNITS', scopeUnitIds: [unitIds[0]] }))
+      .expect(201);
+    voteId = createRes.body.data.id;
+    yesOptionId = createRes.body.data.options.find(
+      (o: { value: string }) => o.value === 'YES',
+    ).id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/votes/${voteId}/publish`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .expect(200);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('captures the eligibility snapshot for the TENANT, not the owner, once allowTenantVoting is on', async () => {
+    const snapshot = await prisma.voteEligibilitySnapshot.findUnique({
+      where: { voteId_unitId: { voteId, unitId: unitIds[0] } },
+    });
+    expect(snapshot?.eligiblePersonId).toBe(tenant.personId);
+    expect(snapshot?.eligibilityType).toBe('TENANT');
+  });
+
+  it('rejects the absentee owner from casting a ballot on this vote', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ unitId: unitIds[0], selectedOptionId: yesOptionId })
+      .expect(403);
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+
+  it('lets the tenant cast a ballot on the unit', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${tenant.accessToken}`)
+      .send({ unitId: unitIds[0], selectedOptionId: yesOptionId })
+      .expect(201);
+    expect(res.body.data.voterPersonId).toBe(tenant.personId);
+    expect(res.body.data.unitId).toBe(unitIds[0]);
+  });
+});
+
+describe('Governance (e2e) — Standing Proxy Voting: Ballot Casting & Revocation (21_ADRs > ADR-089)', () => {
+  // Budget: 3 calls to POST /auth/otp/request
+  // (establishVerifiedManagerBuilding's own founder+owner [2] + a second
+  // unit's real owner via establishRealOwner, who becomes the proxy
+  // holder [1]).
+  //
+  // Governance Hardening Phase 1 (audit §19/§51) — Vote Proxy's actual
+  // payoff (a proxy casting a ballot on the granter's behalf) and
+  // `revoke` itself had zero e2e coverage anywhere in this file before
+  // this describe: the existing "Vote Proxy Lookup Hardening" describe
+  // above exercises `grant`/`getCurrent`/lookup only. This describe
+  // proves both: a granted proxy can actually vote on the granter's unit
+  // (attributed to the proxy as voter, on the granter's own unit), and a
+  // revoked proxy immediately stops working on any vote published after
+  // the revocation, while the granter can still vote directly.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let founder: RegisteredPerson; // VERIFIED MANAGER
+  let ownerA: RegisteredPerson; // sole current Owner of unitIds[0] — the granter
+  let ownerB: RegisteredPerson; // sole current Owner of unitIds[1] — the proxy holder
+  let buildingId: string;
+  let unitIds: string[];
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    ({ founder, owner: ownerA, buildingId, unitIds } = await establishVerifiedManagerBuilding(
+      app,
+      prisma,
+      2,
+    ));
+    createdPhones.push(founder.phone, ownerA.phone);
+    createdBuildingIds.push(buildingId);
+
+    ownerB = await establishRealOwner(app, buildingId, unitIds[1], founder.accessToken);
+    createdPhones.push(ownerB.phone);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitIds[0]}/vote-proxy`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ proxyPersonId: ownerB.personId })
+      .expect(201);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  async function publishReferendum(): Promise<{ voteId: string; yesOptionId: string }> {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send(votePayload({ scopeType: 'SELECTED_UNITS', scopeUnitIds: [unitIds[0]] }))
+      .expect(201);
+    const voteId = createRes.body.data.id;
+    const yesOptionId = createRes.body.data.options.find(
+      (o: { value: string }) => o.value === 'YES',
+    ).id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/votes/${voteId}/publish`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .expect(200);
+
+    return { voteId, yesOptionId };
+  }
+
+  it("lets the proxy cast a ballot on the granter's unit — attributed to the proxy as voter", async () => {
+    const { voteId, yesOptionId } = await publishReferendum();
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${ownerB.accessToken}`)
+      .send({ unitId: unitIds[0], selectedOptionId: yesOptionId })
+      .expect(201);
+
+    expect(res.body.data.voterPersonId).toBe(ownerB.personId);
+    expect(res.body.data.unitId).toBe(unitIds[0]);
+
+    // "One property, one vote" still holds regardless of who cast it —
+    // the granter (the unit's own snapshot-recorded eligible voter)
+    // cannot also vote after their proxy already has.
+    const dup = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ unitId: unitIds[0], selectedOptionId: yesOptionId })
+      .expect(409);
+    expect(dup.body.errors[0].code).toBe('DUPLICATE');
+  });
+
+  it('rejects the (now former) proxy on a new vote once revoked, while the granter can still vote directly', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitIds[0]}/vote-proxy/revoke`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .expect(201);
+
+    const { voteId, yesOptionId } = await publishReferendum();
+
+    const rejected = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${ownerB.accessToken}`)
+      .send({ unitId: unitIds[0], selectedOptionId: yesOptionId })
+      .expect(403);
+    expect(rejected.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+
+    const accepted = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .send({ unitId: unitIds[0], selectedOptionId: yesOptionId })
+      .expect(201);
+    expect(accepted.body.data.voterPersonId).toBe(ownerA.personId);
   });
 });

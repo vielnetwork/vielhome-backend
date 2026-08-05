@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Prisma } from '@prisma/client';
 import type { VoteCategory, VoteResultStatus, VoteStatus } from '@prisma/client';
 import { VotingRepository } from '../infrastructure/repositories/voting.repository';
 import { MeetingRepository } from '../infrastructure/repositories/meeting.repository';
@@ -28,6 +29,23 @@ const DEFAULT_REFERENDUM_OPTIONS = [
   { label: 'مخالف', value: 'NO' },
   { label: 'ممتنع', value: 'ABSTAIN' },
 ];
+
+/**
+ * Governance Hardening Phase 1 — same defensive backstop pattern
+ * `finance.service.ts`'s own `isUniqueConstraintViolation` already
+ * established for `applyLateFee`'s equivalent race: `castBallot`'s
+ * `findBallotForUnit` pre-check (below) handles the ordinary sequential
+ * duplicate-vote case, but two near-simultaneous requests for the same
+ * `(voteId, unitId)` could both pass that read before either write lands,
+ * and the loser's `createBallot` would previously surface `Ballot`'s own
+ * `@@unique([voteId, unitId])` violation as a raw, uncaught
+ * `PrismaClientKnownRequestError` — falling through `AllExceptionsFilter`'s
+ * catch-all into an opaque 500 `UNEXPECTED_ERROR` instead of the same
+ * clean `DuplicateError` a slower duplicate attempt already gets.
+ */
+function isUniqueConstraintViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
 
 /** 06.06 Rule 011/012/013/014: quorum is a percentage of eligible units that must have cast a ballot, evaluated at closure. No quorum requirement means it's always considered met. */
 function isQuorumMet(
@@ -291,12 +309,27 @@ export class VotingService {
       );
     }
 
-    const ballot = await this.voting.createBallot({
-      voteId,
-      unitId: dto.unitId,
-      voterPersonId: actorPersonId,
-      selectedOptionId: dto.selectedOptionId,
-    });
+    // Governance Hardening Phase 1 — see `isUniqueConstraintViolation`'s own
+    // doc comment above: the `existing` check just above this is a
+    // best-effort, non-atomic pre-check, not the real enforcement
+    // mechanism (`Ballot`'s own `@@unique([voteId, unitId])` is). A
+    // concurrent duplicate that slips past the pre-check is caught here
+    // and converted to the same `DuplicateError` a sequential duplicate
+    // gets, instead of leaking a raw Prisma error into a 500.
+    let ballot;
+    try {
+      ballot = await this.voting.createBallot({
+        voteId,
+        unitId: dto.unitId,
+        voterPersonId: actorPersonId,
+        selectedOptionId: dto.selectedOptionId,
+      });
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) {
+        throw new DuplicateError('This unit has already voted on this vote.');
+      }
+      throw error;
+    }
 
     await this.audit.record({
       actorId: actorPersonId,
