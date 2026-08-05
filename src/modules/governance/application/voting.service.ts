@@ -2,6 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import type { VoteCategory, VoteResultStatus, VoteStatus } from '@prisma/client';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 import { VotingRepository } from '../infrastructure/repositories/voting.repository';
 import { MeetingRepository } from '../infrastructure/repositories/meeting.repository';
 import { VoteProxyRepository } from '../infrastructure/repositories/vote-proxy.repository';
@@ -196,8 +201,19 @@ export class VotingService {
     return this.voting.findVoteById(vote.id);
   }
 
-  listVotes(buildingId: string, category?: VoteCategory, status?: VoteStatus) {
-    return this.voting.listVotes(buildingId, { category, status });
+  /** Governance Hardening Phase 2 (audit §44) — paginated (ADR-072/ADR-120 convention), see `VotingRepository.listVotes`'s own doc comment. */
+  async listVotes(
+    buildingId: string,
+    category: VoteCategory | undefined,
+    status: VoteStatus | undefined,
+    pagination: PaginationParams,
+  ) {
+    const { items, total } = await this.voting.listVotes(
+      buildingId,
+      { category, status },
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async getVote(buildingId: string, voteId: string) {

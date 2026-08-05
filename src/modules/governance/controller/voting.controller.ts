@@ -1,6 +1,8 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { VoteCategory, VoteStatus } from '@prisma/client';
+import { parsePagination } from '../../../common/pagination/pagination.util';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
 import { VotingService } from '../application/voting.service';
 import { VoteProxyService } from '../application/vote-proxy.service';
 import { CreateVoteDto } from '../application/dto/create-vote.dto';
@@ -55,14 +57,23 @@ export class VotingController {
     return this.voting.createVote(id, dto, user.sub, requestId);
   }
 
+  /** Governance Hardening Phase 2 (audit §44) — `page`/`limit` (ADR-072 convention), same pattern `FinanceController.listFunds` already established. */
   @Get(':id/votes')
   @UseGuards(MembershipGuard)
-  listVotes(
+  async listVotes(
     @Param('id') id: string,
     @Query('category') category?: VoteCategory,
     @Query('status') status?: VoteStatus,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.voting.listVotes(id, category, status);
+    const { items, meta } = await this.voting.listVotes(
+      id,
+      category,
+      status,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Get(':id/votes/:voteId')

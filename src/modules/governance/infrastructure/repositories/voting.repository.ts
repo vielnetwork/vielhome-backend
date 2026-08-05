@@ -70,15 +70,34 @@ export class VotingRepository {
     });
   }
 
-  listVotes(buildingId: string, filter?: { category?: VoteCategory; status?: VoteStatus }) {
-    return this.prisma.vote.findMany({
-      where: {
-        buildingId,
-        ...(filter?.category ? { category: filter.category } : {}),
-        ...(filter?.status ? { status: filter.status } : {}),
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+  /**
+   * Governance Hardening Phase 2 (audit §44) — paginated, following the
+   * same `page`/`limit` -> `skip`/`take` convention `FinanceRepository
+   * .listFunds` already established (`common/pagination/pagination.util
+   * .ts`, ADR-072/ADR-120). `count` runs alongside `findMany` in the same
+   * `Promise.all` rather than sequentially, matching every other paginated
+   * repository method in this codebase.
+   */
+  async listVotes(
+    buildingId: string,
+    filter: { category?: VoteCategory; status?: VoteStatus },
+    pagination: { skip: number; take: number },
+  ) {
+    const where = {
+      buildingId,
+      ...(filter.category ? { category: filter.category } : {}),
+      ...(filter.status ? { status: filter.status } : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.vote.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.vote.count({ where }),
+    ]);
+    return { items, total };
   }
 
   countOptions(voteId: string): Promise<number> {

@@ -30,11 +30,23 @@ export class MeetingRepository {
     });
   }
 
-  listByBuilding(buildingId: string) {
-    return this.prisma.meeting.findMany({
-      where: { buildingId },
-      orderBy: { scheduledAt: 'desc' },
-    });
+  /**
+   * Governance Hardening Phase 2 (audit §44) — paginated, same convention
+   * as `VotingRepository.listVotes`/`FinanceRepository.listFunds`
+   * (`common/pagination/pagination.util.ts`, ADR-072/ADR-120).
+   */
+  async listByBuilding(buildingId: string, pagination: { skip: number; take: number }) {
+    const where = { buildingId };
+    const [items, total] = await Promise.all([
+      this.prisma.meeting.findMany({
+        where,
+        orderBy: { scheduledAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.meeting.count({ where }),
+    ]);
+    return { items, total };
   }
 
   updateMeeting(
@@ -62,7 +74,23 @@ export class MeetingRepository {
     return this.prisma.meetingAttendance.findMany({ where: { meetingId } });
   }
 
-  listAttendance(meetingId: string) {
-    return this.prisma.meetingAttendance.findMany({ where: { meetingId } });
+  /**
+   * Governance Hardening Phase 2 (audit §44) — paginated, same convention
+   * as this file's own `listByBuilding` above. Ordered by `recordedAt`
+   * descending (most recently recorded first) — `MeetingAttendance` has no
+   * `createdAt` field of its own; `recordedAt` is its equivalent.
+   */
+  async listAttendance(meetingId: string, pagination: { skip: number; take: number }) {
+    const where = { meetingId };
+    const [items, total] = await Promise.all([
+      this.prisma.meetingAttendance.findMany({
+        where,
+        orderBy: { recordedAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.meetingAttendance.count({ where }),
+    ]);
+    return { items, total };
   }
 }

@@ -66,7 +66,11 @@ import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 // Governance Hardening Phase 1 added `BuildingSettings` to this same list
 // (deleted just before `Building` itself) once the new "Tenant Voting
 // Eligibility" describe became this file's first-ever exerciser of
-// `PATCH :id/settings`.
+// `PATCH :id/settings`. Governance Hardening Phase 2 added `Block`
+// (deleted right after `Unit`, since `Unit.blockId` FKs to it) once the
+// new "Vote Target Scope: BLOCK & PROPERTY_TYPE" describe became this
+// file's first-ever creator of a `Block` row (seeded directly via Prisma
+// — see that describe's own comment on why no creation API exists).
 //
 // Same disclosed within-describe state-reuse trade-off as `ADR-073`/
 // `ADR-074`'s own describes: later `it`s deliberately reuse state set by an
@@ -253,6 +257,16 @@ async function deleteBuildingsOnceBatch(
   await prisma.membership.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.ownership.deleteMany({ where: { unit: { buildingId: { in: buildingIds } } } });
   await prisma.unit.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  // Governance Hardening Phase 2 — `Block` carries a required FK to
+  // `Building` (`blocks_buildingId_fkey`) and, like every other table in
+  // this function, has no `onDelete` directive in `schema.prisma`, so it
+  // defaults to RESTRICT. Must run after `Unit.deleteMany` above (`Unit
+  // .blockId` itself FKs to `Block`) and before `Building.deleteMany`
+  // below. No prior Governance e2e describe ever created a `Block` row
+  // before the new "Vote Target Scope: BLOCK & PROPERTY_TYPE" describe —
+  // see that describe's own comment for why (no creation API exists;
+  // seeded directly via Prisma as test fixture setup).
+  await prisma.block.deleteMany({ where: { buildingId: { in: buildingIds } } });
   // Governance Hardening Phase 1 — `BuildingSettings` carries a required FK
   // to `Building` (`building_settings_buildingId_fkey`) and, like every
   // other table in this function, has no `onDelete` directive in
@@ -1542,5 +1556,564 @@ describe('Governance (e2e) — Standing Proxy Voting: Ballot Casting & Revocatio
       .send({ unitId: unitIds[0], selectedOptionId: yesOptionId })
       .expect(201);
     expect(accepted.body.data.voterPersonId).toBe(ownerA.personId);
+  });
+});
+
+describe('Governance (e2e) — Vote Target Scope: BLOCK & PROPERTY_TYPE (21_ADRs > ADR-058)', () => {
+  // Budget: 4 calls to POST /auth/otp/request
+  // (establishVerifiedManagerBuilding's own founder+owner [2] + a real
+  // owner on a Block-scoped unit [1] + a real owner on a COMMERCIAL unit
+  // [1]).
+  //
+  // Governance Hardening Phase 2 (audit §44/§51) — only `SELECTED_UNITS`
+  // and the `ENTIRE_BUILDING` default were ever e2e-exercised before this
+  // describe, out of `ADR-058`'s four named `VoteScopeType` values. This
+  // describe closes the other two: `BLOCK` and `PROPERTY_TYPE`.
+  //
+  // A genuine platform gap surfaced while writing this describe: there is
+  // no API endpoint anywhere in this codebase that creates a `Block` row
+  // (`BuildingController` has no `POST :id/blocks` route, and a full grep
+  // for `prisma.block.create` across `src/` returns zero hits — `Block`
+  // is otherwise a fully real, migrated, indexed model, just with no
+  // creation path). `CreateUnitDto.blockId` accepts an arbitrary string
+  // and `BuildingRepository.createUnit` passes it straight to Prisma with
+  // no existence/ownership check, so a unit CAN be created pointing at a
+  // Block — there is simply no way to create that Block itself except
+  // directly in the database. This describe therefore creates its one
+  // `Block` row via `prisma.block.create` as pure test-fixture setup (the
+  // same posture this file's own `waitFor(() =>
+  // prisma.managerVerificationCase.findFirst(...))` already takes for
+  // state with no read-side API either) — everything downstream of that
+  // (creating the unit inside it, inviting its owner, creating/publishing
+  // the BLOCK-scoped vote, casting the ballot) goes through the real API,
+  // same discipline as every other describe in this file. Flagging this
+  // explicitly rather than silently working around it: if Block
+  // management is meant to be a real, user-facing feature, it currently
+  // has no way to be exercised outside of direct database access at all,
+  // in production or in tests.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let founder: RegisteredPerson; // VERIFIED MANAGER
+  let owner: RegisteredPerson; // sole current Owner of unitIds[0] — RESIDENTIAL (skeleton default)
+  let blockOwner: RegisteredPerson;
+  let commercialOwner: RegisteredPerson;
+  let buildingId: string;
+  let unitIds: string[];
+  let blockId: string;
+  let blockUnitId: string;
+  let commercialUnitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    ({ founder, owner, buildingId, unitIds } = await establishVerifiedManagerBuilding(
+      app,
+      prisma,
+      2,
+    ));
+    createdPhones.push(founder.phone, owner.phone);
+    createdBuildingIds.push(buildingId);
+
+    // No `POST :id/blocks` route exists anywhere in this codebase — see
+    // this describe's own top-of-block comment for why this one row is
+    // seeded directly rather than through the API.
+    const block = await prisma.block.create({
+      data: { buildingId, name: 'e2e Block A' },
+    });
+    blockId = block.id;
+
+    const blockUnitRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send({ unitNumber: 'B-1', blockId })
+      .expect(201);
+    blockUnitId = blockUnitRes.body.data.id;
+    blockOwner = await establishRealOwner(app, buildingId, blockUnitId, founder.accessToken);
+    createdPhones.push(blockOwner.phone);
+
+    const commercialUnitRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send({ unitNumber: 'C-1', type: 'COMMERCIAL' })
+      .expect(201);
+    commercialUnitId = commercialUnitRes.body.data.id;
+    commercialOwner = await establishRealOwner(
+      app,
+      buildingId,
+      commercialUnitId,
+      founder.accessToken,
+    );
+    createdPhones.push(commercialOwner.phone);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('a BLOCK-scoped vote captures eligibility for only the unit in that Block, and its owner can cast a ballot', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send(votePayload({ title: 'Block A vote', scopeType: 'BLOCK', scopeBlockId: blockId }))
+      .expect(201);
+    const voteId = createRes.body.data.id;
+    const yesOptionId = createRes.body.data.options.find(
+      (o: { value: string }) => o.value === 'YES',
+    ).id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/votes/${voteId}/publish`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .expect(200);
+
+    const snapshots = await prisma.voteEligibilitySnapshot.findMany({ where: { voteId } });
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].unitId).toBe(blockUnitId);
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${blockOwner.accessToken}`)
+      .send({ unitId: blockUnitId, selectedOptionId: yesOptionId })
+      .expect(201);
+    expect(res.body.data.voterPersonId).toBe(blockOwner.personId);
+  });
+
+  it('a PROPERTY_TYPE-scoped vote captures eligibility for only COMMERCIAL units, excluding the RESIDENTIAL owner entirely', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send(
+        votePayload({
+          title: 'Commercial units vote',
+          scopeType: 'PROPERTY_TYPE',
+          scopeUnitType: 'COMMERCIAL',
+        }),
+      )
+      .expect(201);
+    const voteId = createRes.body.data.id;
+    const yesOptionId = createRes.body.data.options.find(
+      (o: { value: string }) => o.value === 'YES',
+    ).id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/votes/${voteId}/publish`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .expect(200);
+
+    const snapshots = await prisma.voteEligibilitySnapshot.findMany({ where: { voteId } });
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].unitId).toBe(commercialUnitId);
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${commercialOwner.accessToken}`)
+      .send({ unitId: commercialUnitId, selectedOptionId: yesOptionId })
+      .expect(201);
+    expect(res.body.data.voterPersonId).toBe(commercialOwner.personId);
+
+    // The RESIDENTIAL owner's own unit was never captured in this vote's
+    // eligibility snapshot at all — a materially different rejection from
+    // "you're not this unit's eligible voter" (see the sibling Voting
+    // Lifecycle describe's own equivalent AUTHORIZATION_ERROR test):
+    // here the unit itself was excluded by scope, so the failure is
+    // BUSINESS_RULE_VIOLATION, not AUTHORIZATION_ERROR.
+    const rejected = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ unitId: unitIds[0], selectedOptionId: yesOptionId })
+      .expect(422);
+    expect(rejected.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+});
+
+describe('Governance (e2e) — Vote Result Edge Cases: Tie & Explicit Quorum-Met (06.06 Rule 014/016)', () => {
+  // Budget: 3 calls to POST /auth/otp/request (founder + owner1 + owner2).
+  //
+  // Governance Hardening Phase 2 (audit §15/§16/§51) — the tie-breaking
+  // branch in `VotingService.closeVote` and the quorum-*met* branch of
+  // `isQuorumMet` were both previously verified only by reading the code;
+  // neither had a test where two options actually received equal ballot
+  // counts, nor a test that set an explicit `quorumPercent` and then
+  // actually satisfied it (the existing "insufficient turnout" test only
+  // exercises the quorum-*not*-met branch).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let founder: RegisteredPerson; // VERIFIED MANAGER
+  let owner1: RegisteredPerson; // sole current Owner of unitIds[0]
+  let owner2: RegisteredPerson; // sole current Owner of unitIds[1]
+  let buildingId: string;
+  let unitIds: string[];
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    ({ founder, owner: owner1, buildingId, unitIds } = await establishVerifiedManagerBuilding(
+      app,
+      prisma,
+      2,
+    ));
+    createdPhones.push(founder.phone, owner1.phone);
+    createdBuildingIds.push(buildingId);
+
+    owner2 = await establishRealOwner(app, buildingId, unitIds[1], founder.accessToken);
+    createdPhones.push(owner2.phone);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('closes as a tie — winningOptionId is null despite two ballots actually being cast, not merely absent', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send(votePayload({ title: 'Tie vote' }))
+      .expect(201);
+    const voteId = createRes.body.data.id;
+    const yesOptionId = createRes.body.data.options.find(
+      (o: { value: string }) => o.value === 'YES',
+    ).id;
+    const noOptionId = createRes.body.data.options.find(
+      (o: { value: string }) => o.value === 'NO',
+    ).id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/votes/${voteId}/publish`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${owner1.accessToken}`)
+      .send({ unitId: unitIds[0], selectedOptionId: yesOptionId })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${owner2.accessToken}`)
+      .send({ unitId: unitIds[1], selectedOptionId: noOptionId })
+      .expect(201);
+
+    // Confirm the tie is real (one ballot per option), not an artifact of
+    // an empty tally, before trusting the close result below.
+    const ballots = await prisma.ballot.findMany({ where: { voteId } });
+    expect(ballots).toHaveLength(2);
+    expect(new Set(ballots.map((b) => b.selectedOptionId))).toEqual(
+      new Set([yesOptionId, noOptionId]),
+    );
+
+    const closeRes = await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/votes/${voteId}/close`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .expect(200);
+
+    expect(closeRes.body.data.result.totalBallotCount).toBe(2);
+    expect(closeRes.body.data.result.quorumMet).toBe(true);
+    expect(closeRes.body.data.result.winningOptionId).toBeNull();
+    expect(closeRes.body.data.result.resultStatus).toBe('NOT_PASSED');
+  });
+
+  it('an explicit quorumPercent that IS satisfied closes normally, not QUORUM_NOT_MET', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send(votePayload({ title: 'Quorum-met vote', quorumPercent: 50 }))
+      .expect(201);
+    const voteId = createRes.body.data.id;
+    const yesOptionId = createRes.body.data.options.find(
+      (o: { value: string }) => o.value === 'YES',
+    ).id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/votes/${voteId}/publish`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .expect(200);
+
+    // Only owner1 votes — 1 of 2 eligible units is exactly 50% turnout,
+    // meeting (not exceeding) the 50% quorumPercent threshold.
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/votes/${voteId}/ballots`)
+      .set('Authorization', `Bearer ${owner1.accessToken}`)
+      .send({ unitId: unitIds[0], selectedOptionId: yesOptionId })
+      .expect(201);
+
+    const closeRes = await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/votes/${voteId}/close`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .expect(200);
+
+    expect(closeRes.body.data.result.totalEligibleCount).toBe(2);
+    expect(closeRes.body.data.result.totalBallotCount).toBe(1);
+    expect(closeRes.body.data.result.quorumMet).toBe(true);
+    expect(closeRes.body.data.result.resultStatus).toBe('PASSED');
+    expect(closeRes.body.data.result.winningOptionId).toBe(yesOptionId);
+  });
+});
+
+describe('Governance (e2e) — Cross-Building Isolation (audit §28/§29)', () => {
+  // Budget: 3 calls to POST /auth/otp/request
+  // (establishVerifiedManagerBuilding's own founder+owner [2] + a plain
+  // provisional manager for Building B [1]).
+  //
+  // Governance Hardening Phase 2 (audit §28/§29/§51) — Finance's own
+  // equivalent module has a dedicated 10-test "Cross-Building Isolation"
+  // describe (`test/finance.e2e-spec.ts`); Governance had none. Same two
+  // isolation failure modes that describe names, applied to Governance's
+  // own resources:
+  //   (1) a legitimate member of Building B supplies a Building-A-owned
+  //       resource id on a Building-B-scoped route — must 404 (resource
+  //       not found), never leak existence/data, never 403.
+  //   (2) a person who is NOT a member of Building A at all requests a
+  //       Building-A-scoped route directly — must 403, not 404.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let managerA: RegisteredPerson; // VERIFIED MANAGER of Building A
+  let managerB: RegisteredPerson; // plain (provisional) MANAGER of Building B — MembershipGuard-level access only
+  let buildingAId: string;
+  let buildingBId: string;
+  let unitAId: string;
+  let voteAId: string;
+  let meetingAId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    ({
+      founder: managerA,
+      buildingId: buildingAId,
+      unitIds: [unitAId],
+    } = await establishVerifiedManagerBuilding(app, prisma, 1));
+    createdBuildingIds.push(buildingAId);
+    createdPhones.push(managerA.phone);
+
+    managerB = await registerPerson(app);
+    createdPhones.push(managerB.phone);
+    buildingBId = await createBuilding(app, managerB.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
+    createdBuildingIds.push(buildingBId);
+
+    const voteRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingAId}/votes`)
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .send(votePayload({ title: 'Building A isolation fixture vote' }))
+      .expect(201);
+    voteAId = voteRes.body.data.id;
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingAId}/votes/${voteAId}/publish`)
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .expect(200);
+
+    const meetingRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingAId}/meetings`)
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .send(meetingPayload({ title: 'Building A isolation fixture meeting' }))
+      .expect(201);
+    meetingAId = meetingRes.body.data.id;
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  // --- Pattern 1: Building A's resource id, requested via Building B's own authorized route ---
+
+  it('GET vote detail 404s when the vote belongs to another building', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/votes/${voteAId}`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('GET vote results 404s when the vote belongs to another building', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/votes/${voteAId}/results`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('POST ballot 404s when the vote belongs to another building (not 403, not a leaked eligibility check)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingBId}/votes/${voteAId}/ballots`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .send({ unitId: unitAId, selectedOptionId: 'irrelevant' })
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('GET meeting detail 404s when the meeting belongs to another building', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/meetings/${meetingAId}`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('GET meeting attendance 404s when the meeting belongs to another building', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/meetings/${meetingAId}/attendance`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('GET vote-proxy for a unit 404s when the unit belongs to another building', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/units/${unitAId}/vote-proxy`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(404);
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  // --- Pattern 2: a genuine non-member of Building A hits Building A's own routes directly ---
+
+  it('blocks a Building-B-only member from listing Building A votes at all (403, not 404)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/votes`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(403);
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+
+  it('blocks a Building-B-only member from listing Building A meetings at all (403, not 404)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/meetings`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(403);
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+});
+
+describe('Governance (e2e) — Pagination (audit §44, ADR-072/ADR-120)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (founder + owner).
+  //
+  // Governance Hardening Phase 2 — `listVotes`/`listMeetings`/
+  // `listAttendance` previously had no pagination at all (every prior
+  // `GET :id/votes` call in this file used the request-scoped default
+  // `page`/`limit` implicitly, without ever actually exercising a
+  // multi-page result) — this describe is also, incidentally, the first
+  // one in this file to call `GET :id/votes` at all.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let founder: RegisteredPerson; // VERIFIED MANAGER
+  let owner: RegisteredPerson;
+  let buildingId: string;
+  let meetingIdForAttendance: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    ({ founder, owner, buildingId } = await establishVerifiedManagerBuilding(app, prisma, 2));
+    createdPhones.push(founder.phone, owner.phone);
+    createdBuildingIds.push(buildingId);
+
+    for (let i = 1; i <= 3; i += 1) {
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/votes`)
+        .set('Authorization', `Bearer ${founder.accessToken}`)
+        .send(votePayload({ title: `Pagination Vote ${i}` }))
+        .expect(201);
+    }
+
+    for (let i = 1; i <= 3; i += 1) {
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/meetings`)
+        .set('Authorization', `Bearer ${founder.accessToken}`)
+        .send(meetingPayload({ title: `Pagination Meeting ${i}` }))
+        .expect(201);
+    }
+
+    const meetingRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/meetings`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send(meetingPayload({ title: 'Attendance pagination meeting' }))
+      .expect(201);
+    meetingIdForAttendance = meetingRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/meetings/${meetingIdForAttendance}/attendance`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send({ personIds: [founder.personId, owner.personId] })
+      .expect(201);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('paginates listVotes — limit clamps page size, meta reports total/totalPages, pages do not overlap', async () => {
+    const page1 = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/votes?page=1&limit=2`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    expect(page1.body.data).toHaveLength(2);
+    expect(page1.body.metadata.pagination).toMatchObject({ page: 1, limit: 2 });
+    expect(page1.body.metadata.pagination.total).toBeGreaterThanOrEqual(3);
+    expect(page1.body.metadata.pagination.totalPages).toBeGreaterThanOrEqual(2);
+
+    const page2 = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/votes?page=2&limit=2`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    expect(page2.body.data.length).toBeGreaterThanOrEqual(1);
+
+    const page1Ids = page1.body.data.map((v: { id: string }) => v.id);
+    const page2Ids = page2.body.data.map((v: { id: string }) => v.id);
+    expect(page1Ids.some((id: string) => page2Ids.includes(id))).toBe(false);
+  });
+
+  it('paginates listMeetings the same way', async () => {
+    const page1 = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/meetings?page=1&limit=2`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    expect(page1.body.data).toHaveLength(2);
+    expect(page1.body.metadata.pagination.total).toBeGreaterThanOrEqual(4);
+
+    const page2 = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/meetings?page=2&limit=2`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    const page1Ids = page1.body.data.map((m: { id: string }) => m.id);
+    const page2Ids = page2.body.data.map((m: { id: string }) => m.id);
+    expect(page1Ids.some((id: string) => page2Ids.includes(id))).toBe(false);
+  });
+
+  it('paginates listAttendance — page=1&limit=1 and page=2&limit=1 return the two distinct recorded attendees with no overlap', async () => {
+    const page1 = await request(app.getHttpServer())
+      .get(
+        `/api/v1/buildings/${buildingId}/meetings/${meetingIdForAttendance}/attendance?page=1&limit=1`,
+      )
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    expect(page1.body.data).toHaveLength(1);
+    expect(page1.body.metadata.pagination).toMatchObject({ page: 1, limit: 1, total: 2 });
+
+    const page2 = await request(app.getHttpServer())
+      .get(
+        `/api/v1/buildings/${buildingId}/meetings/${meetingIdForAttendance}/attendance?page=2&limit=1`,
+      )
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    expect(page2.body.data).toHaveLength(1);
+    expect(page2.body.data[0].personId).not.toBe(page1.body.data[0].personId);
   });
 });

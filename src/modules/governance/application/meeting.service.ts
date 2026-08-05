@@ -1,4 +1,9 @@
 import { Injectable } from '@nestjs/common';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 import { MeetingRepository } from '../infrastructure/repositories/meeting.repository';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { MeetingPolicy } from '../domain/policies/meeting.policy';
@@ -66,8 +71,10 @@ export class MeetingService {
     return meeting;
   }
 
-  listMeetings(buildingId: string) {
-    return this.meetings.listByBuilding(buildingId);
+  /** Governance Hardening Phase 2 (audit §44) — paginated (ADR-072/ADR-120 convention), see `MeetingRepository.listByBuilding`'s own doc comment. */
+  async listMeetings(buildingId: string, pagination: PaginationParams) {
+    const { items, total } = await this.meetings.listByBuilding(buildingId, toSkipTake(pagination));
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   getMeeting(buildingId: string, meetingId: string) {
@@ -153,8 +160,10 @@ export class MeetingService {
     return attendances;
   }
 
-  async listAttendance(buildingId: string, meetingId: string) {
+  /** Governance Hardening Phase 2 (audit §44) — paginated (ADR-072/ADR-120 convention), see `MeetingRepository.listAttendance`'s own doc comment. */
+  async listAttendance(buildingId: string, meetingId: string, pagination: PaginationParams) {
     await this.getMeetingOrThrow(buildingId, meetingId);
-    return this.meetings.listAttendance(meetingId);
+    const { items, total } = await this.meetings.listAttendance(meetingId, toSkipTake(pagination));
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 }

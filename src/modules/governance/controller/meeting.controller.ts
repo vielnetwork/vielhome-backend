@@ -1,5 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { parsePagination } from '../../../common/pagination/pagination.util';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
 import { MeetingService } from '../application/meeting.service';
 import { CreateMeetingDto } from '../application/dto/create-meeting.dto';
 import { UpdateMeetingDto } from '../application/dto/update-meeting.dto';
@@ -45,10 +47,16 @@ export class MeetingController {
     return this.meetings.createMeeting(id, dto, user.sub, requestId);
   }
 
+  /** Governance Hardening Phase 2 (audit §44) — `page`/`limit` (ADR-072 convention), same pattern `FinanceController.listFunds` already established. */
   @Get(':id/meetings')
   @UseGuards(MembershipGuard)
-  listMeetings(@Param('id') id: string) {
-    return this.meetings.listMeetings(id);
+  async listMeetings(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.meetings.listMeetings(id, parsePagination(page, limit));
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Get(':id/meetings/:meetingId')
@@ -95,9 +103,20 @@ export class MeetingController {
     return this.meetings.recordAttendance(id, meetingId, dto, user.sub, requestId);
   }
 
+  /** Governance Hardening Phase 2 (audit §44) — `page`/`limit` (ADR-072 convention), same pattern `FinanceController.listFunds` already established. */
   @Get(':id/meetings/:meetingId/attendance')
   @UseGuards(MembershipGuard)
-  listAttendance(@Param('id') id: string, @Param('meetingId') meetingId: string) {
-    return this.meetings.listAttendance(id, meetingId);
+  async listAttendance(
+    @Param('id') id: string,
+    @Param('meetingId') meetingId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.meetings.listAttendance(
+      id,
+      meetingId,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 }
