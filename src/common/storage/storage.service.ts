@@ -25,6 +25,23 @@ export interface StorageHealthResult {
 }
 
 /**
+ * Documents Phase 1a Hardening (post-audit) — the real, per-object
+ * existence/size check `DocumentsService` runs before ever recording a
+ * Document/DocumentVersion metadata row, closing the audit's own
+ * repeatedly-stated caution: "do not count presigned URL generation as
+ * proof upload/download works" and "do not count database metadata
+ * creation as successful object storage persistence." See
+ * `StorageService.verifyObjectUploaded`'s own doc comment for exactly
+ * what is and is not verified.
+ */
+export interface ObjectVerificationResult {
+  exists: boolean;
+  /** Only meaningful when `exists` is true; `undefined` if the storage response omitted Content-Length. */
+  sizeMismatch?: boolean;
+  actualSizeBytes?: number;
+}
+
+/**
  * 21_ADRs > ADR-087 — real S3/MinIO-compatible object storage for
  * Documents, closing `ADR-026`'s own Future Review item and the #1 entry
  * in `24_Release_Readiness_Audit_v1.0` §2.1 ("needs a new npm dependency
@@ -113,10 +130,19 @@ export class StorageService {
    * uploaded content's exact type/size. `fileType`/`fileSize` are still
    * policy-checked (`DocumentPolicy.assertFileTypeSupported`/
    * `assertFileSizeWithinLimit`) before a URL is ever issued, and again
-   * when the resulting `Document`/`DocumentVersion` is recorded — but
-   * nothing server-side re-verifies the ACTUAL uploaded bytes match those
-   * declared values. An explicit, disclosed trust boundary, not an
-   * oversight — see this ADR's own Future Review.
+   * when the resulting `Document`/`DocumentVersion` is recorded. The
+   * presigned PUT itself still does not bind `Content-Type`/
+   * `Content-Length` — nothing stops a client from sending different
+   * values than it declared. Documents Phase 1a Hardening closed part of
+   * this gap: the finalize path (`DocumentsService.resolveUploadIntent`,
+   * called from `createDocument`/`uploadVersion`/`bulkCreateDocuments`)
+   * now issues a real presigned HEAD Object request via
+   * `verifyObjectUploaded` and rejects the upload if the object doesn't
+   * exist or its actual `Content-Length` doesn't match the declared
+   * `fileSize`. MIME-type/magic-byte/content verification is still NOT
+   * implemented — `Content-Type` and the actual file contents remain
+   * unverified. An explicit, disclosed trust boundary, not an oversight —
+   * see this ADR's own Future Review and ADR-121.
    */
   getPresignedUploadUrl(storageKey: string, expiresInSeconds = 900): PresignedUpload {
     this.assertConfigured();
@@ -185,7 +211,76 @@ export class StorageService {
     }
   }
 
-  private presign(method: 'GET' | 'PUT', key: string, expiresInSeconds: number): string {
+  /**
+   * Documents Phase 1a Hardening (post-audit) — real presigned HEAD Object
+   * verification, run by `DocumentsService` after intent validation but
+   * BEFORE the intent is consumed/the Document metadata is written (see
+   * that service's own comment on the exact sequencing and the disclosed
+   * race window between this check and the atomic consume+create that
+   * follows it). Uses the same signing path as `getPresignedUploadUrl`/
+   * `getPresignedDownloadUrl`/`checkBucketHealth` — just against the
+   * object's own key rather than the bucket root.
+   *
+   * What this proves: the object exists at this exact key in this exact
+   * bucket (`exists: true` only on a real HTTP 200), and — when the
+   * storage backend returns a `Content-Length` header — that its actual
+   * byte size matches what the client declared (`sizeMismatch`).
+   *
+   * What this deliberately does NOT verify: `Content-Type`. The presigned
+   * PUT this object was uploaded through signs only the `host` header
+   * (`X-Amz-SignedHeaders=host` — see `getPresignedUploadUrl`'s own doc
+   * comment), so nothing constrains what Content-Type header, if any, the
+   * uploading client actually sent; there is also no reliable mapping
+   * between this domain's business-level `fileType` vocabulary
+   * (PDF/JPG/JPEG/PNG) and a MIME `Content-Type` string to compare against
+   * even if there were. Comparing an untrusted, unsigned header against a
+   * different vocabulary would be false confidence, not a real check — so
+   * this is disclosed as unverified rather than silently "checked."
+   *
+   * Never throws on a missing object or a network failure — both are
+   * reported as `exists: false` (indistinguishable from each other to the
+   * caller, which is the correct, conservative default: "prove it
+   * exists," not "prove it doesn't"). Only the error's `name`, never its
+   * `message`, is logged on a network-level failure — same posture as
+   * `checkBucketHealth`.
+   */
+  async verifyObjectUploaded(
+    storageKey: string,
+    expectedSizeBytes: number,
+    timeoutMs = 5000,
+  ): Promise<ObjectVerificationResult> {
+    this.assertConfigured();
+    const url = this.presign('HEAD', storageKey, 30);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { method: 'HEAD', signal: controller.signal });
+      if (res.status !== 200) {
+        return { exists: false };
+      }
+      const contentLengthHeader = res.headers.get('content-length');
+      if (contentLengthHeader === null) {
+        // Storage backend didn't report a size — can't compare, so don't
+        // claim a mismatch that was never actually checked.
+        return { exists: true };
+      }
+      const actualSizeBytes = Number(contentLengthHeader);
+      return {
+        exists: true,
+        actualSizeBytes,
+        sizeMismatch: actualSizeBytes !== expectedSizeBytes,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `Storage HEAD-object verification failed: ${err instanceof Error ? err.name : 'unknown error'}`,
+      );
+      return { exists: false };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private presign(method: 'GET' | 'PUT' | 'HEAD', key: string, expiresInSeconds: number): string {
     const c = this.cfg;
     const host = c.forcePathStyle ? c.endpoint : `${c.bucket}.${c.endpoint}`;
     const canonicalUri = c.forcePathStyle

@@ -150,6 +150,18 @@ async function deleteBuildingsOnceBatch(
     where: { subscription: { buildingId: { in: buildingIds } } },
   });
   await prisma.subscription.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  // Documents Phase 1a Hardening — DocumentUploadIntent carries required
+  // (RESTRICT) FKs into both Building (buildingId) and Person
+  // (requestedById); it must be deleted before this function's own
+  // Building delete below AND before `cleanupPhones`' later Person delete
+  // (which runs after this function, in `afterAll`) — deleting all intents
+  // scoped to these buildingIds here satisfies both, since every intent
+  // this suite creates is scoped to one of these buildingIds. Its
+  // documentId FK is ON DELETE SET NULL, so this delete doesn't need to
+  // happen before or after the Document delete below for that reason —
+  // it's placed here (before Document) only to keep the FK-dependency
+  // deletes grouped together at the top of this function.
+  await prisma.documentUploadIntent.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.documentDownload.deleteMany({
     where: { documentVersion: { document: { buildingId: { in: buildingIds } } } },
   });
@@ -295,7 +307,7 @@ describe('Documents — Real Storage Upload Flow (e2e, ADR-087)', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
       .set('Authorization', `Bearer ${otherPerson.accessToken}`)
-      .send({ fileName: 'lease.pdf', fileType: 'PDF', fileSize: 1024 })
+      .send({ fileName: 'lease.pdf', fileType: 'PDF', fileSize: 1024, purpose: 'CREATE_DOCUMENT' })
       .expect(403);
   });
 
@@ -303,7 +315,12 @@ describe('Documents — Real Storage Upload Flow (e2e, ADR-087)', () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
       .set('Authorization', `Bearer ${founder.accessToken}`)
-      .send({ fileName: 'malware.exe', fileType: 'EXE', fileSize: 1024 })
+      .send({
+        fileName: 'malware.exe',
+        fileType: 'EXE',
+        fileSize: 1024,
+        purpose: 'CREATE_DOCUMENT',
+      })
       .expect(400);
 
     expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
@@ -313,33 +330,91 @@ describe('Documents — Real Storage Upload Flow (e2e, ADR-087)', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
       .set('Authorization', `Bearer ${founder.accessToken}`)
-      .send({ fileName: 'huge.pdf', fileType: 'PDF', fileSize: 25 * 1024 * 1024 + 1 })
+      .send({
+        fileName: 'huge.pdf',
+        fileType: 'PDF',
+        fileSize: 25 * 1024 * 1024 + 1,
+        purpose: 'CREATE_DOCUMENT',
+      })
+      .expect(400);
+  });
+
+  // Documents Phase 1a Hardening (post-audit) — `purpose` is now a required
+  // field; omitting it should 400 before any policy/storage logic runs
+  // (global ValidationPipe rejects the request body itself).
+  it('rejects a request with no purpose field (400, before contacting storage)', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
+      .set('Authorization', `Bearer ${founder.accessToken}`)
+      .send({ fileName: 'lease.pdf', fileType: 'PDF', fileSize: 1024 })
       .expect(400);
   });
 
   if (STORAGE_CONFIGURED_FOR_TEST) {
-    it('returns a well-formed presigned upload URL when storage IS configured', async () => {
+    it('returns a well-formed presigned upload URL and a persisted uploadIntentId when storage IS configured', async () => {
       const res = await request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
         .set('Authorization', `Bearer ${founder.accessToken}`)
-        .send({ fileName: 'lease.pdf', fileType: 'PDF', fileSize: 1024 })
+        .send({
+          fileName: 'lease.pdf',
+          fileType: 'PDF',
+          fileSize: 1024,
+          purpose: 'CREATE_DOCUMENT',
+        })
         .expect(201);
 
       expect(res.body.data.uploadUrl).toMatch(/^https?:\/\//);
       expect(res.body.data.uploadUrl).toContain('X-Amz-Signature=');
       expect(res.body.data.storageKey).toMatch(new RegExp(`^documents/${buildingId}/`));
       expect(new Date(res.body.data.expiresAt).getTime()).toBeGreaterThan(Date.now());
+      // Documents Phase 1a Hardening — the storageKey trust-boundary
+      // closure's whole point: a DocumentUploadIntent id is now returned
+      // alongside the presigned URL fields.
+      expect(typeof res.body.data.uploadIntentId).toBe('string');
+      expect(res.body.data.uploadIntentId.length).toBeGreaterThan(0);
     });
 
-    it('a full real round trip: presign -> PUT bytes -> create document -> download resolves a fresh presigned GET with matching bytes', async () => {
+    it('CREATE_VERSION purpose with no documentId is rejected (400)', async () => {
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
+        .set('Authorization', `Bearer ${founder.accessToken}`)
+        .send({ fileName: 'lease.pdf', fileType: 'PDF', fileSize: 1024, purpose: 'CREATE_VERSION' })
+        .expect(400);
+    });
+
+    it('CREATE_DOCUMENT purpose with a documentId present is rejected (400)', async () => {
+      // A CREATE_DOCUMENT intent has nothing to bind documentId to — the
+      // Document doesn't exist yet. This mirrors the CREATE_VERSION
+      // no-documentId rejection above, for the opposite direction of the
+      // same contract.
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
+        .set('Authorization', `Bearer ${founder.accessToken}`)
+        .send({
+          fileName: 'lease.pdf',
+          fileType: 'PDF',
+          fileSize: 1024,
+          purpose: 'CREATE_DOCUMENT',
+          documentId: 'some-document-id',
+        })
+        .expect(400);
+    });
+
+    it('a full real round trip: presign -> PUT bytes -> create document (intent validated + HEAD-verified) -> download resolves a fresh presigned GET with matching bytes', async () => {
+      const body = Buffer.from('hello-adr087');
       const presignRes = await request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
         .set('Authorization', `Bearer ${founder.accessToken}`)
-        .send({ fileName: 'roundtrip.pdf', fileType: 'PDF', fileSize: 11 })
+        .send({
+          fileName: 'roundtrip.pdf',
+          fileType: 'PDF',
+          fileSize: body.length,
+          purpose: 'CREATE_DOCUMENT',
+        })
         .expect(201);
 
-      const { uploadUrl, storageKey } = presignRes.body.data;
-      const body = Buffer.from('hello-adr087');
+      const { uploadUrl, storageKey, uploadIntentId } = presignRes.body.data;
+      expect(typeof uploadIntentId).toBe('string');
 
       const putRes = await fetch(uploadUrl, { method: 'PUT', body });
       expect(putRes.ok).toBe(true);
@@ -372,12 +447,211 @@ describe('Documents — Real Storage Upload Flow (e2e, ADR-087)', () => {
       const fetchedBytes = Buffer.from(await fetched.arrayBuffer());
       expect(fetchedBytes.equals(body)).toBe(true);
     });
+
+    // Documents Phase 1a Hardening (post-audit) — Sections C-G's new
+    // trust-boundary tests. Each of these needs a REAL MinIO to run
+    // against (some require a real successful PUT beforehand) — see the
+    // final report for exactly which command runs this file.
+    describe('Upload-intent trust-boundary closure (Sections C-G)', () => {
+      async function requestIntent(
+        overrides: Record<string, unknown> = {},
+      ): Promise<{ uploadUrl: string; storageKey: string; uploadIntentId: string }> {
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
+          .set('Authorization', `Bearer ${founder.accessToken}`)
+          .send({
+            fileName: 'intent-test.pdf',
+            fileType: 'PDF',
+            fileSize: 12,
+            purpose: 'CREATE_DOCUMENT',
+            ...overrides,
+          })
+          .expect(201);
+        return res.body.data;
+      }
+
+      function createDocumentPayload(
+        overrides: Record<string, unknown> = {},
+      ): Record<string, unknown> {
+        return {
+          category: 'MAINTENANCE',
+          title: 'Intent trust-boundary test document',
+          fileUrl: 'placeholder',
+          fileName: 'intent-test.pdf',
+          fileType: 'PDF',
+          fileSize: 12,
+          ...overrides,
+        };
+      }
+
+      it('rejects an arbitrary fileUrl that was never issued by upload-url (404, no matching intent)', async () => {
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/buildings/${buildingId}/documents`)
+          .set('Authorization', `Bearer ${founder.accessToken}`)
+          .send(createDocumentPayload({ fileUrl: `documents/${buildingId}/not-a-real-key.pdf` }))
+          .expect(404);
+
+        expect(res.body.errors[0].code).toBe('NOT_FOUND');
+      });
+
+      it('rejects createDocument BEFORE the file is actually PUT to storage (422 — HEAD finds nothing)', async () => {
+        const { storageKey } = await requestIntent();
+
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/buildings/${buildingId}/documents`)
+          .set('Authorization', `Bearer ${founder.accessToken}`)
+          .send(createDocumentPayload({ fileUrl: storageKey }))
+          .expect(422);
+
+        expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+      });
+
+      it('rejects createDocument when the declared fileSize does not match what was actually uploaded (400 — size mismatch)', async () => {
+        const { uploadUrl, storageKey } = await requestIntent({ fileSize: 999 });
+        // 12 real bytes, intent declared 999 — the PUT itself must still succeed
+        // (nothing about the size mismatch prevents the object from being
+        // written); the mismatch is only detected later, by createDocument's
+        // HEAD-verify. Asserting putRes.ok here proves the size-mismatch
+        // rejection below is really about the mismatch, not a failed upload.
+        const putRes = await fetch(uploadUrl, { method: 'PUT', body: Buffer.from('hello-adr087') });
+        expect(putRes.ok).toBe(true);
+
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/buildings/${buildingId}/documents`)
+          .set('Authorization', `Bearer ${founder.accessToken}`)
+          .send(createDocumentPayload({ fileUrl: storageKey, fileSize: 999 }))
+          .expect(400);
+
+        expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+      });
+
+      it('rejects re-using an already-consumed intent for a second createDocument call (409)', async () => {
+        const body = Buffer.from('hello-adr087');
+        const { uploadUrl, storageKey } = await requestIntent({ fileSize: body.length });
+        const putRes = await fetch(uploadUrl, { method: 'PUT', body });
+        expect(putRes.ok).toBe(true);
+
+        await request(app.getHttpServer())
+          .post(`/api/v1/buildings/${buildingId}/documents`)
+          .set('Authorization', `Bearer ${founder.accessToken}`)
+          .send(createDocumentPayload({ fileUrl: storageKey, fileSize: body.length }))
+          .expect(201);
+
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/buildings/${buildingId}/documents`)
+          .set('Authorization', `Bearer ${founder.accessToken}`)
+          .send(
+            createDocumentPayload({
+              fileUrl: storageKey,
+              fileSize: body.length,
+              title: 'Second attempt, same intent',
+            }),
+          )
+          .expect(409);
+
+        expect(res.body.errors[0].code).toBe('CONFLICT');
+      });
+
+      async function createRealDocument(title: string): Promise<string> {
+        const body = Buffer.from('hello-adr087');
+        const { uploadUrl, storageKey } = await requestIntent({ fileSize: body.length });
+        const putRes = await fetch(uploadUrl, { method: 'PUT', body });
+        expect(putRes.ok).toBe(true);
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/buildings/${buildingId}/documents`)
+          .set('Authorization', `Bearer ${founder.accessToken}`)
+          .send(createDocumentPayload({ title, fileUrl: storageKey, fileSize: body.length }))
+          .expect(201);
+        return res.body.data.document.id as string;
+      }
+
+      it('a CREATE_VERSION intent bound to documentA is rejected when consumed via documentB (422 — wrong document binding)', async () => {
+        const documentAId = await createRealDocument('Document A');
+        const documentBId = await createRealDocument('Document B');
+
+        const versionBody = Buffer.from('hello-adr087');
+        const versionIntent = await requestIntent({
+          fileName: 'v2.pdf',
+          fileSize: versionBody.length,
+          purpose: 'CREATE_VERSION',
+          documentId: documentAId,
+        });
+        const putRes = await fetch(versionIntent.uploadUrl, { method: 'PUT', body: versionBody });
+        expect(putRes.ok).toBe(true);
+
+        // Consuming it against documentB (not the document it was bound to) must fail...
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/documents/${documentBId}/versions`)
+          .set('Authorization', `Bearer ${founder.accessToken}`)
+          .send({
+            fileUrl: versionIntent.storageKey,
+            fileName: 'v2.pdf',
+            fileType: 'PDF',
+            fileSize: versionBody.length,
+          })
+          .expect(422);
+        expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+
+        // ...but consuming the SAME still-unconsumed intent against the
+        // document it was actually bound to (documentA) succeeds.
+        await request(app.getHttpServer())
+          .post(`/api/v1/documents/${documentAId}/versions`)
+          .set('Authorization', `Bearer ${founder.accessToken}`)
+          .send({
+            fileUrl: versionIntent.storageKey,
+            fileName: 'v2.pdf',
+            fileType: 'PDF',
+            fileSize: versionBody.length,
+          })
+          .expect(201);
+      });
+
+      it('bulk upload validates each item against its own intent independently — one bad item fails without blocking a sibling good item', async () => {
+        const goodBody = Buffer.from('hello-adr087');
+        const good = await requestIntent({ fileSize: goodBody.length });
+        const putRes = await fetch(good.uploadUrl, { method: 'PUT', body: goodBody });
+        expect(putRes.ok).toBe(true);
+
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/buildings/${buildingId}/documents/bulk`)
+          .set('Authorization', `Bearer ${founder.accessToken}`)
+          .send({
+            documents: [
+              createDocumentPayload({
+                title: 'Bulk — good item',
+                fileUrl: good.storageKey,
+                fileSize: goodBody.length,
+              }),
+              createDocumentPayload({
+                title: 'Bulk — bad item (unknown storage key)',
+                fileUrl: `documents/${buildingId}/never-issued.pdf`,
+              }),
+            ],
+          })
+          .expect(201);
+
+        expect(res.body.data.summary).toEqual({ total: 2, succeeded: 1, failed: 1 });
+        expect(res.body.data.results[0].status).toBe('created');
+        expect(res.body.data.results[1].status).toBe('failed');
+        expect(res.body.data.results[1].error.code).toBe('NOT_FOUND');
+      });
+    });
   } else {
     it('refuses with a clear error when storage is NOT configured (this environment)', async () => {
+      // purpose is required (Documents Phase 1a Hardening) — it must be
+      // included here so the request actually reaches StorageService's
+      // "not configured" check (500) instead of failing DTO validation
+      // (400) for a missing required field, which would test the wrong
+      // thing entirely.
       const res = await request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
         .set('Authorization', `Bearer ${founder.accessToken}`)
-        .send({ fileName: 'lease.pdf', fileType: 'PDF', fileSize: 1024 })
+        .send({
+          fileName: 'lease.pdf',
+          fileType: 'PDF',
+          fileSize: 1024,
+          purpose: 'CREATE_DOCUMENT',
+        })
         .expect(500);
 
       expect(res.body.errors[0].code).toBe('UNEXPECTED_ERROR');

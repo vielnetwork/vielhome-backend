@@ -14,6 +14,8 @@ import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
+import { parsePagination } from '../../../common/pagination/pagination.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
 /**
@@ -80,16 +82,25 @@ export class BuildingDocumentsController {
     return this.documents.bulkCreateDocuments(id, dto, user.sub, requestId);
   }
 
+  /** 21_ADRs > ADR-072/ADR-120 — `page`/`limit`, closing Documents' own named gap in the platform pagination re-audit. */
   @Get(':id/documents')
   @UseGuards(MembershipGuard)
-  listDocuments(
+  async listDocuments(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
     @Query('category') category?: DocumentCategory,
     @Query('visibility') visibility?: DocumentVisibility,
     @Query('status') status?: DocumentStatus,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.documents.listDocuments(id, user.sub, { category, visibility, status });
+    const { items, meta } = await this.documents.listDocuments(
+      id,
+      user.sub,
+      { category, visibility, status },
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   /** Convenience endpoint (beyond 08.09's own list) — "every document attached to this entity," the mechanism Case attachments use. */

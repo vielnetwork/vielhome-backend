@@ -9,6 +9,12 @@ import { ResponseInterceptor } from '../src/common/interceptors/response.interce
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
 import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
+import {
+  createDocument,
+  uploadDocumentVersion,
+  requestRealFileUrl,
+  buildSuccessfulBulkItem,
+} from './helpers/create-document';
 
 // 21_ADRs > ADR-077 — Testing Phase 3c: Documents domain e2e coverage.
 // Continues directly from Testing Phase 3a (`ADR-075`, Governance, delivered
@@ -53,11 +59,24 @@ import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 // its own explicit non-member assertion below rather than assuming the
 // inline check behaves identically to the guard.
 //
-// No real object-storage integration exists (see the Documents header
-// comment in `schema.prisma`) — `fileUrl` is just a client-supplied
-// string, so this file never needs real file bytes, only strings. This
-// also means `GET /document-versions/:id/download` returns stored
-// metadata (`fileUrl`/`fileName`/`fileType`), not a stream/redirect.
+// Real S3/MinIO-compatible object storage now exists (ADR-087), and
+// Documents Phase 1a Hardening (ADR-121) closed the trust-boundary gap
+// that used to let `fileUrl` be an arbitrary, never-uploaded string:
+// once storage is configured, `createDocument`/`uploadVersion`/
+// `bulkCreateDocuments` validate `fileUrl` against a real, unconsumed
+// `DocumentUploadIntent` and HEAD-verify the object actually exists.
+// Every 201-success path in this file that ends up reaching that check
+// now goes through `./helpers/create-document`'s `createDocument`/
+// `uploadDocumentVersion`/`requestRealFileUrl`/`buildSuccessfulBulkItem`
+// — real bytes really are PUT to storage first when storage is
+// configured (see that module's own comment for the storage-not-
+// configured fallback, which keeps this file regression-free in a
+// storage-less environment). Negative-path tests that fail earlier in
+// the service's own validation order (auth/membership/category/fileType/
+// archived-state checks — all of which run BEFORE the upload-intent
+// check) still use a plain arbitrary `fileUrl`, since it's never reached.
+// `GET /document-versions/:id/download` returns stored metadata
+// (`fileUrl`/`fileName`/`fileType`), not a stream/redirect, regardless.
 //
 // Cleanup here extends `cases.e2e-spec.ts`'s own `deleteBuildingsOnceBatch`
 // one layer further: `DocumentDownload`/`DocumentReference` (required FK to
@@ -211,6 +230,19 @@ async function deleteBuildingsOnceBatch(
   await prisma.case.deleteMany({ where: { buildingId: { in: buildingIds } } });
 
   // --- Documents (new this file — 21_ADRs > ADR-077) --------------------
+  // Documents Phase 1a Hardening (ADR-121) — DocumentUploadIntent carries
+  // required (RESTRICT) FKs into both Building (buildingId) and Person
+  // (requestedById). It must be deleted before this function's own
+  // Building delete below AND before `cleanupPhones`'s later Person
+  // delete (which always runs after `cleanupBuildings` in every
+  // `afterAll` in this file) — deleting every intent scoped to these
+  // buildingIds here satisfies both, since every intent this suite
+  // creates (via the shared `createDocument`/`uploadDocumentVersion`
+  // helpers) is scoped to one of these buildingIds. Its documentId FK is
+  // ON DELETE SET NULL, so this delete has no ordering requirement
+  // relative to the Document delete below; it's placed first only to
+  // keep the FK-dependency deletes grouped together.
+  await prisma.documentUploadIntent.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.documentDownload.deleteMany({
     where: { documentVersion: { document: { buildingId: { in: buildingIds } } } },
   });
@@ -354,37 +386,6 @@ async function joinBuildingAsApprovedMember(
   return reqRes.body.data.id;
 }
 
-/** Creates a document (and its first version) as `accessToken`, returns
- * its id. Defaults to an open GENERAL category and a supported PDF file
- * type so callers only need to override what the test actually cares
- * about. */
-async function createDocument(
-  app: INestApplication,
-  buildingId: string,
-  accessToken: string,
-  overrides: Record<string, unknown> = {},
-): Promise<{ documentId: string; versionId: string }> {
-  const res = await request(app.getHttpServer())
-    .post(`/api/v1/buildings/${buildingId}/documents`)
-    .set('Authorization', `Bearer ${accessToken}`)
-    .send({
-      category: 'GENERAL',
-      title: 'e2e document',
-      description: 'e2e document description',
-      fileUrl: 'https://storage.example.com/e2e-file.pdf',
-      fileName: 'e2e-file.pdf',
-      fileType: 'PDF',
-      fileSize: 1024,
-      ...overrides,
-    })
-    .expect(201);
-
-  return {
-    documentId: res.body.data.document.id as string,
-    versionId: res.body.data.version.id as string,
-  };
-}
-
 describe('Documents (e2e) — Creation & Category Gating (06.08 Rule 011/012)', () => {
   // Budget: 3 calls to POST /auth/otp/request (manager + member + nonMember).
   let app: INestApplication;
@@ -418,16 +419,25 @@ describe('Documents (e2e) — Creation & Category Gating (06.08 Rule 011/012)', 
   });
 
   it('lets a member create an open-category document with real defaults', async () => {
+    const fileName = 'elevator.pdf';
+    const fileType = 'PDF';
+    const fileSize = 2048;
+    const fileUrl = await requestRealFileUrl(app, buildingId, member.accessToken, {
+      fileName,
+      fileType,
+      fileSize,
+    });
+
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/documents`)
       .set('Authorization', `Bearer ${member.accessToken}`)
       .send({
         category: 'MAINTENANCE',
         title: 'Elevator service report',
-        fileUrl: 'https://storage.example.com/elevator.pdf',
-        fileName: 'elevator.pdf',
-        fileType: 'PDF',
-        fileSize: 2048,
+        fileUrl,
+        fileName,
+        fileType,
+        fileSize,
       })
       .expect(201);
 
@@ -456,16 +466,25 @@ describe('Documents (e2e) — Creation & Category Gating (06.08 Rule 011/012)', 
   });
 
   it('lets a privileged member create a GOVERNANCE document', async () => {
+    const fileName = 'minutes.pdf';
+    const fileType = 'PDF';
+    const fileSize = 512;
+    const fileUrl = await requestRealFileUrl(app, buildingId, manager.accessToken, {
+      fileName,
+      fileType,
+      fileSize,
+    });
+
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/documents`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({
         category: 'GOVERNANCE',
         title: 'Board minutes',
-        fileUrl: 'https://storage.example.com/minutes.pdf',
-        fileName: 'minutes.pdf',
-        fileType: 'PDF',
-        fileSize: 512,
+        fileUrl,
+        fileName,
+        fileType,
+        fileSize,
       })
       .expect(201);
 
@@ -662,19 +681,16 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
       title: 'Insurance policy',
     }));
 
-    const res = await request(app.getHttpServer())
-      .post(`/api/v1/documents/${openDocId}/versions`)
-      .set('Authorization', `Bearer ${member.accessToken}`)
-      .send({
-        fileUrl: 'https://storage.example.com/insurance-v2.pdf',
-        fileName: 'insurance-v2.pdf',
-        fileType: 'PDF',
-        fileSize: 4096,
-      })
-      .expect(201);
+    const { versionNumber, isCurrent } = await uploadDocumentVersion(
+      app,
+      buildingId,
+      openDocId,
+      member.accessToken,
+      { fileName: 'insurance-v2.pdf', fileSize: 4096 },
+    );
 
-    expect(res.body.data.versionNumber).toBe(2);
-    expect(res.body.data.isCurrent).toBe(true);
+    expect(versionNumber).toBe(2);
+    expect(isCurrent).toBe(true);
 
     const doc = await request(app.getHttpServer())
       .get(`/api/v1/documents/${openDocId}`)
@@ -784,19 +800,29 @@ describe('Documents (e2e) — Bulk Upload (08.09 Rule 018, ADR-051)', () => {
   });
 
   it('item-level atomicity: one bad file type fails only its own item', async () => {
+    // Items 1 and 3 pass every policy check and reach the upload-intent
+    // check, so — unlike item 2 — they need a real presigned+uploaded
+    // object once storage is configured (see ./helpers/create-document).
+    const item1 = await buildSuccessfulBulkItem(app, buildingId, manager.accessToken, {
+      title: 'Bulk item 1',
+      fileName: 'bulk1.pdf',
+      fileType: 'PDF',
+      fileSize: 100,
+    });
+    const item3 = await buildSuccessfulBulkItem(app, buildingId, manager.accessToken, {
+      category: 'MAINTENANCE',
+      title: 'Bulk item 3',
+      fileName: 'bulk3.png',
+      fileType: 'PNG',
+      fileSize: 100,
+    });
+
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/documents/bulk`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({
         documents: [
-          {
-            category: 'GENERAL',
-            title: 'Bulk item 1',
-            fileUrl: 'https://storage.example.com/bulk1.pdf',
-            fileName: 'bulk1.pdf',
-            fileType: 'PDF',
-            fileSize: 100,
-          },
+          item1,
           {
             category: 'GENERAL',
             title: 'Bulk item 2 — bad type',
@@ -805,14 +831,7 @@ describe('Documents (e2e) — Bulk Upload (08.09 Rule 018, ADR-051)', () => {
             fileType: 'DOCX',
             fileSize: 100,
           },
-          {
-            category: 'MAINTENANCE',
-            title: 'Bulk item 3',
-            fileUrl: 'https://storage.example.com/bulk3.png',
-            fileName: 'bulk3.png',
-            fileType: 'PNG',
-            fileSize: 100,
-          },
+          item3,
         ],
       })
       .expect(201);
@@ -825,19 +844,23 @@ describe('Documents (e2e) — Bulk Upload (08.09 Rule 018, ADR-051)', () => {
   });
 
   it('captures a per-item AUTHORIZATION_ERROR without failing the whole batch', async () => {
+    // The open item passes every policy check and reaches the
+    // upload-intent check, so it needs a real presigned+uploaded object
+    // once storage is configured; the privileged-only item fails at
+    // `assertCategoryManageable`, before ever reaching that check.
+    const openItem = await buildSuccessfulBulkItem(app, buildingId, member.accessToken, {
+      title: 'Open item',
+      fileName: 'open.pdf',
+      fileType: 'PDF',
+      fileSize: 100,
+    });
+
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/documents/bulk`)
       .set('Authorization', `Bearer ${member.accessToken}`)
       .send({
         documents: [
-          {
-            category: 'GENERAL',
-            title: 'Open item',
-            fileUrl: 'https://storage.example.com/open.pdf',
-            fileName: 'open.pdf',
-            fileType: 'PDF',
-            fileSize: 100,
-          },
+          openItem,
           {
             category: 'FINANCIAL',
             title: 'Privileged-only item',
@@ -923,16 +946,10 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
       .expect(201);
     expect(pinnedRef.body.data.documentVersionId).toBe(v1Id);
 
-    await request(app.getHttpServer())
-      .post(`/api/v1/documents/${documentId}/versions`)
-      .set('Authorization', `Bearer ${member.accessToken}`)
-      .send({
-        fileUrl: 'https://storage.example.com/photo-v2.pdf',
-        fileName: 'photo-v2.pdf',
-        fileType: 'PDF',
-        fileSize: 4096,
-      })
-      .expect(201);
+    await uploadDocumentVersion(app, buildingId, documentId, member.accessToken, {
+      fileName: 'photo-v2.pdf',
+      fileSize: 4096,
+    });
 
     const stillPinned = await prisma.documentReference.findUnique({
       where: { id: pinnedRef.body.data.id },

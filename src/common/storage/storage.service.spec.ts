@@ -197,4 +197,103 @@ describe('StorageService', () => {
       expect(capturedUrl).not.toContain(CONFIGURED.secretAccessKey);
     });
   });
+
+  // Documents Phase 1a Hardening (post-audit, Section E) — real
+  // presigned-HEAD-Object verification. `fetch` is mocked at the global
+  // level, same discipline as `checkBucketHealth` above — these tests
+  // never make a real network call, and are NOT a substitute for the real
+  // MinIO/S3 round trip this ADR's own doc comment on `verifyObjectUploaded`
+  // discloses as unverified from this sandbox.
+  describe('verifyObjectUploaded', () => {
+    const originalFetch = global.fetch;
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('throws UnexpectedAppError immediately when storage is not configured, without attempting any request', async () => {
+      const fetchSpy = jest.fn();
+      global.fetch = fetchSpy as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService());
+
+      await expect(service.verifyObjectUploaded('documents/b1/x.pdf', 1024)).rejects.toThrow(
+        UnexpectedAppError,
+      );
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('reports exists:true with no size mismatch when Content-Length matches the expected size', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        headers: { get: (name: string) => (name === 'content-length' ? '1024' : null) },
+      }) as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      const result = await service.verifyObjectUploaded('documents/b1/x.pdf', 1024);
+
+      expect(result).toEqual({ exists: true, actualSizeBytes: 1024, sizeMismatch: false });
+    });
+
+    it('reports sizeMismatch:true when Content-Length differs from the expected size', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        headers: { get: (name: string) => (name === 'content-length' ? '500' : null) },
+      }) as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      const result = await service.verifyObjectUploaded('documents/b1/x.pdf', 1024);
+
+      expect(result).toEqual({ exists: true, actualSizeBytes: 500, sizeMismatch: true });
+    });
+
+    it('reports exists:true with no sizeMismatch claim when the storage response omits Content-Length', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        headers: { get: () => null },
+      }) as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      const result = await service.verifyObjectUploaded('documents/b1/x.pdf', 1024);
+
+      expect(result).toEqual({ exists: true });
+    });
+
+    it('reports exists:false on a 404 (object never uploaded)', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 404,
+        headers: { get: () => null },
+      }) as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      const result = await service.verifyObjectUploaded('documents/b1/x.pdf', 1024);
+
+      expect(result).toEqual({ exists: false });
+    });
+
+    it('reports exists:false (never throws) on a network error/timeout', async () => {
+      global.fetch = jest
+        .fn()
+        .mockRejectedValue(new Error('ECONNREFUSED 10.0.0.5:9000')) as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      const result = await service.verifyObjectUploaded('documents/b1/x.pdf', 1024);
+
+      expect(result).toEqual({ exists: false });
+    });
+
+    it('signs a HEAD request against the object key itself, not the bucket root', async () => {
+      let capturedUrl = '';
+      global.fetch = jest.fn().mockImplementation((url: string) => {
+        capturedUrl = url;
+        return Promise.resolve({ status: 200, headers: { get: () => null } });
+      }) as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      await service.verifyObjectUploaded('documents/b1/2026/07/abc-lease.pdf', 1024);
+
+      expect(capturedUrl).toContain('/documents/b1/2026/07/abc-lease.pdf');
+      expect(capturedUrl).toContain('X-Amz-Signature=');
+      expect(capturedUrl).not.toContain(CONFIGURED.secretAccessKey);
+    });
+  });
 });

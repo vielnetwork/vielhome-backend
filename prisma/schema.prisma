@@ -33,25 +33,25 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 model Person {
-  id          String   @id @default(cuid())
-  phone       String   @unique
-  email       String?  @unique
-  fullName    String?  // deprecated — retained for backward compatibility; no code writes this going forward (Building Setup Refinement Phase 3, see firstName/lastName below)
-  firstName   String?
-  lastName    String?
-  locale      String   @default("fa")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String   @id @default(cuid())
+  phone     String   @unique
+  email     String?  @unique
+  fullName  String? // deprecated — retained for backward compatibility; no code writes this going forward (Building Setup Refinement Phase 3, see firstName/lastName below)
+  firstName String?
+  lastName  String?
+  locale    String   @default("fa")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  memberships       Membership[]        @relation("PersonMemberships")
-  managerAssignmentsMade Membership[]   @relation("ManagerAssignedBy")
-  membershipRequests MembershipRequest[]
-  ownerships        Ownership[]
-  tenancies         Tenancy[]
-  devices           Device[]
-  refreshTokens     RefreshToken[]
-  buildingSetupDrafts BuildingSetupDraft[]
-  auditLogs         AuditLog[]
+  memberships            Membership[]         @relation("PersonMemberships")
+  managerAssignmentsMade Membership[]         @relation("ManagerAssignedBy")
+  membershipRequests     MembershipRequest[]
+  ownerships             Ownership[]
+  tenancies              Tenancy[]
+  devices                Device[]
+  refreshTokens          RefreshToken[]
+  buildingSetupDrafts    BuildingSetupDraft[]
+  auditLogs              AuditLog[]
 
   // Fraud & Abuse Center (07.03 Rule 014 "Account Suspension" — see
   // 21_ADRs > ADR-031). A flag only for this MVP — see that ADR's Decision
@@ -71,21 +71,21 @@ model Person {
   // roles (MANAGER/BOARD_MEMBER/ACCOUNTANT/OWNER/TENANT).
   isBackofficeApproved Boolean @default(false)
 
-  createdChargeBatches ChargeBatch[]    @relation("ChargeBatchCreatedBy")
-  chargeItemPayerOf ChargeItemPayer[]   @relation("ChargeItemPayerPerson")
-  payments          Payment[]           @relation("PaymentPayer")
-  approvedPayments  Payment[]           @relation("PaymentApprovedBy")
-  ledgerEntries     LedgerEntry[]       @relation("LedgerActor")
+  createdChargeBatches ChargeBatch[]     @relation("ChargeBatchCreatedBy")
+  chargeItemPayerOf    ChargeItemPayer[] @relation("ChargeItemPayerPerson")
+  payments             Payment[]         @relation("PaymentPayer")
+  approvedPayments     Payment[]         @relation("PaymentApprovedBy")
+  ledgerEntries        LedgerEntry[]     @relation("LedgerActor")
   // Adjustment/Refund API (08.05/08.06 — see 21_ADRs > ADR-037)
-  adjustmentsCreated Adjustment[]       @relation("AdjustmentCreatedBy")
-  refundsCreated     Refund[]           @relation("RefundCreatedBy")
+  adjustmentsCreated   Adjustment[]      @relation("AdjustmentCreatedBy")
+  refundsCreated       Refund[]          @relation("RefundCreatedBy")
 
-  createdVotes      Vote[]                     @relation("VoteCreatedBy")
-  voteEligibilities VoteEligibilitySnapshot[]  @relation("VoteEligiblePerson")
-  ballotsCast       Ballot[]                   @relation("BallotVoter")
+  createdVotes       Vote[]                    @relation("VoteCreatedBy")
+  voteEligibilities  VoteEligibilitySnapshot[] @relation("VoteEligiblePerson")
+  ballotsCast        Ballot[]                  @relation("BallotVoter")
   // Standing Proxy Voting (08.07 Rule 011/012 — see 21_ADRs > ADR-089)
-  voteProxiesGranted VoteProxy[]                @relation("VoteProxyGranter")
-  voteProxiesHeld     VoteProxy[]                @relation("VoteProxyHolder")
+  voteProxiesGranted VoteProxy[]               @relation("VoteProxyGranter")
+  voteProxiesHeld    VoteProxy[]               @relation("VoteProxyHolder")
 
   // Governance Meetings (04.06 Rule 11 — see 21_ADRs > ADR-049)
   createdMeetings    Meeting[]           @relation("MeetingCreatedBy")
@@ -97,38 +97,47 @@ model Person {
   caseAssignmentsMade     CaseAssignment[] @relation("CaseAssignedBy")
   caseAssignmentsReceived CaseAssignment[] @relation("CaseAssignedTo")
 
-  uploadedDocuments       Document[]        @relation("DocumentCreatedBy")
-  documentVersionsUploaded DocumentVersion[] @relation("DocumentVersionUploadedBy")
-  documentDownloads       DocumentDownload[] @relation("DocumentDownloadedBy")
+  uploadedDocuments              Document[]             @relation("DocumentCreatedBy")
+  documentVersionsUploaded       DocumentVersion[]      @relation("DocumentVersionUploadedBy")
+  documentDownloads              DocumentDownload[]     @relation("DocumentDownloadedBy")
+  // Documents Phase 1a Hardening (storageKey trust-boundary closure) — the
+  // person who requested a presigned upload URL, i.e. the intended actor
+  // of the upload/create-document (or upload-version) call the intent will
+  // later be consumed by. Named explicitly (not left as the single-relation
+  // default) since Person already carries several other Document-family
+  // actor relations above (`DocumentCreatedBy`, `DocumentVersionUploadedBy`,
+  // `DocumentDownloadedBy`) — an explicit name keeps this one equally
+  // unambiguous at a glance.
+  documentUploadIntentsRequested DocumentUploadIntent[] @relation("DocumentUploadIntentRequestedBy")
 
-  notifications           Notification[]           @relation("NotificationRecipient")
-  notificationPreference  NotificationPreference?   @relation("NotificationPreferenceOwner")
+  notifications          Notification[]          @relation("NotificationRecipient")
+  notificationPreference NotificationPreference? @relation("NotificationPreferenceOwner")
 
   // Gamification (ADR-028) — `xpBalance` is the denormalized running total
   // described in the Gamification schema section above (Fund.balance-style
   // cache), kept in sync by `GamificationRepository.awardXp`.
-  xpBalance     Int                 @default(0)
-  xpTransactions XpTransaction[]    @relation("XpTransactionPerson")
-  achievements  PersonAchievement[] @relation("PersonAchievementOwner")
+  xpBalance      Int                 @default(0)
+  xpTransactions XpTransaction[]     @relation("XpTransactionPerson")
+  achievements   PersonAchievement[] @relation("PersonAchievementOwner")
 
   // BackOffice (ADR-029) — a Person can simultaneously be a building
   // Member AND platform staff (`PlatformStaff`); the two are independent,
   // same "reuse Person, don't fork identity" choice as everything else in
   // this schema.
-  platformStaff                 PlatformStaff?
+  platformStaff                  PlatformStaff?
   // Backoffice RBAC Foundation (21_ADRs > ADR-099). Nullable actor FKs
   // above on `StaffRole`/`RolePermission` mean a seed-created row has no
   // back-relation entry here at all (the FK is null) -- these arrays only
   // ever contain real, API-driven grants/revocations.
-  rbacRoleGrantsAssigned        StaffRole[]                @relation("StaffRoleAssignedBy")
-  rbacRoleGrantsRevoked         StaffRole[]                @relation("StaffRoleRevokedBy")
-  rbacPermissionGrantsAdded     RolePermission[]           @relation("RolePermissionAddedBy")
-  rbacPermissionGrantsRevoked   RolePermission[]           @relation("RolePermissionRevokedBy")
-  assignedBuildingVerifications BuildingVerificationCase[] @relation("BVCAssignee")
-  reviewedBuildingVerifications BuildingVerificationCase[] @relation("BVCReviewer")
-  managerVerificationCandidacies ManagerVerificationCase[] @relation("MVCCandidate")
-  reviewedManagerVerifications  ManagerVerificationCase[]  @relation("MVCReviewer")
-  managerVerificationApprovals  ManagerVerificationApproval[]
+  rbacRoleGrantsAssigned         StaffRole[]                   @relation("StaffRoleAssignedBy")
+  rbacRoleGrantsRevoked          StaffRole[]                   @relation("StaffRoleRevokedBy")
+  rbacPermissionGrantsAdded      RolePermission[]              @relation("RolePermissionAddedBy")
+  rbacPermissionGrantsRevoked    RolePermission[]              @relation("RolePermissionRevokedBy")
+  assignedBuildingVerifications  BuildingVerificationCase[]    @relation("BVCAssignee")
+  reviewedBuildingVerifications  BuildingVerificationCase[]    @relation("BVCReviewer")
+  managerVerificationCandidacies ManagerVerificationCase[]     @relation("MVCCandidate")
+  reviewedManagerVerifications   ManagerVerificationCase[]     @relation("MVCReviewer")
+  managerVerificationApprovals   ManagerVerificationApproval[]
 
   // Marketplace Foundation (ADR-030) — a directory listing a Person
   // submits and, optionally, a platform staff member (via the same
@@ -137,10 +146,10 @@ model Person {
   reviewedServiceProviders  ServiceProvider[] @relation("ServiceProviderReviewedBy")
 
   // Fraud & Abuse Center (07.03 — see 21_ADRs > ADR-031)
-  fraudReportsFiled       FraudCase[]         @relation("FraudCaseReportedBy")
-  fraudCasesAgainst       FraudCase[]         @relation("FraudCaseTargetPerson")
-  assignedFraudCases      FraudCase[]         @relation("FraudCaseAssignee")
-  reviewedFraudCases      FraudCase[]         @relation("FraudCaseReviewer")
+  fraudReportsFiled         FraudCase[]         @relation("FraudCaseReportedBy")
+  fraudCasesAgainst         FraudCase[]         @relation("FraudCaseTargetPerson")
+  assignedFraudCases        FraudCase[]         @relation("FraudCaseAssignee")
+  reviewedFraudCases        FraudCase[]         @relation("FraudCaseReviewer")
   enforcementActionsIssued  EnforcementAction[] @relation("EnforcementActionIssuedBy")
   enforcementActionsAgainst EnforcementAction[] @relation("EnforcementActionTargetPerson")
   enforcementAppealsDecided EnforcementAction[] @relation("EnforcementActionAppealDecidedBy")
@@ -151,36 +160,36 @@ model Person {
   supportCaseMessagesSent SupportCaseMessage[] @relation("SupportCaseMessageSender")
 
   // Subscription Management (07.04/04.04 — see 21_ADRs > ADR-033)
-  featureGrantsIssued       FeatureGrant[]           @relation("FeatureGrantGrantedBy")
-  featureGrantsRevoked      FeatureGrant[]           @relation("FeatureGrantRevokedBy")
-  subscriptionChangesLogged SubscriptionChangeLog[]  @relation("SubscriptionChangeLogChangedBy")
+  featureGrantsIssued       FeatureGrant[]          @relation("FeatureGrantGrantedBy")
+  featureGrantsRevoked      FeatureGrant[]          @relation("FeatureGrantRevokedBy")
+  subscriptionChangesLogged SubscriptionChangeLog[] @relation("SubscriptionChangeLogChangedBy")
 
   // Audit & Compliance Center — fuller version (07.06 — see 21_ADRs > ADR-034)
-  complianceCasesOpened   ComplianceCase[] @relation("ComplianceCaseOpenedBy")
-  complianceCasesAssigned ComplianceCase[] @relation("ComplianceCaseAssignedTo")
-  complianceCasesDecided  ComplianceCase[] @relation("ComplianceCaseDecidedBy")
-  complianceCaseSubjectOf ComplianceCase[] @relation("ComplianceCaseSubject")
-  legalHoldsPlaced        AuditLegalHold[] @relation("LegalHoldPlacedBy")
-  legalHoldsReleased      AuditLegalHold[] @relation("LegalHoldReleasedBy")
+  complianceCasesOpened     ComplianceCase[]       @relation("ComplianceCaseOpenedBy")
+  complianceCasesAssigned   ComplianceCase[]       @relation("ComplianceCaseAssignedTo")
+  complianceCasesDecided    ComplianceCase[]       @relation("ComplianceCaseDecidedBy")
+  complianceCaseSubjectOf   ComplianceCase[]       @relation("ComplianceCaseSubject")
+  legalHoldsPlaced          AuditLegalHold[]       @relation("LegalHoldPlacedBy")
+  legalHoldsReleased        AuditLegalHold[]       @relation("LegalHoldReleasedBy")
   // 21_ADRs > ADR-109 — Maintenance Mode & Feature Flags.
-  maintenanceModeUpdatedBy MaintenanceModeState[] @relation("MaintenanceModeUpdatedBy")
-  featureFlagsUpdatedBy    FeatureFlag[]          @relation("FeatureFlagUpdatedBy")
+  maintenanceModeUpdatedBy  MaintenanceModeState[] @relation("MaintenanceModeUpdatedBy")
+  featureFlagsUpdatedBy     FeatureFlag[]          @relation("FeatureFlagUpdatedBy")
   // 21_ADRs > ADR-116 — Global Provider Settings.
-  providerSettingsUpdatedBy ProviderSetting[]     @relation("ProviderSettingUpdatedBy")
+  providerSettingsUpdatedBy ProviderSetting[]      @relation("ProviderSettingUpdatedBy")
 
   @@map("persons")
 }
 
 model Device {
-  id           String   @id @default(cuid())
-  personId     String
-  person       Person   @relation(fields: [personId], references: [id])
-  deviceToken  String   @unique
-  platform     String // ios | android | web
-  label        String?
-  lastSeenAt   DateTime @default(now())
-  createdAt    DateTime @default(now())
-  revokedAt    DateTime?
+  id          String    @id @default(cuid())
+  personId    String
+  person      Person    @relation(fields: [personId], references: [id])
+  deviceToken String    @unique
+  platform    String // ios | android | web
+  label       String?
+  lastSeenAt  DateTime  @default(now())
+  createdAt   DateTime  @default(now())
+  revokedAt   DateTime?
 
   // 21_ADRs > ADR-088 — real Push provider (Firebase Cloud Messaging)
   // integration for Notifications. Distinct from `deviceToken` above:
@@ -192,7 +201,7 @@ model Device {
   // registers for push (or push may not be configured at all), additive
   // per the schema-freeze policy (25_API_v1_Database_Freeze_Manifest §4:
   // "every schema change was additive").
-  pushToken    String?  @unique
+  pushToken String? @unique
 
   refreshTokens RefreshToken[]
 
@@ -261,42 +270,42 @@ enum BuildingType {
 }
 
 model Building {
-  id          String         @id @default(cuid())
-  name        String
-  buildingType BuildingType  @default(RESIDENTIAL)
-  description String?
-  country     String
-  province    String?
-  city        String
+  id                    String         @id @default(cuid())
+  name                  String
+  buildingType          BuildingType   @default(RESIDENTIAL)
+  description           String?
+  country               String
+  province              String?
+  city                  String
   // Structured address (superseded the free-text `addressLine`-only model —
   // see ADR "Building Setup Wizard v2"). `addressLine` is kept as a
   // denormalized, human-readable composition of the fields below so
   // existing readers don't need to know the parts.
-  district    String
-  mainStreet  String
-  subStreet   String?
-  alley       String?
-  plateNumber String
-  addressLine String
+  district              String
+  mainStreet            String
+  subStreet             String?
+  alley                 String?
+  plateNumber           String
+  addressLine           String
   // Primary duplicate-detection key (05_Business_Rules > Building Rules:
   // "Buildings cannot be duplicated intentionally"). Required + unique on
   // purpose — see BuildingSetupPolicy.assertPostalCodeAvailable.
-  postalCode  String         @unique
-  latitude    Float?
-  longitude   Float?
-  totalBlocks Int            @default(1)
-  totalUnits  Int            @default(1)
-  totalFloors Int?
-  status      BuildingStatus @default(PENDING)
-  createdById String
+  postalCode            String         @unique
+  latitude              Float?
+  longitude             Float?
+  totalBlocks           Int            @default(1)
+  totalUnits            Int            @default(1)
+  totalFloors           Int?
+  status                BuildingStatus @default(PENDING)
+  createdById           String
   // Recovery Mode (06.03_Manager_Verification_Flow Rule 010/011 — ADR-029):
   // set when the building has no active, verified manager (a Manager
   // Verification Case was REJECTED/SUSPENDED with no successor); cleared
   // automatically the moment a new manager is VERIFIED (see
   // `BuildingRepository.changeManager`). No scheduler auto-expires it.
   recoveryModeEnteredAt DateTime?
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 
   blocks             Block[]
   units              Unit[]
@@ -304,30 +313,38 @@ model Building {
   membershipRequests MembershipRequest[]
   auditLogs          AuditLog[]
 
-  funds              Fund[]
-  chargeBatches      ChargeBatch[]
-  payments           Payment[]
-  creditBalances     CreditBalance[]
-  ledgerEntries      LedgerEntry[]
-  adjustments        Adjustment[]
-  refunds            Refund[]
+  funds          Fund[]
+  chargeBatches  ChargeBatch[]
+  payments       Payment[]
+  creditBalances CreditBalance[]
+  ledgerEntries  LedgerEntry[]
+  adjustments    Adjustment[]
+  refunds        Refund[]
 
-  votes              Vote[]
-  meetings           Meeting[]
+  votes       Vote[]
+  meetings    Meeting[]
   // Standing Proxy Voting (21_ADRs > ADR-089) — back-relation for
   // `VoteProxy.building`, the same denormalized buildingId `Meeting`
   // already carries alongside its own required `unitId`-scoped parent.
-  voteProxies        VoteProxy[]
+  voteProxies VoteProxy[]
 
-  cases              Case[]
+  cases Case[]
 
-  documents          Document[]
+  documents             Document[]
+  // Documents Phase 1a Hardening — pending/consumed upload intents scoped
+  // to this building. Left unnamed (Prisma default relation), matching
+  // this model's own existing convention for every other single-relation
+  // child above (`documents`, `funds`, `votes`, etc.) — Building never
+  // carries more than one relation to the same child model, so no
+  // disambiguating name is needed here the way Person's actor-role
+  // relations need one.
+  documentUploadIntents DocumentUploadIntent[]
 
-  notifications      Notification[]
+  notifications Notification[]
 
-  xpTransactions     XpTransaction[]
-  achievements       PersonAchievement[]
-  score              BuildingScore?
+  xpTransactions XpTransaction[]
+  achievements   PersonAchievement[]
+  score          BuildingScore?
 
   buildingVerificationCases BuildingVerificationCase[]
   managerVerificationCases  ManagerVerificationCase[]
@@ -371,15 +388,15 @@ model BuildingSettings {
 }
 
 model Block {
-  id         String   @id @default(cuid())
-  buildingId String
-  building   Building @relation(fields: [buildingId], references: [id])
-  name       String
-  totalFloors Int     @default(1)
-  createdAt  DateTime @default(now())
+  id          String   @id @default(cuid())
+  buildingId  String
+  building    Building @relation(fields: [buildingId], references: [id])
+  name        String
+  totalFloors Int      @default(1)
+  createdAt   DateTime @default(now())
 
-  floors Floor[]
-  units  Unit[]
+  floors      Floor[]
+  units       Unit[]
   // 21_ADRs > ADR-058 — votes scoped to this specific Block (06.06 Rule 003).
   scopedVotes Vote[]
 
@@ -388,11 +405,11 @@ model Block {
 }
 
 model Floor {
-  id       String @id @default(cuid())
-  blockId  String
-  block    Block  @relation(fields: [blockId], references: [id])
-  number   Int
-  label    String?
+  id      String  @id @default(cuid())
+  blockId String
+  block   Block   @relation(fields: [blockId], references: [id])
+  number  Int
+  label   String?
 
   units Unit[]
 
@@ -414,24 +431,24 @@ enum UnitOccupancyStatus {
 }
 
 model Unit {
-  id         String   @id @default(cuid())
-  buildingId String
-  building   Building @relation(fields: [buildingId], references: [id])
-  blockId    String?
-  block      Block?   @relation(fields: [blockId], references: [id])
-  floorId    String?
-  floor      Floor?   @relation(fields: [floorId], references: [id])
+  id                String              @id @default(cuid())
+  buildingId        String
+  building          Building            @relation(fields: [buildingId], references: [id])
+  blockId           String?
+  block             Block?              @relation(fields: [blockId], references: [id])
+  floorId           String?
+  floor             Floor?              @relation(fields: [floorId], references: [id])
   // Simple scalar floor number for the auto-generated skeleton unit flow —
   // deliberately separate from the `floorId` relation above (which needs a
   // real Floor row under a Block; the simplified wizard never creates
   // those). Kept nullable since it's filled in later, per-unit.
-  floorNumber Int?
-  unitNumber String
-  type       UnitType @default(RESIDENTIAL)
-  areaSqm    Float?
-  parkingCount Int?
-  storageCount Int?
-  occupancyStatus UnitOccupancyStatus @default(VACANT)
+  floorNumber       Int?
+  unitNumber        String
+  type              UnitType            @default(RESIDENTIAL)
+  areaSqm           Float?
+  parkingCount      Int?
+  storageCount      Int?
+  occupancyStatus   UnitOccupancyStatus @default(VACANT)
   // "Complete later" owner fields (06_User_Flows > Building Setup
   // Assistant: Create Skeleton Units -> Configure Units). Free-text +
   // phone captured before the owner has an account; `ownerInviteSentAt`
@@ -439,12 +456,12 @@ model Unit {
   // (no SMS gateway yet, same as OTP) and does NOT yet auto-link to a
   // Person/Membership on signup — that linking is a follow-up, not built
   // here (see BuildingService.inviteOwner).
-  ownerFullName   String?  // deprecated — retained for backward compatibility; the frozen v1 invite-owner endpoint still writes it; the new invite-owner/v2 endpoint writes ownerFirstName/ownerLastName plus a computed ownerFullName for compatibility (Building Setup Refinement Phase 3)
-  ownerFirstName  String?
-  ownerLastName   String?
-  ownerPhone      String?
+  ownerFullName     String? // deprecated — retained for backward compatibility; the frozen v1 invite-owner endpoint still writes it; the new invite-owner/v2 endpoint writes ownerFirstName/ownerLastName plus a computed ownerFullName for compatibility (Building Setup Refinement Phase 3)
+  ownerFirstName    String?
+  ownerLastName     String?
+  ownerPhone        String?
   ownerInviteSentAt DateTime?
-  createdAt  DateTime @default(now())
+  createdAt         DateTime            @default(now())
 
   ownerships  Ownership[]
   memberships Membership[]
@@ -460,7 +477,7 @@ model Unit {
   ballots           Ballot[]
   voteProxies       VoteProxy[]
 
-  cases             Case[]
+  cases Case[]
 
   @@unique([buildingId, unitNumber])
   @@index([buildingId])
@@ -481,15 +498,15 @@ model Unit {
 // Ownership row, `ownerPhone` set) already structurally IS a pending-
 // transfer state, without a dedicated status value.
 model Ownership {
-  id          String    @id @default(cuid())
-  unitId      String
-  unit        Unit      @relation(fields: [unitId], references: [id])
-  personId    String
-  person      Person    @relation(fields: [personId], references: [id])
-  startDate   DateTime  @default(now())
-  endDate     DateTime?
-  isCurrent   Boolean   @default(true)
-  createdAt   DateTime  @default(now())
+  id        String    @id @default(cuid())
+  unitId    String
+  unit      Unit      @relation(fields: [unitId], references: [id])
+  personId  String
+  person    Person    @relation(fields: [personId], references: [id])
+  startDate DateTime  @default(now())
+  endDate   DateTime?
+  isCurrent Boolean   @default(true)
+  createdAt DateTime  @default(now())
 
   @@index([unitId])
   @@index([personId])
@@ -595,22 +612,22 @@ enum ManagerAssignmentType {
 // created, so `memberships` rows where role = MANAGER, ordered by
 // startedAt, ARE the manager assignment history — no separate table needed.
 model Membership {
-  id                String                  @id @default(cuid())
-  personId          String
-  person            Person                  @relation("PersonMemberships", fields: [personId], references: [id])
-  buildingId        String
-  building          Building                @relation(fields: [buildingId], references: [id])
-  unitId            String?
-  unit              Unit?                   @relation(fields: [unitId], references: [id])
-  role              MembershipRole
-  managerState      ManagerLifecycleState?
+  id                    String                 @id @default(cuid())
+  personId              String
+  person                Person                 @relation("PersonMemberships", fields: [personId], references: [id])
+  buildingId            String
+  building              Building               @relation(fields: [buildingId], references: [id])
+  unitId                String?
+  unit                  Unit?                  @relation(fields: [unitId], references: [id])
+  role                  MembershipRole
+  managerState          ManagerLifecycleState?
   managerAssignmentType ManagerAssignmentType?
-  assignedById      String?
-  assignedBy        Person?                 @relation("ManagerAssignedBy", fields: [assignedById], references: [id])
-  startedAt         DateTime                @default(now())
-  endedAt           DateTime?
-  isCurrent         Boolean                 @default(true)
-  createdAt         DateTime                @default(now())
+  assignedById          String?
+  assignedBy            Person?                @relation("ManagerAssignedBy", fields: [assignedById], references: [id])
+  startedAt             DateTime               @default(now())
+  endedAt               DateTime?
+  isCurrent             Boolean                @default(true)
+  createdAt             DateTime               @default(now())
 
   verificationCases ManagerVerificationCase[]
 
@@ -727,13 +744,13 @@ enum FundAccountLinkType {
 // fund auto-created — see FinanceService — so charging never has to wait on
 // manual fund setup).
 model Fund {
-  id          String   @id @default(cuid())
-  buildingId  String
-  building    Building @relation(fields: [buildingId], references: [id])
-  name        String
-  type        FundType @default(CURRENT)
-  description String?
-  isDefault   Boolean  @default(false)
+  id               String               @id @default(cuid())
+  buildingId       String
+  building         Building             @relation(fields: [buildingId], references: [id])
+  name             String
+  type             FundType             @default(CURRENT)
+  description      String?
+  isDefault        Boolean              @default(false)
   // Added in ADR-094 (Sprint 29) — a fund is never hard-deleted (matches
   // 12_Finance_Architecture's "nothing is deleted" philosophy, and every
   // Fund has FK references from LedgerEntry/Payment/ChargeBatch/Adjustment
@@ -741,14 +758,14 @@ model Fund {
   // history). Deactivation is the only removal path; a deactivated fund
   // keeps its full history and balance, it just can't receive new Charge
   // Batches or Payments going forward.
-  isActive        Boolean              @default(true)
-  accountLinkType FundAccountLinkType?
+  isActive         Boolean              @default(true)
+  accountLinkType  FundAccountLinkType?
   accountReference String?
   // Denormalized cache of the sum of this fund's LedgerEntry rows — see
   // section note above. Updated transactionally, never authoritative.
-  balance     Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  balance          Int                  @default(0)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
 
   chargeBatches ChargeBatch[]
   payments      Payment[]
@@ -811,40 +828,40 @@ enum ChargeBatchStatus {
 // fanned out into one ChargeItem per Unit. See the MVP lifecycle note above
 // for why this collapses several Frozen intermediate stages into ISSUED.
 model ChargeBatch {
-  id                 String                  @id @default(cuid())
-  buildingId         String
-  building           Building                @relation(fields: [buildingId], references: [id])
-  fundId             String
-  fund               Fund                    @relation(fields: [fundId], references: [id])
-  title              String
-  description        String?
-  calculationMethod  ChargeCalculationMethod @default(FIXED)
+  id                String                  @id @default(cuid())
+  buildingId        String
+  building          Building                @relation(fields: [buildingId], references: [id])
+  fundId            String
+  fund              Fund                    @relation(fields: [fundId], references: [id])
+  title             String
+  description       String?
+  calculationMethod ChargeCalculationMethod @default(FIXED)
   // Sum of this batch's ChargeItem.amount — denormalized for fast reads,
   // always recomputable from chargeItems.
-  totalAmount        Int                     @default(0)
-  status             ChargeBatchStatus       @default(DRAFT)
-  periodStart        DateTime?
-  periodEnd          DateTime?
-  dueDate            DateTime?
+  totalAmount       Int                     @default(0)
+  status            ChargeBatchStatus       @default(DRAFT)
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  dueDate           DateTime?
   // ADR-095 — resolved effective scope for FIXED/AREA_BASED (an omitted
   // `unitScope` in the request resolves to ALL only inside the
   // FIXED/AREA_BASED calculation path, never as a DTO-level default — see
   // FinanceService.resolveChargeItems). Always null for MIXED, since unit
   // selection there comes entirely from `items[]`.
-  unitScope          ChargeUnitScope?
+  unitScope         ChargeUnitScope?
   // ADR-095 — the requested payer type; NOT the resolved outcome (a
   // requested TENANT can still resolve to OWNER per unit if that unit has
   // no active tenant — see ChargeItem.resolvedPayerType below).
-  payerType          ChargePayerType?
-  lateFeeType        LateFeeType?
-  lateFeeValue       Int?
-  lateFeeGraceDays   Int?
-  createdById        String
-  createdBy          Person                  @relation("ChargeBatchCreatedBy", fields: [createdById], references: [id])
-  issuedAt           DateTime?
-  cancelledAt        DateTime?
-  createdAt          DateTime                @default(now())
-  updatedAt          DateTime                @updatedAt
+  payerType         ChargePayerType?
+  lateFeeType       LateFeeType?
+  lateFeeValue      Int?
+  lateFeeGraceDays  Int?
+  createdById       String
+  createdBy         Person                  @relation("ChargeBatchCreatedBy", fields: [createdById], references: [id])
+  issuedAt          DateTime?
+  cancelledAt       DateTime?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
 
   chargeItems ChargeItem[]
 
@@ -1119,8 +1136,8 @@ model Adjustment {
   // ADR-037) — Postgres does not treat two NULLs as equal, so the unique
   // constraint below never restricts manual adjustments, only concurrent
   // duplicate system-sourced ones.
-  sourceType  String?
-  sourceId    String?
+  sourceType String?
+  sourceId   String?
 
   @@unique([sourceType, sourceId])
   @@index([unitId])
@@ -1328,8 +1345,8 @@ model VoteOption {
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
 
-  ballots         Ballot[]
-  wonVoteResults  VoteResult[] @relation("WinningOption")
+  ballots        Ballot[]
+  wonVoteResults VoteResult[] @relation("WinningOption")
 
   @@index([voteId])
   @@map("vote_options")
@@ -1385,16 +1402,16 @@ model Ballot {
 // (08.07 Rule 022), so this row is a cached computation, not a second
 // source of truth.
 model VoteResult {
-  id                 String            @id @default(cuid())
-  voteId             String            @unique
-  vote               Vote              @relation(fields: [voteId], references: [id])
+  id                 String           @id @default(cuid())
+  voteId             String           @unique
+  vote               Vote             @relation(fields: [voteId], references: [id])
   totalEligibleCount Int
   totalBallotCount   Int
   quorumMet          Boolean
   winningOptionId    String?
-  winningOption      VoteOption?       @relation("WinningOption", fields: [winningOptionId], references: [id])
+  winningOption      VoteOption?      @relation("WinningOption", fields: [winningOptionId], references: [id])
   resultStatus       VoteResultStatus
-  calculatedAt       DateTime          @default(now())
+  calculatedAt       DateTime         @default(now())
   publishedAt        DateTime?
 
   @@map("vote_results")
@@ -1588,35 +1605,35 @@ enum CaseResolutionCode {
 }
 
 model Case {
-  id             String         @id @default(cuid())
-  buildingId     String
-  building       Building       @relation(fields: [buildingId], references: [id])
-  unitId         String?
-  unit           Unit?          @relation(fields: [unitId], references: [id])
-  type           CaseType
-  title          String
-  description    String
-  status         CaseStatus     @default(OPEN)
-  priority       CasePriority   @default(NORMAL)
-  visibility     CaseVisibility @default(PRIVATE)
-  isAgainstManager Boolean      @default(false)
-  resolutionCode CaseResolutionCode?
-  createdById    String
-  createdBy      Person         @relation("CaseCreatedBy", fields: [createdById], references: [id])
-  assigneeId     String?
-  assignee       Person?        @relation("CaseAssignee", fields: [assigneeId], references: [id])
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  closedAt       DateTime?
+  id               String              @id @default(cuid())
+  buildingId       String
+  building         Building            @relation(fields: [buildingId], references: [id])
+  unitId           String?
+  unit             Unit?               @relation(fields: [unitId], references: [id])
+  type             CaseType
+  title            String
+  description      String
+  status           CaseStatus          @default(OPEN)
+  priority         CasePriority        @default(NORMAL)
+  visibility       CaseVisibility      @default(PRIVATE)
+  isAgainstManager Boolean             @default(false)
+  resolutionCode   CaseResolutionCode?
+  createdById      String
+  createdBy        Person              @relation("CaseCreatedBy", fields: [createdById], references: [id])
+  assigneeId       String?
+  assignee         Person?             @relation("CaseAssignee", fields: [assigneeId], references: [id])
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  closedAt         DateTime?
   // 08.08 Rule 016 — "Duplicate Cases May Be Merged." The exact same
   // lightweight self-relation shape as `SupportCase.mergedIntoId`
   // (21_ADRs > ADR-032), not a full parent/child tree — the source gives
   // no more depth than "these are the same issue" here either (see
   // 21_ADRs > ADR-045). Merging closes this case; the target case is
   // untouched.
-  mergedIntoId String?
-  mergedInto   Case?  @relation("CaseMerge", fields: [mergedIntoId], references: [id])
-  mergedCases  Case[] @relation("CaseMerge")
+  mergedIntoId     String?
+  mergedInto       Case?               @relation("CaseMerge", fields: [mergedIntoId], references: [id])
+  mergedCases      Case[]              @relation("CaseMerge")
 
   messages    CaseMessage[]
   assignments CaseAssignment[]
@@ -1760,6 +1777,18 @@ enum DocumentReferenceEntityType {
   MEETING
 }
 
+// Documents Phase 1a Hardening (post-audit) — what a `DocumentUploadIntent`
+// is being requested for. `CREATE_DOCUMENT` intents have no `documentId` yet
+// (the Document doesn't exist until the intent is consumed by
+// `createDocument`); `CREATE_VERSION` intents are bound to an existing
+// `documentId` at request time and are consumed by `uploadVersion`. Kept as
+// a real, closed enum (not a free-text string) so an intent can never be
+// consumed by the wrong endpoint — see `DocumentUploadIntent`'s own comment.
+enum DocumentUploadPurpose {
+  CREATE_DOCUMENT
+  CREATE_VERSION
+}
+
 model Document {
   id          String             @id @default(cuid())
   buildingId  String
@@ -1775,7 +1804,17 @@ model Document {
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 
-  versions DocumentVersion[]
+  versions      DocumentVersion[]
+  // Documents Phase 1a Hardening — upload intents bound to this specific
+  // document (purpose = CREATE_VERSION only; a CREATE_DOCUMENT intent has
+  // no Document yet at request time, since the document doesn't exist
+  // until the intent is consumed). Named explicitly, matching the
+  // "Person/Document relations disambiguated" convention this pass
+  // follows even though Document<->DocumentUploadIntent is currently the
+  // only relation between these two models — self-documenting given how
+  // easily a future second Document<->DocumentUploadIntent relation could
+  // otherwise silently become ambiguous.
+  uploadIntents DocumentUploadIntent[] @relation("DocumentUploadIntentDocument")
 
   @@index([buildingId])
   @@index([buildingId, category])
@@ -1785,18 +1824,18 @@ model Document {
 
 // 06.08 Rule 007 / 08.09 Rule 013: a new upload is always a new version — never an overwrite. `isCurrent` marks the single latest version.
 model DocumentVersion {
-  id           String   @id @default(cuid())
-  documentId   String
-  document     Document @relation(fields: [documentId], references: [id])
+  id            String    @id @default(cuid())
+  documentId    String
+  document      Document  @relation(fields: [documentId], references: [id])
   versionNumber Int
-  fileUrl      String
-  fileName     String
-  fileType     String
-  fileSize     Int
-  uploadedById String
-  uploadedBy   Person   @relation("DocumentVersionUploadedBy", fields: [uploadedById], references: [id])
-  isCurrent    Boolean  @default(true)
-  uploadedAt   DateTime @default(now())
+  fileUrl       String
+  fileName      String
+  fileType      String
+  fileSize      Int
+  uploadedById  String
+  uploadedBy    Person    @relation("DocumentVersionUploadedBy", fields: [uploadedById], references: [id])
+  isCurrent     Boolean   @default(true)
+  uploadedAt    DateTime  @default(now())
   // 08.09 Rule 016: "Documents Support Expiration Metadata" — a real,
   // Frozen rule ADR-026 itself already deferred by number, but with no
   // elaboration beyond the title. Metadata only (21_ADRs > ADR-046) — a
@@ -1805,7 +1844,7 @@ model DocumentVersion {
   // (the same reason Recovery Mode auto-expiry stays unwired). Lives on
   // `DocumentVersion`, not `Document`, since a re-upload (e.g. a renewed
   // insurance policy) naturally carries its own new expiry.
-  expiresAt DateTime?
+  expiresAt     DateTime?
 
   references DocumentReference[]
   downloads  DocumentDownload[]
@@ -1840,6 +1879,58 @@ model DocumentDownload {
 
   @@index([documentVersionId])
   @@map("document_downloads")
+}
+
+// Documents Phase 1a Hardening (post-audit) — closes the storageKey trust
+// boundary the audit flagged: previously, `createDocument`/`uploadVersion`/
+// `bulkCreateDocuments` accepted any client-supplied `fileUrl` string as a
+// storage key with no proof the client had ever been issued a presigned
+// upload URL for it, let alone actually uploaded an object there. A
+// `DocumentUploadIntent` row is now created by `requestUploadUrl` at the
+// moment a presigned PUT is issued, and must be validated + atomically
+// consumed (via `consumedAt`, not a boolean — same idiom as
+// `OtpRequest`/`RefreshToken`/`Device` elsewhere in this schema) before the
+// corresponding create/upload-version call is allowed to proceed.
+//
+// `purpose` + optional `documentId` together enforce that a `CREATE_VERSION`
+// intent can only be consumed by an upload-version call for the exact
+// Document it was requested against — not reused to create an unrelated
+// Document or version a different one.
+model DocumentUploadIntent {
+  id            String                @id @default(cuid())
+  buildingId    String
+  building      Building              @relation(fields: [buildingId], references: [id])
+  // The presigned PUT's object key — unique so a storage key can never be
+  // claimed by more than one intent (and, transitively, never used to
+  // satisfy more than one create/upload-version call).
+  storageKey    String                @unique
+  requestedById String
+  requestedBy   Person                @relation("DocumentUploadIntentRequestedBy", fields: [requestedById], references: [id])
+  purpose       DocumentUploadPurpose
+  // Set only for CREATE_VERSION intents (requested against an existing
+  // Document); null for CREATE_DOCUMENT intents, since the Document doesn't
+  // exist yet at request time.
+  documentId    String?
+  document      Document?             @relation("DocumentUploadIntentDocument", fields: [documentId], references: [id])
+  fileName      String
+  fileType      String
+  fileSize      Int
+  createdAt     DateTime              @default(now())
+  // A presigned URL is only valid for a bounded window; this mirrors that
+  // window so an intent can't be consumed long after its presigned URL
+  // itself would already have expired storage-side.
+  expiresAt     DateTime
+  // Nullable DateTime, not a Boolean — same idiom as `OtpRequest.consumedAt`/
+  // `RefreshToken.revokedAt`/`Device`'s session fields elsewhere in this
+  // schema: records *when* consumption happened, not just *whether*, and
+  // doubles as the atomic-consumption guard (`UPDATE ... WHERE consumedAt
+  // IS NULL`) the service layer uses to make consumption race-safe.
+  consumedAt    DateTime?
+
+  @@index([buildingId, consumedAt, expiresAt])
+  @@index([requestedById, consumedAt, expiresAt])
+  @@index([documentId])
+  @@map("document_upload_intents")
 }
 
 // ---------------------------------------------------------------------------
@@ -2143,14 +2234,14 @@ enum LeagueTier {
 // same "cache kept in sync by convention, not a DB constraint" trade-off
 // already accepted for `Fund.balance` (ADR-023).
 model XpTransaction {
-  id          String    @id @default(cuid())
-  personId    String
-  person      Person    @relation("XpTransactionPerson", fields: [personId], references: [id])
-  buildingId  String?
-  building    Building? @relation(fields: [buildingId], references: [id])
-  reason      XpReason
-  amount      Int
-  sourceEvent String?
+  id            String    @id @default(cuid())
+  personId      String
+  person        Person    @relation("XpTransactionPerson", fields: [personId], references: [id])
+  buildingId    String?
+  building      Building? @relation(fields: [buildingId], references: [id])
+  reason        XpReason
+  amount        Int
+  sourceEvent   String?
   // 21_ADRs > ADR-041 — polymorphic non-FK reference (same pattern as
   // `DocumentReference` / `Notification.referenceType`/`referenceId`),
   // added so a specific award (e.g. CHARGE_PAID for one Payment) can be
@@ -2159,7 +2250,7 @@ model XpTransaction {
   // never set these two fields.
   referenceType String?
   referenceId   String?
-  createdAt   DateTime  @default(now())
+  createdAt     DateTime  @default(now())
 
   @@index([personId])
   @@index([personId, reason])
@@ -2310,22 +2401,22 @@ model BuildingVerificationCase {
   buildingId     String
   building       Building                      @relation(fields: [buildingId], references: [id])
   status         BuildingStatus
-  priority       VerificationPriority           @default(NORMAL)
-  riskScore      Int                            @default(0)
-  riskFlags      String[]                       @default([])
-  isAppeal       Boolean                        @default(false)
+  priority       VerificationPriority          @default(NORMAL)
+  riskScore      Int                           @default(0)
+  riskFlags      String[]                      @default([])
+  isAppeal       Boolean                       @default(false)
   previousCaseId String?
-  previousCase   BuildingVerificationCase?      @relation("BuildingVerificationAppeal", fields: [previousCaseId], references: [id])
-  appeals        BuildingVerificationCase[]     @relation("BuildingVerificationAppeal")
+  previousCase   BuildingVerificationCase?     @relation("BuildingVerificationAppeal", fields: [previousCaseId], references: [id])
+  appeals        BuildingVerificationCase[]    @relation("BuildingVerificationAppeal")
   assignedToId   String?
-  assignedTo     Person?                        @relation("BVCAssignee", fields: [assignedToId], references: [id])
+  assignedTo     Person?                       @relation("BVCAssignee", fields: [assignedToId], references: [id])
   reviewedById   String?
-  reviewedBy     Person?                        @relation("BVCReviewer", fields: [reviewedById], references: [id])
+  reviewedBy     Person?                       @relation("BVCReviewer", fields: [reviewedById], references: [id])
   decision       BuildingVerificationDecision?
   reason         String?
   decidedAt      DateTime?
-  createdAt      DateTime                       @default(now())
-  updatedAt      DateTime                       @updatedAt
+  createdAt      DateTime                      @default(now())
+  updatedAt      DateTime                      @updatedAt
 
   @@index([buildingId])
   @@index([status, priority])
@@ -2374,14 +2465,14 @@ enum ManagerVerificationDecision {
 // later reverification per 06.03 Rule 006) — never overwritten, matching
 // the row-history convention used everywhere else in this schema.
 model ManagerVerificationCase {
-  id                      String                      @id @default(cuid())
+  id                      String                       @id @default(cuid())
   buildingId              String
-  building                Building                    @relation(fields: [buildingId], references: [id])
+  building                Building                     @relation(fields: [buildingId], references: [id])
   membershipId            String
-  membership              Membership                  @relation(fields: [membershipId], references: [id])
+  membership              Membership                   @relation(fields: [membershipId], references: [id])
   candidateId             String
-  candidate               Person                      @relation("MVCCandidate", fields: [candidateId], references: [id])
-  status                  ManagerVerificationStatus   @default(PENDING)
+  candidate               Person                       @relation("MVCCandidate", fields: [candidateId], references: [id])
+  status                  ManagerVerificationStatus    @default(PENDING)
   verificationSource      ManagerVerificationSource?
   // The explicit staff/owner-approval action that produced `status` — kept
   // alongside `status` (not inferred from it) for the same reason
@@ -2630,10 +2721,10 @@ model StaffRole {
   // acting Person (enforced in `RbacManagementService`, not at the schema
   // level).
   assignedById String?
-  assignedBy   Person?  @relation("StaffRoleAssignedBy", fields: [assignedById], references: [id])
-  assignedAt   DateTime @default(now())
+  assignedBy   Person?   @relation("StaffRoleAssignedBy", fields: [assignedById], references: [id])
+  assignedAt   DateTime  @default(now())
   revokedById  String?
-  revokedBy    Person?  @relation("StaffRoleRevokedBy", fields: [revokedById], references: [id])
+  revokedBy    Person?   @relation("StaffRoleRevokedBy", fields: [revokedById], references: [id])
   revokedAt    DateTime?
 
   @@index([staffId])
@@ -2852,34 +2943,34 @@ enum EnforcementAppealStatus {
 // by `BuildingVerificationCase` appeals (ADR-029) rather than reopening a
 // CONFIRMED/DISMISSED row in place.
 model FraudCase {
-  id               String                @id @default(cuid())
-  status           FraudCaseStatus       @default(OPEN)
-  priority         VerificationPriority  @default(NORMAL)
+  id               String               @id @default(cuid())
+  status           FraudCaseStatus      @default(OPEN)
+  priority         VerificationPriority @default(NORMAL)
   source           FraudCaseSource
   signalType       FraudSignalType?
   reportedById     String?
-  reportedBy       Person?               @relation("FraudCaseReportedBy", fields: [reportedById], references: [id])
+  reportedBy       Person?              @relation("FraudCaseReportedBy", fields: [reportedById], references: [id])
   targetPersonId   String?
-  targetPerson     Person?               @relation("FraudCaseTargetPerson", fields: [targetPersonId], references: [id])
+  targetPerson     Person?              @relation("FraudCaseTargetPerson", fields: [targetPersonId], references: [id])
   targetBuildingId String?
-  targetBuilding   Building?             @relation(fields: [targetBuildingId], references: [id])
+  targetBuilding   Building?            @relation(fields: [targetBuildingId], references: [id])
   description      String?
   // Rule 005 "Evidence Aggregation" — free-text notes an investigator
   // accumulates during UNDER_INVESTIGATION; no structured evidence-item
   // model this sprint (no source field list to build one against).
   evidenceNotes    String?
   assignedToId     String?
-  assignedTo       Person?               @relation("FraudCaseAssignee", fields: [assignedToId], references: [id])
+  assignedTo       Person?              @relation("FraudCaseAssignee", fields: [assignedToId], references: [id])
   reviewedById     String?
-  reviewedBy       Person?               @relation("FraudCaseReviewer", fields: [reviewedById], references: [id])
+  reviewedBy       Person?              @relation("FraudCaseReviewer", fields: [reviewedById], references: [id])
   reason           String?
-  isReopen         Boolean               @default(false)
+  isReopen         Boolean              @default(false)
   previousCaseId   String?
-  previousCase     FraudCase?            @relation("FraudCaseReopen", fields: [previousCaseId], references: [id])
-  reopenedAs       FraudCase[]           @relation("FraudCaseReopen")
+  previousCase     FraudCase?           @relation("FraudCaseReopen", fields: [previousCaseId], references: [id])
+  reopenedAs       FraudCase[]          @relation("FraudCaseReopen")
   decidedAt        DateTime?
-  createdAt        DateTime              @default(now())
-  updatedAt        DateTime              @updatedAt
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
 
   enforcementActions EnforcementAction[]
 
@@ -2976,7 +3067,7 @@ model SupportCase {
   id               String                     @id @default(cuid())
   category         SupportCaseCategory
   status           CaseStatus                 @default(OPEN)
-  priority         VerificationPriority        @default(NORMAL)
+  priority         VerificationPriority       @default(NORMAL)
   subject          String
   description      String
   createdById      String
@@ -3146,29 +3237,29 @@ enum FeatureGrantType {
 // `BuildingCreatedEvent` (04.04 Rule 7 — "every new building receives 14
 // days of Trial access") by `BackOfficeEventListener`.
 model Subscription {
-  id                  String              @id @default(cuid())
-  buildingId          String              @unique
-  building            Building            @relation(fields: [buildingId], references: [id])
-  plan                SubscriptionPlan    @default(FREE)
-  status              SubscriptionStatus  @default(TRIAL)
+  id                  String             @id @default(cuid())
+  buildingId          String             @unique
+  building            Building           @relation(fields: [buildingId], references: [id])
+  plan                SubscriptionPlan   @default(FREE)
+  status              SubscriptionStatus @default(TRIAL)
   // 04.04 Rule 7 (14 days, stated as a direct rule) is treated as
   // canonical over 07.04 Rule 012's "14 or 30 days, as examples" framing
   // — see this section's header comment.
   trialEndsAt         DateTime?
   // 07.04 Rule 013 ("One Trial Per Building") — prevents a re-trial after
   // a building's first trial ends, even once its status moves elsewhere.
-  trialUsed           Boolean             @default(false)
+  trialUsed           Boolean            @default(false)
   // Neither source document commits to one canonical grace-period length
   // (07.04 Rule 007 gives "7 or 15 days" as examples; 04.04 Rule 8 gives
   // "7 days") — a configurable field with a default, not a hardcoded
   // constant, same "values remain configurable" precedent as
   // `ManagerVerificationCase.requiredApprovalPercent` (ADR-029).
-  gracePeriodDays     Int                 @default(7)
+  gracePeriodDays     Int                @default(7)
   currentPeriodEndsAt DateTime?
   gracePeriodEndsAt   DateTime?
   cancelledAt         DateTime?
-  createdAt           DateTime            @default(now())
-  updatedAt           DateTime            @updatedAt
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
 
   featureGrants FeatureGrant[]
   changeLogs    SubscriptionChangeLog[]
@@ -3185,20 +3276,20 @@ model Subscription {
 // person-level grant to; disclosed as a deferred gap in ADR-033 Future
 // Review, not silently dropped.
 model FeatureGrant {
-  id             String                  @id @default(cuid())
+  id             String                 @id @default(cuid())
   subscriptionId String
-  subscription   Subscription            @relation(fields: [subscriptionId], references: [id])
+  subscription   Subscription           @relation(fields: [subscriptionId], references: [id])
   featureKey     SubscriptionFeatureKey
   grantType      FeatureGrantType
   reason         String?
   grantedById    String
-  grantedBy      Person                  @relation("FeatureGrantGrantedBy", fields: [grantedById], references: [id])
-  grantedAt      DateTime                @default(now())
+  grantedBy      Person                 @relation("FeatureGrantGrantedBy", fields: [grantedById], references: [id])
+  grantedAt      DateTime               @default(now())
   // 07.04 Rule 017 — a Grant may expire (e.g. "30 Day Promotion").
   // `null` means no expiry (permanent until revoked).
   expiresAt      DateTime?
   revokedById    String?
-  revokedBy      Person?                 @relation("FeatureGrantRevokedBy", fields: [revokedById], references: [id])
+  revokedBy      Person?                @relation("FeatureGrantRevokedBy", fields: [revokedById], references: [id])
   revokedAt      DateTime?
 
   @@index([subscriptionId])
@@ -3239,16 +3330,16 @@ model SubscriptionChangeLog {
 // ---------------------------------------------------------------------------
 
 model BuildingSetupDraft {
-  id         String   @id @default(cuid())
-  personId   String
-  person     Person   @relation(fields: [personId], references: [id])
-  device     String?
-  step       String // role_selection | building_info | address | review
-  payload    Json
-  revision   Int      @default(1)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  expiresAt  DateTime?
+  id          String    @id @default(cuid())
+  personId    String
+  person      Person    @relation(fields: [personId], references: [id])
+  device      String?
+  step        String // role_selection | building_info | address | review
+  payload     Json
+  revision    Int       @default(1)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  expiresAt   DateTime?
   submittedAt DateTime?
 
   @@index([personId])
@@ -3261,18 +3352,18 @@ model BuildingSetupDraft {
 // ---------------------------------------------------------------------------
 
 model AuditLog {
-  id          String    @id @default(cuid())
-  actorId     String?
-  actor       Person?   @relation(fields: [actorId], references: [id])
-  buildingId  String?
-  building    Building? @relation(fields: [buildingId], references: [id])
-  action      String // e.g. "BuildingCreated", "OwnershipTransferred"
-  entityType  String
-  entityId    String
-  reason      String?
-  metadata    Json?
-  requestId   String?
-  createdAt   DateTime  @default(now())
+  id         String    @id @default(cuid())
+  actorId    String?
+  actor      Person?   @relation(fields: [actorId], references: [id])
+  buildingId String?
+  building   Building? @relation(fields: [buildingId], references: [id])
+  action     String // e.g. "BuildingCreated", "OwnershipTransferred"
+  entityType String
+  entityId   String
+  reason     String?
+  metadata   Json?
+  requestId  String?
+  createdAt  DateTime  @default(now())
 
   @@index([actorId])
   @@index([buildingId])
@@ -3389,6 +3480,7 @@ model AuditLegalHold {
   @@index([entityType, entityId])
   @@map("audit_legal_holds")
 }
+
 // ---------------------------------------------------------------------------
 // 21_ADRs > ADR-109 — Maintenance Mode & Feature Flags (Backoffice
 // completion roadmap, Stage 2). Two independent, simple config domains,

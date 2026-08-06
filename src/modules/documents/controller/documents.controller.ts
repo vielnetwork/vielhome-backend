@@ -8,6 +8,8 @@ import { CreateReferenceDto } from '../application/dto/create-reference.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
+import { parsePagination } from '../../../common/pagination/pagination.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
 /**
@@ -27,19 +29,24 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
 export class DocumentsController {
   constructor(private readonly documents: DocumentsService) {}
 
+  /** 21_ADRs > ADR-072/ADR-120 — `page`/`limit`, same convention as `BuildingDocumentsController.listDocuments`. */
   @Get('search')
-  searchDocuments(
+  async searchDocuments(
     @CurrentUser() user: JwtPayload,
     @Query('buildingId') buildingId: string,
     @Query('title') title?: string,
     @Query('category') category?: DocumentCategory,
     @Query('tags') tags?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.documents.searchDocuments(buildingId, user.sub, {
-      title,
-      category,
-      tags: tags ? tags.split(',') : undefined,
-    });
+    const { items, meta } = await this.documents.searchDocuments(
+      buildingId,
+      user.sub,
+      { title, category, tags: tags ? tags.split(',') : undefined },
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Get(':documentId')

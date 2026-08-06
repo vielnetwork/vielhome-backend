@@ -4,6 +4,7 @@ import type {
   DocumentCategory,
   DocumentReferenceEntityType,
   DocumentStatus,
+  DocumentUploadPurpose,
   DocumentVisibility,
   MembershipRole,
 } from '@prisma/client';
@@ -18,7 +19,19 @@ import { CreateReferenceDto } from './dto/create-reference.dto';
 import { ArchiveDocumentDto } from './dto/archive-document.dto';
 import { AuditService } from '../../../common/audit/audit.service';
 import { StorageService } from '../../../common/storage/storage.service';
-import { AppError, AuthorizationError, NotFoundAppError } from '../../../common/errors/app-error';
+import {
+  AppError,
+  AuthorizationError,
+  BusinessRuleViolationError,
+  ConflictError,
+  NotFoundAppError,
+  ValidationError,
+} from '../../../common/errors/app-error';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 import {
   DocumentArchivedEvent,
   DocumentReferenceCreatedEvent,
@@ -82,6 +95,21 @@ export class DocumentsService {
    * privilege — category isn't known until the create/upload-version call
    * itself, and gating on it here would mean asking the client to declare
    * a category twice.
+   *
+   * Documents Phase 1a Hardening (post-audit) — this now also persists a
+   * `DocumentUploadIntent` row (only once the presign itself succeeds, so
+   * the pre-existing "storage not configured" `UnexpectedAppError` is
+   * unchanged — see the `if (!this.storage.isConfigured())` short-circuit
+   * below) and returns its id as `uploadIntentId`. This is what closes the
+   * trust boundary the audit flagged: `createDocument`/`uploadVersion`
+   * will refuse to accept a `fileUrl` that doesn't match a real, unconsumed
+   * intent once storage is configured — see those methods' own comments.
+   *
+   * For a `CREATE_VERSION` intent, the target Document is looked up and
+   * confirmed to belong to THIS building before any intent is created —
+   * closes off a caller requesting an intent (scoped to a building they
+   * belong to) against a Document that actually lives in a different
+   * building.
    */
   async requestUploadUrl(buildingId: string, dto: RequestUploadUrlDto, actorPersonId: string) {
     await this.getBuilding(buildingId);
@@ -89,8 +117,155 @@ export class DocumentsService {
     this.policy.assertFileTypeSupported(dto.fileType);
     this.policy.assertFileSizeWithinLimit(dto.fileSize);
 
+    if (dto.purpose === 'CREATE_VERSION') {
+      if (!dto.documentId) {
+        throw new ValidationError('documentId is required when purpose is CREATE_VERSION.');
+      }
+      const target = await this.documents.findDocumentById(dto.documentId);
+      if (!target || target.buildingId !== buildingId) {
+        throw new NotFoundAppError('Document not found in this building.');
+      }
+    } else if (dto.purpose === 'CREATE_DOCUMENT' && dto.documentId) {
+      // A CREATE_DOCUMENT intent has nothing to bind documentId to — it
+      // exists precisely because the Document doesn't exist yet. Rejecting
+      // this here (rather than silently ignoring the field) keeps the
+      // contract explicit and prevents a caller from believing an
+      // unrelated documentId was recorded against this intent.
+      throw new ValidationError('documentId must not be provided when purpose is CREATE_DOCUMENT.');
+    }
+
     const storageKey = this.storage.buildObjectKey(buildingId, dto.fileName);
-    return this.storage.getPresignedUploadUrl(storageKey);
+    // Legacy behavior preserved exactly: when storage isn't configured,
+    // this throws UnexpectedAppError here and no DocumentUploadIntent row
+    // is ever created — same failure this endpoint has always had.
+    const presigned = this.storage.getPresignedUploadUrl(storageKey);
+
+    const intent = await this.documents.createUploadIntent({
+      buildingId,
+      storageKey,
+      requestedById: actorPersonId,
+      purpose: dto.purpose,
+      documentId: dto.purpose === 'CREATE_VERSION' ? dto.documentId : undefined,
+      fileName: dto.fileName,
+      fileType: dto.fileType,
+      fileSize: dto.fileSize,
+      expiresAt: presigned.expiresAt,
+    });
+
+    return { ...presigned, uploadIntentId: intent.id };
+  }
+
+  /**
+   * Documents Phase 1a Hardening (post-audit) — the storageKey
+   * trust-boundary closure. Called by `createDocument`/`uploadVersion`/
+   * `bulkCreateDocuments` immediately before they'd otherwise trust
+   * `dto.fileUrl` as-is. Returns `undefined` (nothing to consume) when
+   * storage isn't configured — the exact pre-ADR-087 legacy behavior,
+   * unchanged: an unconfigured server has no presigned-upload flow and
+   * therefore no intents to validate against, so `dto.fileUrl` stays a
+   * trusted, opaque, client-supplied string exactly as before this pass.
+   *
+   * When storage IS configured, `dto.fileUrl` is required to be a
+   * `storageKey` that matches a real, unconsumed `DocumentUploadIntent` —
+   * an arbitrary/unknown string is rejected (`NotFoundAppError`), closing
+   * the gap the audit flagged. Sequencing matters here and is deliberate:
+   *  1. Look up the intent by storageKey (fast, no network) and validate
+   *     every field against the caller's actual request — building,
+   *     requester, purpose, document-binding (CREATE_VERSION only),
+   *     expiry, consumption state, and declared file metadata.
+   *  2. Only if all of that passes, issue a REAL presigned HEAD Object
+   *     request against storage (`StorageService.verifyObjectUploaded`) —
+   *     the actual network I/O — to confirm the object was really
+   *     uploaded and its size matches. This runs OUTSIDE any DB
+   *     transaction, on purpose: a Prisma transaction holds a connection
+   *     (and, depending on isolation level, locks) for its entire
+   *     duration, and a storage HEAD request has no reason to be inside
+   *     that window — see `DocumentRepository.createDocumentWithFirstVersion`'s
+   *     own comment for what happens next (atomic consume+create).
+   *
+   * Disclosed race window: between this method validating+HEAD-verifying
+   * the intent and the caller's subsequent atomic consume+create
+   * transaction, another concurrent request could consume the SAME intent
+   * first. This is not a silent gap — `DocumentRepository`'s conditional
+   * `updateMany` (`WHERE consumedAt IS NULL`) means at most one of the two
+   * concurrent callers' transactions actually succeeds; the loser gets a
+   * `ConflictError` from the repository layer at consume time, not a
+   * successful-looking response with silently-wrong data. Closing this
+   * window completely would require holding the intent locked (e.g.
+   * `SELECT ... FOR UPDATE`) across the storage network call itself,
+   * which is exactly the "long-running transaction blocked on a network
+   * call" pattern this design explicitly avoids per the instructions this
+   * pass was scoped against.
+   */
+  private async resolveUploadIntent(params: {
+    buildingId: string;
+    actorPersonId: string;
+    purpose: DocumentUploadPurpose;
+    documentId?: string;
+    storageKey: string;
+    fileName: string;
+    fileType: string;
+    fileSize: number;
+  }): Promise<string | undefined> {
+    if (!this.storage.isConfigured()) return undefined;
+
+    const intent = await this.documents.findUploadIntentByStorageKey(params.storageKey);
+    if (!intent) {
+      throw new NotFoundAppError(
+        'No upload intent found for this storage key. Request a presigned upload URL first (POST .../documents/upload-url).',
+      );
+    }
+    if (intent.consumedAt) {
+      throw new ConflictError('This upload intent has already been used.');
+    }
+    if (intent.expiresAt.getTime() < Date.now()) {
+      throw new BusinessRuleViolationError(
+        'This upload intent has expired. Request a new upload URL.',
+      );
+    }
+    if (intent.buildingId !== params.buildingId) {
+      throw new AuthorizationError('This upload intent does not belong to this building.');
+    }
+    if (intent.requestedById !== params.actorPersonId) {
+      throw new AuthorizationError('This upload intent was not requested by you.');
+    }
+    if (intent.purpose !== params.purpose) {
+      throw new BusinessRuleViolationError(
+        `This upload intent was requested for ${intent.purpose}, not ${params.purpose}.`,
+      );
+    }
+    if (params.purpose === 'CREATE_VERSION' && intent.documentId !== params.documentId) {
+      throw new BusinessRuleViolationError('This upload intent is bound to a different document.');
+    }
+    if (
+      intent.fileName !== params.fileName ||
+      intent.fileType.toUpperCase() !== params.fileType.toUpperCase() ||
+      intent.fileSize !== params.fileSize
+    ) {
+      throw new ValidationError(
+        'Submitted file metadata does not match the upload intent requested for this storage key.',
+      );
+    }
+
+    // Real object-existence verification (the audit's own repeated
+    // caution: presign generation and DB metadata creation are NOT proof
+    // the object was actually uploaded) — outside any DB transaction.
+    const verification = await this.storage.verifyObjectUploaded(
+      params.storageKey,
+      params.fileSize,
+    );
+    if (!verification.exists) {
+      throw new BusinessRuleViolationError(
+        'The file has not been uploaded to storage yet. PUT it to the presigned uploadUrl before calling this endpoint.',
+      );
+    }
+    if (verification.sizeMismatch) {
+      throw new ValidationError(
+        `Uploaded file size (${verification.actualSizeBytes} bytes) does not match the declared file size (${params.fileSize} bytes).`,
+      );
+    }
+
+    return intent.id;
   }
 
   async createDocument(
@@ -107,6 +282,20 @@ export class DocumentsService {
     this.policy.assertFileTypeSupported(dto.fileType);
     this.policy.assertFileSizeWithinLimit(dto.fileSize);
 
+    // Documents Phase 1a Hardening — when storage is configured, dto.fileUrl
+    // must be a storageKey backed by a real, unconsumed CREATE_DOCUMENT
+    // intent (validated + HEAD-verified here); undefined when storage isn't
+    // configured, preserving the exact pre-ADR-087 legacy behavior.
+    const uploadIntentId = await this.resolveUploadIntent({
+      buildingId,
+      actorPersonId,
+      purpose: 'CREATE_DOCUMENT',
+      storageKey: dto.fileUrl,
+      fileName: dto.fileName,
+      fileType: dto.fileType,
+      fileSize: dto.fileSize,
+    });
+
     const { document, version } = await this.documents.createDocumentWithFirstVersion({
       buildingId,
       category: dto.category,
@@ -120,6 +309,7 @@ export class DocumentsService {
       fileType: dto.fileType,
       fileSize: dto.fileSize,
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+      uploadIntentId,
     });
 
     await this.audit.record({
@@ -155,6 +345,21 @@ export class DocumentsService {
    * source rule asking for all-or-nothing batch behavior, and requiring it
    * would mean one bad row in a 20-document upload silently discarding 19
    * good ones — the more defensible default absent a specified rule.
+   *
+   * Documents Phase 1a Hardening (post-audit, Section F decision) — when
+   * storage is configured, each item's `fileUrl` is validated against its
+   * OWN `DocumentUploadIntent` (via the same `resolveUploadIntent` used by
+   * `createDocument`), one presigned upload-url request per file, exactly
+   * as a client would do for N sequential single uploads. The alternative
+   * considered was rejecting bulk upload outright whenever storage is
+   * configured — deliberately NOT chosen: it would silently regress a
+   * real, source-specified feature (08.09 Rule 018) the moment an operator
+   * turns storage on, for no security benefit over per-item validation.
+   * Per-item validation closes the exact same trust-boundary gap as the
+   * single-document endpoint while preserving bulk upload's actual value.
+   * A bad intent on one item fails only that item's own `results[]` entry
+   * (the same partial-failure semantics already established above) — it
+   * does not block or fail sibling items in the same batch.
    */
   async bulkCreateDocuments(
     buildingId: string,
@@ -178,6 +383,16 @@ export class DocumentsService {
         this.policy.assertFileTypeSupported(item.fileType);
         this.policy.assertFileSizeWithinLimit(item.fileSize);
 
+        const uploadIntentId = await this.resolveUploadIntent({
+          buildingId,
+          actorPersonId,
+          purpose: 'CREATE_DOCUMENT',
+          storageKey: item.fileUrl,
+          fileName: item.fileName,
+          fileType: item.fileType,
+          fileSize: item.fileSize,
+        });
+
         const { document, version } = await this.documents.createDocumentWithFirstVersion({
           buildingId,
           category: item.category,
@@ -191,6 +406,7 @@ export class DocumentsService {
           fileType: item.fileType,
           fileSize: item.fileSize,
           expiresAt: item.expiresAt ? new Date(item.expiresAt) : undefined,
+          uploadIntentId,
         });
 
         await this.audit.record({
@@ -232,34 +448,55 @@ export class DocumentsService {
     return { results, summary: { total: dto.documents.length, succeeded, failed } };
   }
 
-  /** 08.09 Rule 007: non-privileged callers never see MANAGEMENT_ONLY documents in the list. */
+  /**
+   * 08.09 Rule 007: non-privileged callers never see MANAGEMENT_ONLY
+   * documents in the list. 21_ADRs > ADR-072/ADR-120 — `page`/`limit`
+   * (Documents was a named gap in the platform pagination re-audit); the
+   * MANAGEMENT_ONLY exclusion now happens inside
+   * `DocumentRepository.listDocuments`'s own `WHERE` clause rather than
+   * post-filtering the fetched page here — see that method's own doc
+   * comment for why post-filtering and pagination don't mix safely.
+   */
   async listDocuments(
     buildingId: string,
     actorPersonId: string,
-    filter?: {
+    filter: {
       category?: DocumentCategory;
       visibility?: DocumentVisibility;
       status?: DocumentStatus;
     },
+    pagination: PaginationParams,
   ) {
     await this.assertMember(actorPersonId, buildingId);
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
 
-    const docs = await this.documents.listDocuments(buildingId, filter);
-    return privileged ? docs : docs.filter((d) => d.visibility !== 'MANAGEMENT_ONLY');
+    const { items, total } = await this.documents.listDocuments(
+      buildingId,
+      filter,
+      privileged,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
+  /** Same pagination/visibility-in-WHERE treatment as `listDocuments` — see its own doc comment. */
   async searchDocuments(
     buildingId: string,
     actorPersonId: string,
     params: { title?: string; category?: DocumentCategory; tags?: string[] },
+    pagination: PaginationParams,
   ) {
     await this.getBuilding(buildingId);
     await this.assertMember(actorPersonId, buildingId);
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
 
-    const docs = await this.documents.searchDocuments(buildingId, params);
-    return privileged ? docs : docs.filter((d) => d.visibility !== 'MANAGEMENT_ONLY');
+    const { items, total } = await this.documents.searchDocuments(
+      buildingId,
+      params,
+      privileged,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async getDocument(documentId: string, actorPersonId: string) {
@@ -286,6 +523,20 @@ export class DocumentsService {
     this.policy.assertFileTypeSupported(dto.fileType);
     this.policy.assertFileSizeWithinLimit(dto.fileSize);
 
+    // Documents Phase 1a Hardening — a CREATE_VERSION intent must be bound
+    // to THIS exact documentId (checked inside resolveUploadIntent), not
+    // just any valid intent the same person happens to hold.
+    const uploadIntentId = await this.resolveUploadIntent({
+      buildingId: found.buildingId,
+      actorPersonId,
+      purpose: 'CREATE_VERSION',
+      documentId,
+      storageKey: dto.fileUrl,
+      fileName: dto.fileName,
+      fileType: dto.fileType,
+      fileSize: dto.fileSize,
+    });
+
     const version = await this.documents.addVersion({
       documentId,
       uploadedById: actorPersonId,
@@ -294,6 +545,7 @@ export class DocumentsService {
       fileType: dto.fileType,
       fileSize: dto.fileSize,
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+      uploadIntentId,
     });
 
     await this.audit.record({

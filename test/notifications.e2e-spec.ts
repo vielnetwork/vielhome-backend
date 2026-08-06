@@ -9,6 +9,7 @@ import { ResponseInterceptor } from '../src/common/interceptors/response.interce
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
 import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
+import { createDocument } from './helpers/create-document';
 
 // 21_ADRs > ADR-078 — Testing Phase 3d: Notifications domain e2e coverage.
 // Follows directly from Testing Phase 3c (`ADR-077`, Documents, confirmed
@@ -243,6 +244,19 @@ async function deleteBuildingsOnceBatch(
   });
   await prisma.case.deleteMany({ where: { buildingId: { in: buildingIds } } });
 
+  // Documents Phase 1a Hardening (ADR-121) — DocumentUploadIntent carries
+  // required (RESTRICT) FKs into both Building (buildingId) and Person
+  // (requestedById). It must be deleted before this function's own
+  // Building delete below AND before `cleanupPhones`'s later Person
+  // delete (which always runs after `cleanupBuildings` in every
+  // `afterAll` in this file) — deleting every intent scoped to these
+  // buildingIds here satisfies both, since every intent this suite
+  // creates (via the shared `createDocument` helper) is scoped to one of
+  // these buildingIds. Its documentId FK is ON DELETE SET NULL, so this
+  // delete has no ordering requirement relative to the Document delete
+  // below; it's placed first only to keep the FK-dependency deletes
+  // grouped together.
+  await prisma.documentUploadIntent.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.documentDownload.deleteMany({
     where: { documentVersion: { document: { buildingId: { in: buildingIds } } } },
   });
@@ -502,37 +516,14 @@ async function joinBuildingAsApprovedMember(
   return reqRes.body.data.id;
 }
 
-/** Creates a document (and its first version) as `accessToken`, returns
- * its id — triggers `DocumentUploadedEvent` -> `NotificationEventListener
- * .onDocumentUploaded`'s DOCUMENT-category fan-out. Defaults to an open
- * GENERAL category so the fan-out reaches every current member, not just
- * privileged ones. */
-async function createDocument(
-  app: INestApplication,
-  buildingId: string,
-  accessToken: string,
-  overrides: Record<string, unknown> = {},
-): Promise<{ documentId: string; versionId: string }> {
-  const res = await request(app.getHttpServer())
-    .post(`/api/v1/buildings/${buildingId}/documents`)
-    .set('Authorization', `Bearer ${accessToken}`)
-    .send({
-      category: 'GENERAL',
-      title: 'e2e document',
-      description: 'e2e document description',
-      fileUrl: 'https://storage.example.com/e2e-file.pdf',
-      fileName: 'e2e-file.pdf',
-      fileType: 'PDF',
-      fileSize: 1024,
-      ...overrides,
-    })
-    .expect(201);
-
-  return {
-    documentId: res.body.data.document.id as string,
-    versionId: res.body.data.version.id as string,
-  };
-}
+// `createDocument` (imported above from `./helpers/create-document`) —
+// triggers `DocumentUploadedEvent` -> `NotificationEventListener
+// .onDocumentUploaded`'s DOCUMENT-category fan-out. Defaults to an open
+// GENERAL category so the fan-out reaches every current member, not just
+// privileged ones. Previously a byte-for-byte duplicate of
+// `documents.e2e-spec.ts`'s own copy of this helper — both now share the
+// single implementation in `./helpers/create-document` (Documents Phase
+// 1a Hardening / ADR-121 — see that module's own comment for why).
 
 /** Creates a case as `accessToken`, returns its id (starts OPEN) —
  * triggers `CaseCreatedEvent` -> `NotificationEventListener.onCaseCreated`'s

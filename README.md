@@ -28,9 +28,22 @@ Archive Lifecycle, Cross-Person Authorization, Preferences, and
 NotificationTemplate Staff CRUD), and Gamification (`ADR-079`, Testing
 Phase 3e — My Progress & XP History, Building Score & Cross-Building
 Leaderboard, cross-domain XP via Case Resolution, staff-gated Analytics),
-plus `08_API_Architecture`'s own frozen Page/Limit pagination, implemented
-for the first time across every platform-wide unbounded listing
-(`ADR-072`). A formal Security Review and Performance Review have both
+plus `08_API_Architecture`'s own frozen Page/Limit pagination (`ADR-072`),
+implemented across BackOffice's six staff queues and Marketplace's public/
+staff listings. Finance's own seven building/unit-scoped list endpoints
+were a separate, later-discovered gap — closed by the Finance Hardening
+Pass (post-audit; see the Finance bullet below), not part
+of the original `ADR-072` rollout. That pass's own mobile-compatibility gap
+(the Flutter client didn't yet read pagination metadata) is now closed too —
+see `ADR-119` (Finance ↔ Mobile Pagination Contract Alignment). Other
+domains' list endpoints (Building/Governance/Cases/Documents/Notifications/
+Gamification) have not yet been audited against this convention — an
+earlier revision of this section overstated `ADR-072` as covering "every
+platform-wide unbounded listing," which this correction retracts;
+platform-wide deterministic ordering, Marketplace's own pagination
+migration, and a broader pagination audit remain open — tracked in
+`ADR-120`. A formal Security Review and Performance
+Review have both
 been completed (`26_Security_Review_v1.0`, `27_Performance_Review_v1.0` —
 Project docs, not ADRs). Remaining before overall MVP release readiness:
 committing a versioned Swagger/OpenAPI snapshot (mechanism ready,
@@ -76,7 +89,36 @@ this section is a map, not a replacement for those.
   positive Adjustments (`ADR-053`), Collection Rate and Payment Registration
   Rate reports (`ADR-055`/`ADR-057`) — the two MVP Financial success metrics
   named in `02_MVP_Scope_v2.0`. Full e2e coverage — `ADR-074`, Testing Phase
-  2b.
+  2b, extended by the **Finance Hardening Pass (post-audit)**: an inactive
+  Fund now blocks `createChargeBatch`/`previewChargeBatch`/`createPayment`/
+  `createAdjustment` (previously only `updateFund` enforced this);
+  `listFunds`/`listChargeBatches`/`listUnitChargeItems`/`listUnitPayments`/
+  `listUnitAdjustments`/`listPayments`/`listLedger` now use the shared
+  `page`/`limit` convention (`ADR-072`) instead of returning an unbounded
+  array. That pass disclosed a mobile-compatibility gap at the time (the
+  Flutter client didn't yet read `metadata.pagination`, so a building/unit
+  with more than `DEFAULT_PAGE_LIMIT` (20) rows would appear silently
+  truncated on mobile) — **this is now closed** (`ADR-119`, Finance ↔
+  Mobile Pagination Contract Alignment): `GET .../payments` gained an
+  optional, validated `status` filter reusing the existing
+  `(buildingId, status)` index, the mobile app gained canonical
+  `PaginatedResult<T>`/`ApiClient.getPaginated<T>` primitives in
+  `core/network`, and `pendingPaymentsProvider`/`fundsListProvider`/
+  `UnitFinanceScreen` were all migrated to consume them — the Pending
+  Payments reviewer queue (previously the highest-risk consumer of this
+  gap) now filters `PENDING_APPROVAL` server-side and can no longer lose a
+  still-pending payment off page 1, and Payment Detail can no longer
+  misreport a genuinely-pending payment as "Already Reviewed." Confirmed
+  end-to-end (773/773 e2e, `flutter analyze`/`flutter test` clean, manual
+  verification against seed data exceeding the default page size) — see
+  `ADR-119` for the full closure record. Finance is feature-complete for
+  MVP; Marketplace's own equivalent pagination migration and
+  platform-wide deterministic ordering remain deliberately deferred —
+  tracked in `ADR-120`.
+  Finance DTO amount fields (`ChargeBatchItemDto.amount`,
+  `CreateChargeBatchDto.amountPerUnit`/`ratePerSqm`, `CreatePaymentDto.
+  amount`) are now `@IsInt()` instead of `@IsNumber()`, so a decimal amount
+  now 400s cleanly instead of 500ing when it hits Prisma's `Int` column.
 - **Governance** (`src/modules/governance`): Votes (create/publish/close/
   cancel, ballot casting, results), multi-scope vote targeting (building/
   block/property-type/selected-units — `ADR-058`), Meetings as their own
@@ -89,10 +131,37 @@ this section is a map, not a replacement for those.
   `resolutionCode` enum (`ADR-052`). Full e2e coverage — `ADR-076`, Testing
   Phase 3b.
 - **Documents** (`src/modules/documents`): upload (first version)/list/
-  detail/download, bulk upload (`ADR-051`), expiration metadata (`ADR-046`);
-  `fileUrl` is client-supplied metadata only — no real object storage backend
-  exists yet (see "Known risk areas"). Full e2e coverage — `ADR-077`,
-  Testing Phase 3c.
+  detail/download, bulk upload (`ADR-051`), expiration metadata (`ADR-046`),
+  deterministic `page`/`limit` pagination on list/search (`ADR-072`/
+  `ADR-120`); real S3/MinIO-compatible object storage (`ADR-087`) is wired
+  up — a client requests a presigned PUT via `POST
+  :id/documents/upload-url`, uploads directly to storage, then records the
+  returned `storageKey` as `fileUrl` on the existing create/upload-version
+  endpoints. **Documents Phase 1a Hardening** (post-audit) closed the
+  trust boundary this originally left open: `requestUploadUrl` now
+  persists a `DocumentUploadIntent` row (see the Prisma model of the same
+  name) and returns its id as `uploadIntentId`; `createDocument`/
+  `uploadVersion`/`bulkCreateDocuments` (per-item) now validate the
+  submitted `fileUrl` against a real, unconsumed, matching intent —
+  building/requester/purpose/document-binding/expiry/metadata all
+  checked — issue a real presigned **HEAD Object** request to confirm the
+  file actually exists in storage with the declared size, and only then
+  atomically consume the intent (`consumedAt`, race-safe via a conditional
+  `updateMany`) in the same transaction that writes the
+  Document/DocumentVersion row. An arbitrary/unknown `fileUrl` is now
+  rejected (`404`) once storage is configured. `fileUrl` is still accepted
+  as opaque client-supplied metadata, with none of this validation, when
+  storage isn't configured — so environments without `STORAGE_*` set see
+  no regression. **Verified end-to-end** against a real MinIO + Postgres +
+  Redis stack: a real presigned PUT-then-GET round trip (bytes matched), 70/70 targeted unit tests, 821/821 in the full unit suite, 3/3 targeted e2e suites (79/79 tests), the full e2e suite (32/32 suites, 802/802 tests), and a clean build — see `ADR-121`'s own "Verification status"
+  for the full breakdown. Content-Type/magic-byte/file-content verification
+  is still not implemented — a disclosed, permanent trust boundary (not a
+  pending item), see `ADR-121`'s "Content-Type is not verified". Full e2e
+  coverage — `ADR-077`, Testing Phase 3c (pre-hardening); the upload-intent
+  scenarios live in `test/documents-storage.e2e-spec.ts`, and the legacy
+  fixture helpers in `test/documents.e2e-spec.ts`/`test/notifications.
+  e2e-spec.ts` were migrated onto the same real upload-intent flow
+  (`test/helpers/create-document.ts`) so both suites pass storage-configured.
 - **Notifications** (`src/modules/notifications`): a real, independent
   in-app (`IN_APP`) delivery channel since `ADR-027` — list/unread-count/get/
   mark-read/mark-all-read/archive/preferences — plus a real BullMQ async
@@ -383,11 +452,30 @@ rules live in `domain/`, orchestration in `application/`, persistence in
 
 ## Known risk areas (things to double-check before/at first production use)
 
-- **Real object storage (S3/MinIO) for Documents — still open**:
-  `DocumentVersion.fileUrl` accepts client-supplied metadata only, no actual
-  file transfer happens. Needs a new npm dependency this sandbox has never
-  been able to install/verify, plus a provider-abstraction decision no
-  source doc specifies.
+- **Real object storage (S3/MinIO) for Documents, and the Phase 1a
+  upload-intent trust-boundary hardening — implemented and verified**:
+  `ADR-087`'s hand-rolled SigV4 presigned-URL flow (`src/common/storage`)
+  and `ADR-121`'s `DocumentUploadIntent` validation/atomic-consume/real
+  HEAD-Object verification (`DocumentsService.resolveUploadIntent`,
+  `DocumentRepository`'s `createUploadIntent`/atomic-consume,
+  `StorageService.verifyObjectUploaded`) were both confirmed against a
+  real MinIO + Postgres + Redis stack on the user's own machine: a real
+  presigned PUT-then-GET round trip (bytes matched), the full
+  `test/documents-storage.e2e-spec.ts` `STORAGE_CONFIGURED_FOR_TEST`
+  scenario set (arbitrary-fileUrl rejection, pre-upload rejection,
+  size-mismatch rejection, intent-reuse rejection, wrong-document-binding
+  rejection, per-item bulk validation), 70/70 targeted unit tests, 821/821 in the full unit suite, 3/3 targeted e2e suites (79/79 tests), the full e2e suite (32/32 suites, 802/802 tests), and a clean build. This
+  sandbox itself still cannot run any of this directly (no Docker, no
+  outbound network) — the commands remain `docker-compose up -d` +
+  `npm run storage:verify-roundtrip` / `npm run test:e2e` for anyone
+  re-confirming it locally — but the results above are real, not sandbox
+  static/unit-only claims. `test/documents.e2e-spec.ts` and `test/
+  notifications.e2e-spec.ts` were migrated onto the same real upload-intent
+  flow (`test/helpers/create-document.ts`, replacing both files'
+  previously-duplicated, pre-`ADR-121` `createDocument` fixture) and are
+  included in the 802/802 result above — no suite in this repository still
+  assumes the arbitrary-`fileUrl` legacy contract when storage is
+  configured.
 - **Real Push/Email/SMS provider for Notifications — still open**: every
   non-IN_APP delivery is a `Logger` stub, always recorded as `SENT`, never
   actually `DELIVERED`. Firebase Cloud Messaging is the named planned
@@ -421,8 +509,12 @@ rules live in `domain/`, orchestration in `application/`, persistence in
 - **Formal Performance Review complete (`27_Performance_Review_v1.0`)** —
   static, source-grounded review (this sandbox has never had live traffic to
   load-test). Headline finding — `08_API_Architecture`'s own frozen Page/
-  Limit pagination had never been implemented anywhere — is now closed by
-  `ADR-072` for the review's named unbounded endpoints. Still open: the
+  Limit pagination had never been implemented anywhere — was closed by
+  `ADR-072` for the review's named unbounded endpoints, plus Finance's own
+  seven list endpoints separately (Finance Hardening Pass, post-audit — see
+  the Finance bullet above; the mobile-compatibility gap that pass
+  introduced is now also closed, `ADR-119`). Other domains' list endpoints
+  have not yet been re-audited for this convention (`ADR-120`). Still open: the
   frozen numeric Performance Targets (`<300ms` avg, `<150ms` critical) have
   never actually been measured against real traffic; a low-urgency N+1
   pattern in `ComplianceCaseService.detectAnomalies()`; no application-level
@@ -434,6 +526,26 @@ rules live in `domain/`, orchestration in `application/`, persistence in
   warning comment on the OTP `console.log`, since no other OTP-delivery
   mechanism exists yet). Still open: a real `npm audit` run (this sandbox has
   no npm registry access), a JWT-secret-rotation runbook.
+- **Finance Hardening Pass (post-audit) — deliberately deferred, not
+  overlooked**: three findings from the Finance audit were investigated and
+  intentionally left unchanged this pass, rather than "fixed" speculatively.
+  (1) The four sequential per-row `await` loops in `FinanceRepository`
+  (oldest-due-first ChargeItem allocation on `approvePayment`, its rollback
+  on `reversePayment`, `createAdjustment`'s waiver allocation, credit
+  auto-apply on `issueChargeBatch`) were left as-is: each iterates a
+  bounded, small set (a unit's own outstanding ChargeItems/Adjustments) and
+  ordering/idempotency/transaction-semantics depend on running strictly in
+  sequence inside one `$transaction` — batching them (e.g.
+  `Promise.all`) would risk breaking the oldest-first allocation order for
+  no measured performance benefit at this scale. (2) No trigram/GIN search
+  index was added — no existing Finance list route takes a free-text search
+  parameter, and no other module in this codebase uses a trigram/GIN index
+  today, so there is no convention to extend and no demonstrated query this
+  would speed up. (3) No amount upper bound was added to any Finance DTO —
+  no canonical platform-wide "max transaction amount" convention exists
+  anywhere in this codebase to apply consistently, so this is reported as a
+  pending product decision rather than an invented number. See the Finance
+  audit / hardening-pass report for the full reasoning behind each.
 - **Reputation, Daily Missions, Seasonal Events (Gamification) — not
   built**: each was researched and found too weakly-sourced (no formula, no
   weights, no thresholds anywhere in the source docs) to build without
@@ -453,6 +565,10 @@ rules live in `domain/`, orchestration in `application/`, persistence in
   offline-retry work (the mobile app's `SyncOutboxItems` pattern, `21_ADRs >
   ADR-065`) — a retried POST against a non-naturally-idempotent endpoint can
   double-apply if it "succeeded" server-side but the response was lost.
+  Tracked as its own backlog item in `ADR-120`, alongside platform-wide
+  deterministic pagination ordering, Marketplace's pagination migration, a
+  broader pagination audit, and cursor pagination — all deliberately
+  deferred, not overlooked.
 
 ## Release readiness
 
@@ -480,7 +596,15 @@ Performance, Security — have now been picked up at least once (`ADR-070`/
 `ADR-073`/`ADR-074`/`ADR-075`/`ADR-076`/`ADR-077`/`ADR-078`/`ADR-079`;
 `ADR-071`; `27_Performance_Review_v1.0`; `26_Security_Review_v1.0`), and the
 Performance Review's own headline finding (frozen Page/Limit pagination
-never implemented) is now closed by `ADR-072`. **Remaining before overall
+never implemented) is closed by `ADR-072` plus the Finance Hardening Pass
+(post-audit) for Finance's own list endpoints; the mobile-compatibility gap
+that pass introduced is now also closed (`ADR-119`, confirmed via 773/773
+e2e plus a clean `flutter analyze`/`flutter test` run and manual
+verification) — Finance is feature-complete for MVP. Domains outside
+BackOffice/Marketplace/Finance have not yet been re-audited for the
+pagination convention itself, and Marketplace's own pagination migration
+plus platform-wide deterministic ordering remain deferred — tracked in
+`ADR-120`. **Remaining before overall
 MVP release readiness: committing a versioned Swagger/OpenAPI snapshot
 (mechanism ready — `npm run docs:export-openapi`, `ADR-071`), the
 remaining BackOffice and Marketplace e2e expansion work, plus the other
@@ -513,7 +637,20 @@ Release Readiness section for the live, authoritative status).
    staff-only surface and Marketplace's moderation half both need a
    multi-actor `PlatformStaff` bootstrap solved first (see `21_ADRs >
    ADR-079`'s own Future Review).
-5. Real object storage (S3/MinIO) integration for Documents, and a real
-   Push/Email/SMS provider (Firebase Cloud Messaging) for Notifications —
-   both need a new npm dependency and a provider decision this sandbox
-   cannot make unilaterally.
+5. ~~Real object storage (S3/MinIO) integration for Documents~~ — **DONE.**
+   `ADR-087`'s presigned-upload flow and `ADR-121`'s Phase 1a upload-intent
+   trust-boundary hardening (`DocumentUploadIntent`, atomic consume, real
+   HEAD-Object verification) are implemented and verified against a real
+   MinIO/S3 + Postgres + Redis stack on the user's own machine: a real
+   PUT-then-GET round trip (bytes matched), 70/70 targeted unit tests, 821/821 in the full unit suite, 3/3 targeted e2e suites (79/79 tests), 802/802 in the full e2e suite (32/32 suites), and a clean build (see "Known risk areas"). `test/documents.e2e-spec.ts` was migrated onto the upload-intent
+   flow along with `test/notifications.e2e-spec.ts` (`test/helpers/
+   create-document.ts`). (Notifications' own provider-integration status is
+   tracked separately and isn't re-verified as part of this update.)
+6. Platform Pagination & Idempotency Hardening (`ADR-120`, backlog —
+   Finance's own closure is `ADR-119` and does not block this): platform-
+   wide deterministic pagination ordering, Marketplace's pagination
+   migration onto the now-canonical `PaginatedResult`/`getPaginated`
+   primitives, a BackOffice/Notifications pagination-consumer audit,
+   cursor pagination as an open question, and a platform-wide idempotency-
+   key convention. Not scheduled; each item becomes its own ADR when
+   picked up.

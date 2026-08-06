@@ -1,0 +1,555 @@
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { DocumentsService } from './documents.service';
+import { DocumentRepository } from '../infrastructure/repositories/document.repository';
+import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
+import { DocumentPolicy } from '../domain/policies/document.policy';
+import { AuditService } from '../../../common/audit/audit.service';
+import { StorageService } from '../../../common/storage/storage.service';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+  ConflictError,
+  NotFoundAppError,
+  ValidationError,
+} from '../../../common/errors/app-error';
+
+/**
+ * Documents Phase 1a hardening (Section A) — `DocumentsService` unit
+ * tests for the new `listDocuments`/`searchDocuments` pagination wiring.
+ * Before this pass this service had zero unit-level coverage (only the
+ * e2e suite, against a real Postgres instance).
+ *
+ * Scope is deliberately narrow: this covers the pagination/privilege
+ * plumbing this pass introduced (page/limit → skip/take, privileged
+ * detection passed through to the repository, `meta` built from the
+ * repository's `total`), not the full service surface — the same
+ * incremental-coverage approach `FinanceService.spec.ts` used for its own
+ * hardening pass. `DocumentRepository`/`BuildingRepository`/`AuditService`/
+ * `EventEmitter2`/`StorageService` are mocked; `DocumentPolicy` is a real
+ * instance (no dependencies of its own, already covered by its own spec).
+ *
+ * Sections B-G (upload-intent trust-boundary closure) add a second block
+ * below covering `requestUploadUrl`/`createDocument`/`uploadVersion`/
+ * `bulkCreateDocuments`'s new intent-validation behavior — this is the
+ * ONE place that behavior can be unit-tested without a real Postgres +
+ * MinIO stack (both `DocumentRepository` and `StorageService` are mocked,
+ * so no network/DB I/O actually happens; the real HEAD-object check and
+ * real Prisma atomic-consume are covered separately, by
+ * `StorageService.spec.ts` and `DocumentRepository.spec.ts` respectively).
+ */
+describe('DocumentsService — listDocuments / searchDocuments pagination', () => {
+  let documents: Record<string, jest.Mock>;
+  let buildings: Record<string, jest.Mock>;
+  let audit: { record: jest.Mock };
+  let events: { emit: jest.Mock };
+  let storage: Record<string, jest.Mock>;
+  let service: DocumentsService;
+
+  const MEMBER_ROLE = ['TENANT'];
+  const PRIVILEGED_ROLE = ['MANAGER'];
+
+  beforeEach(() => {
+    documents = {
+      listDocuments: jest.fn().mockResolvedValue({ items: [], total: 0 }),
+      searchDocuments: jest.fn().mockResolvedValue({ items: [], total: 0 }),
+    };
+    buildings = {
+      findById: jest.fn().mockResolvedValue({ id: 'building-1' }),
+      getRoles: jest.fn().mockResolvedValue(MEMBER_ROLE),
+    };
+    audit = { record: jest.fn() };
+    events = { emit: jest.fn() };
+    storage = { isConfigured: jest.fn().mockReturnValue(false) };
+
+    service = new DocumentsService(
+      documents as unknown as DocumentRepository,
+      buildings as unknown as BuildingRepository,
+      new DocumentPolicy(),
+      audit as unknown as AuditService,
+      events as unknown as EventEmitter2,
+      storage as unknown as StorageService,
+    );
+  });
+
+  describe('listDocuments', () => {
+    it('rejects a non-member outright, before ever calling the repository', async () => {
+      buildings.getRoles.mockResolvedValue([]);
+
+      await expect(
+        service.listDocuments('building-1', 'person-1', {}, { page: 1, limit: 20 }),
+      ).rejects.toThrow();
+      expect(documents.listDocuments).not.toHaveBeenCalled();
+    });
+
+    it('converts page/limit to skip/take and passes it to the repository unchanged', async () => {
+      await service.listDocuments('building-1', 'person-1', {}, { page: 3, limit: 10 });
+
+      expect(documents.listDocuments).toHaveBeenCalledWith('building-1', {}, false, {
+        skip: 20,
+        take: 10,
+      });
+    });
+
+    it('passes privileged=false for a plain member and privileged=true for a MANAGER/BOARD_MEMBER/ACCOUNTANT', async () => {
+      buildings.getRoles.mockResolvedValue(MEMBER_ROLE);
+      await service.listDocuments('building-1', 'person-1', {}, { page: 1, limit: 20 });
+      expect(documents.listDocuments).toHaveBeenLastCalledWith('building-1', {}, false, {
+        skip: 0,
+        take: 20,
+      });
+
+      buildings.getRoles.mockResolvedValue(PRIVILEGED_ROLE);
+      await service.listDocuments('building-1', 'person-1', {}, { page: 1, limit: 20 });
+      expect(documents.listDocuments).toHaveBeenLastCalledWith('building-1', {}, true, {
+        skip: 0,
+        take: 20,
+      });
+    });
+
+    it('builds meta from the repository-reported total, not from items.length', async () => {
+      documents.listDocuments.mockResolvedValue({ items: [{ id: 'd1' }], total: 47 });
+
+      const result = await service.listDocuments(
+        'building-1',
+        'person-1',
+        {},
+        {
+          page: 2,
+          limit: 20,
+        },
+      );
+
+      expect(result.meta).toEqual({ page: 2, limit: 20, total: 47, totalPages: 3 });
+      expect(result.items).toEqual([{ id: 'd1' }]);
+    });
+  });
+
+  describe('searchDocuments', () => {
+    it('throws NotFoundAppError when the building does not exist', async () => {
+      buildings.findById.mockResolvedValue(null);
+
+      await expect(
+        service.searchDocuments('missing-building', 'person-1', {}, { page: 1, limit: 20 }),
+      ).rejects.toThrow(NotFoundAppError);
+    });
+
+    it('converts page/limit to skip/take and passes it to the repository unchanged', async () => {
+      await service.searchDocuments(
+        'building-1',
+        'person-1',
+        { title: 'lease' },
+        {
+          page: 2,
+          limit: 5,
+        },
+      );
+
+      expect(documents.searchDocuments).toHaveBeenCalledWith(
+        'building-1',
+        { title: 'lease' },
+        false,
+        { skip: 5, take: 5 },
+      );
+    });
+
+    it('builds meta from the repository-reported total', async () => {
+      documents.searchDocuments.mockResolvedValue({ items: [], total: 0 });
+
+      const result = await service.searchDocuments(
+        'building-1',
+        'person-1',
+        {},
+        {
+          page: 1,
+          limit: 20,
+        },
+      );
+
+      expect(result.meta).toEqual({ page: 1, limit: 20, total: 0, totalPages: 1 });
+    });
+  });
+});
+
+describe('DocumentsService — upload-intent trust-boundary closure (Sections B-G)', () => {
+  let documents: Record<string, jest.Mock>;
+  let buildings: Record<string, jest.Mock>;
+  let audit: { record: jest.Mock };
+  let events: { emit: jest.Mock };
+  let storage: Record<string, jest.Mock>;
+  let service: DocumentsService;
+
+  const MEMBER_ROLE = ['TENANT'];
+  const ACTOR_ID = 'person-1';
+  const BUILDING_ID = 'building-1';
+  const STORAGE_KEY = 'documents/building-1/2026/08/abc-lease.pdf';
+  const EXPIRES_SOON = new Date(Date.now() + 15 * 60 * 1000);
+
+  function validIntent(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'intent-1',
+      buildingId: BUILDING_ID,
+      storageKey: STORAGE_KEY,
+      requestedById: ACTOR_ID,
+      purpose: 'CREATE_DOCUMENT',
+      documentId: null,
+      fileName: 'lease.pdf',
+      fileType: 'PDF',
+      fileSize: 1024,
+      createdAt: new Date(),
+      expiresAt: EXPIRES_SOON,
+      consumedAt: null,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    documents = {
+      findDocumentById: jest.fn().mockResolvedValue(null),
+      createUploadIntent: jest.fn().mockResolvedValue({ id: 'intent-1' }),
+      findUploadIntentByStorageKey: jest.fn().mockResolvedValue(null),
+      createDocumentWithFirstVersion: jest.fn().mockResolvedValue({
+        document: { id: 'doc-1', category: 'GENERAL' },
+        version: { id: 'v1' },
+      }),
+      addVersion: jest.fn().mockResolvedValue({ id: 'v2', versionNumber: 2 }),
+    };
+    buildings = {
+      findById: jest.fn().mockResolvedValue({ id: BUILDING_ID }),
+      getRoles: jest.fn().mockResolvedValue(MEMBER_ROLE),
+    };
+    audit = { record: jest.fn() };
+    events = { emit: jest.fn() };
+    storage = {
+      isConfigured: jest.fn().mockReturnValue(true),
+      buildObjectKey: jest.fn().mockReturnValue(STORAGE_KEY),
+      getPresignedUploadUrl: jest.fn().mockReturnValue({
+        uploadUrl: 'https://minio.local/bucket/' + STORAGE_KEY,
+        storageKey: STORAGE_KEY,
+        expiresAt: EXPIRES_SOON,
+      }),
+      verifyObjectUploaded: jest.fn().mockResolvedValue({ exists: true, actualSizeBytes: 1024 }),
+    };
+
+    service = new DocumentsService(
+      documents as unknown as DocumentRepository,
+      buildings as unknown as BuildingRepository,
+      new DocumentPolicy(),
+      audit as unknown as AuditService,
+      events as unknown as EventEmitter2,
+      storage as unknown as StorageService,
+    );
+  });
+
+  describe('requestUploadUrl', () => {
+    it('creates a CREATE_DOCUMENT intent and returns uploadIntentId alongside the presigned URL fields', async () => {
+      const result = await service.requestUploadUrl(
+        BUILDING_ID,
+        { fileName: 'lease.pdf', fileType: 'PDF', fileSize: 1024, purpose: 'CREATE_DOCUMENT' },
+        ACTOR_ID,
+      );
+
+      expect(documents.createUploadIntent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          buildingId: BUILDING_ID,
+          storageKey: STORAGE_KEY,
+          requestedById: ACTOR_ID,
+          purpose: 'CREATE_DOCUMENT',
+          documentId: undefined,
+        }),
+      );
+      expect(result).toEqual(
+        expect.objectContaining({ uploadIntentId: 'intent-1', storageKey: STORAGE_KEY }),
+      );
+    });
+
+    it('throws ValidationError for CREATE_VERSION with no documentId', async () => {
+      await expect(
+        service.requestUploadUrl(
+          BUILDING_ID,
+          { fileName: 'lease.pdf', fileType: 'PDF', fileSize: 1024, purpose: 'CREATE_VERSION' },
+          ACTOR_ID,
+        ),
+      ).rejects.toThrow(ValidationError);
+      expect(documents.createUploadIntent).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundAppError for CREATE_VERSION when the target document belongs to a different building', async () => {
+      documents.findDocumentById.mockResolvedValue({ id: 'doc-9', buildingId: 'other-building' });
+
+      await expect(
+        service.requestUploadUrl(
+          BUILDING_ID,
+          {
+            fileName: 'lease.pdf',
+            fileType: 'PDF',
+            fileSize: 1024,
+            purpose: 'CREATE_VERSION',
+            documentId: 'doc-9',
+          },
+          ACTOR_ID,
+        ),
+      ).rejects.toThrow(NotFoundAppError);
+      expect(documents.createUploadIntent).not.toHaveBeenCalled();
+    });
+
+    it('creates a CREATE_VERSION intent bound to documentId when the target document belongs to this building', async () => {
+      documents.findDocumentById.mockResolvedValue({ id: 'doc-9', buildingId: BUILDING_ID });
+
+      await service.requestUploadUrl(
+        BUILDING_ID,
+        {
+          fileName: 'lease.pdf',
+          fileType: 'PDF',
+          fileSize: 1024,
+          purpose: 'CREATE_VERSION',
+          documentId: 'doc-9',
+        },
+        ACTOR_ID,
+      );
+
+      expect(documents.createUploadIntent).toHaveBeenCalledWith(
+        expect.objectContaining({ purpose: 'CREATE_VERSION', documentId: 'doc-9' }),
+      );
+    });
+
+    it('never creates an intent when the presign call itself throws (storage not configured — legacy failure preserved)', async () => {
+      storage.getPresignedUploadUrl.mockImplementation(() => {
+        throw new Error('Object storage is not configured on this server');
+      });
+
+      await expect(
+        service.requestUploadUrl(
+          BUILDING_ID,
+          { fileName: 'lease.pdf', fileType: 'PDF', fileSize: 1024, purpose: 'CREATE_DOCUMENT' },
+          ACTOR_ID,
+        ),
+      ).rejects.toThrow();
+      expect(documents.createUploadIntent).not.toHaveBeenCalled();
+    });
+
+    it('throws ValidationError when purpose is CREATE_DOCUMENT and documentId is provided', async () => {
+      await expect(
+        service.requestUploadUrl(
+          BUILDING_ID,
+          {
+            fileName: 'lease.pdf',
+            fileType: 'PDF',
+            fileSize: 1024,
+            purpose: 'CREATE_DOCUMENT',
+            documentId: 'doc-9',
+          },
+          ACTOR_ID,
+        ),
+      ).rejects.toThrow(ValidationError);
+      expect(documents.createUploadIntent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('createDocument — intent validation (storage configured)', () => {
+    const baseDto = {
+      category: 'GENERAL' as const,
+      title: 'Lease',
+      fileUrl: STORAGE_KEY,
+      fileName: 'lease.pdf',
+      fileType: 'PDF',
+      fileSize: 1024,
+    };
+
+    it('succeeds, HEAD-verifies the object, and consumes the intent when everything matches', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(validIntent());
+
+      await service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1');
+
+      expect(storage.verifyObjectUploaded).toHaveBeenCalledWith(STORAGE_KEY, 1024);
+      expect(documents.createDocumentWithFirstVersion).toHaveBeenCalledWith(
+        expect.objectContaining({ uploadIntentId: 'intent-1' }),
+      );
+    });
+
+    it('skips all intent validation when storage is not configured (legacy passthrough)', async () => {
+      storage.isConfigured.mockReturnValue(false);
+
+      await service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1');
+
+      expect(documents.findUploadIntentByStorageKey).not.toHaveBeenCalled();
+      expect(storage.verifyObjectUploaded).not.toHaveBeenCalled();
+      expect(documents.createDocumentWithFirstVersion).toHaveBeenCalledWith(
+        expect.objectContaining({ uploadIntentId: undefined }),
+      );
+    });
+
+    it('rejects an arbitrary/unknown fileUrl with NotFoundAppError (no matching intent)', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(null);
+
+      await expect(service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        NotFoundAppError,
+      );
+    });
+
+    it('rejects an already-consumed intent with ConflictError', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(
+        validIntent({ consumedAt: new Date() }),
+      );
+
+      await expect(service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        ConflictError,
+      );
+    });
+
+    it('rejects an expired intent with BusinessRuleViolationError', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(
+        validIntent({ expiresAt: new Date(Date.now() - 1000) }),
+      );
+
+      await expect(service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        BusinessRuleViolationError,
+      );
+    });
+
+    it('rejects an intent belonging to a different building with AuthorizationError', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(
+        validIntent({ buildingId: 'other-building' }),
+      );
+
+      await expect(service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        AuthorizationError,
+      );
+    });
+
+    it('rejects an intent requested by a different person with AuthorizationError', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(
+        validIntent({ requestedById: 'someone-else' }),
+      );
+
+      await expect(service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        AuthorizationError,
+      );
+    });
+
+    it('rejects a CREATE_VERSION intent used against createDocument with BusinessRuleViolationError', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(
+        validIntent({ purpose: 'CREATE_VERSION', documentId: 'doc-1' }),
+      );
+
+      await expect(service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        BusinessRuleViolationError,
+      );
+    });
+
+    it('rejects a fileName/fileType/fileSize mismatch against the intent with ValidationError', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(validIntent({ fileSize: 999 }));
+
+      await expect(service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        ValidationError,
+      );
+    });
+
+    it('rejects with BusinessRuleViolationError when the object was never actually uploaded (HEAD reports not-exists)', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(validIntent());
+      storage.verifyObjectUploaded.mockResolvedValue({ exists: false });
+
+      await expect(service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        BusinessRuleViolationError,
+      );
+      expect(documents.createDocumentWithFirstVersion).not.toHaveBeenCalled();
+    });
+
+    it('rejects with ValidationError when the uploaded object size does not match the declared size', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(validIntent());
+      storage.verifyObjectUploaded.mockResolvedValue({
+        exists: true,
+        sizeMismatch: true,
+        actualSizeBytes: 500,
+      });
+
+      await expect(service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        ValidationError,
+      );
+      expect(documents.createDocumentWithFirstVersion).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('uploadVersion — intent must be bound to the target document', () => {
+    const baseDto = {
+      fileUrl: STORAGE_KEY,
+      fileName: 'lease.pdf',
+      fileType: 'PDF',
+      fileSize: 1024,
+    };
+
+    beforeEach(() => {
+      documents.findDocumentById.mockResolvedValue({
+        id: 'doc-1',
+        buildingId: BUILDING_ID,
+        category: 'GENERAL',
+        status: 'ACTIVE',
+      });
+    });
+
+    it('succeeds and passes uploadIntentId through when the CREATE_VERSION intent is bound to this exact document', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(
+        validIntent({ purpose: 'CREATE_VERSION', documentId: 'doc-1' }),
+      );
+
+      await service.uploadVersion('doc-1', baseDto, ACTOR_ID, 'req-1');
+
+      expect(documents.addVersion).toHaveBeenCalledWith(
+        expect.objectContaining({ uploadIntentId: 'intent-1' }),
+      );
+    });
+
+    it('rejects with BusinessRuleViolationError when the intent is bound to a different document', async () => {
+      documents.findUploadIntentByStorageKey.mockResolvedValue(
+        validIntent({ purpose: 'CREATE_VERSION', documentId: 'some-other-doc' }),
+      );
+
+      await expect(service.uploadVersion('doc-1', baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        BusinessRuleViolationError,
+      );
+      expect(documents.addVersion).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('bulkCreateDocuments — per-item intent validation (Section F)', () => {
+    it('fails only the item with an invalid intent; a sibling item with a valid intent still succeeds', async () => {
+      documents.findUploadIntentByStorageKey.mockImplementation(async (key: string) =>
+        key === 'good-key' ? validIntent({ storageKey: 'good-key' }) : null,
+      );
+
+      const result = await service.bulkCreateDocuments(
+        BUILDING_ID,
+        {
+          documents: [
+            {
+              category: 'GENERAL',
+              title: 'Good',
+              fileUrl: 'good-key',
+              fileName: 'lease.pdf',
+              fileType: 'PDF',
+              fileSize: 1024,
+            },
+            {
+              category: 'GENERAL',
+              title: 'Bad (unknown storage key)',
+              fileUrl: 'bad-key',
+              fileName: 'lease.pdf',
+              fileType: 'PDF',
+              fileSize: 1024,
+            },
+          ],
+        } as never,
+        ACTOR_ID,
+        'req-1',
+      );
+
+      expect(result.summary).toEqual({ total: 2, succeeded: 1, failed: 1 });
+      expect(result.results[0]).toEqual(expect.objectContaining({ status: 'created' }));
+      expect(result.results[1]).toEqual(
+        expect.objectContaining({
+          status: 'failed',
+          error: expect.objectContaining({ code: 'NOT_FOUND' }),
+        }),
+      );
+    });
+  });
+});
