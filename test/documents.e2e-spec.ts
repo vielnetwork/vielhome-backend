@@ -999,7 +999,7 @@ describe('Documents (e2e) — Bulk Upload (08.09 Rule 018, ADR-051)', () => {
 });
 
 describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', () => {
-  // Budget: 3 calls to POST /auth/otp/request (manager + member + nonMember).
+  // Budget: 4 calls to POST /auth/otp/request (manager + owner + tenant + nonMember).
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
@@ -1007,6 +1007,7 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
 
   let manager: RegisteredPerson;
   let member: RegisteredPerson;
+  let tenant: RegisteredPerson;
   let nonMember: RegisteredPerson;
   let buildingId: string;
 
@@ -1016,12 +1017,19 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
     createdPhones.push(manager.phone);
     member = await registerPerson(app);
     createdPhones.push(member.phone);
+    tenant = await registerPerson(app);
+    createdPhones.push(tenant.phone);
     nonMember = await registerPerson(app);
     createdPhones.push(nonMember.phone);
 
     buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER' });
     createdBuildingIds.push(buildingId);
     await joinBuildingAsApprovedMember(app, buildingId, member.accessToken, manager.accessToken);
+    await joinBuildingAsApprovedMember(app, buildingId, tenant.accessToken, manager.accessToken);
+    await prisma.membership.updateMany({
+      where: { buildingId, personId: tenant.personId, isCurrent: true },
+      data: { role: 'TENANT' },
+    });
   });
 
   afterAll(async () => {
@@ -1032,8 +1040,21 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
 
   let documentId: string;
   let v1Id: string;
+  let caseId: string;
 
   it('defaults a reference to the current version when versionId is omitted', async () => {
+    const createdCase = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .send({
+        type: 'GENERAL',
+        title: 'Document attachment target',
+        description: 'A real same-building Case target.',
+        visibility: 'PRIVATE',
+      })
+      .expect(201);
+    caseId = createdCase.body.data.id;
+
     ({ documentId, versionId: v1Id } = await createDocument(app, buildingId, member.accessToken, {
       title: 'Maintenance photo set',
     }));
@@ -1041,7 +1062,7 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
     const res = await request(app.getHttpServer())
       .post(`/api/v1/documents/${documentId}/references`)
       .set('Authorization', `Bearer ${member.accessToken}`)
-      .send({ entityType: 'CASE', entityId: 'e2e-dummy-case-id' })
+      .send({ entityType: 'CASE', entityId: caseId })
       .expect(201);
 
     expect(res.body.data.entityType).toBe('CASE');
@@ -1065,6 +1086,119 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
       where: { id: pinnedRef.body.data.id },
     });
     expect(stillPinned?.documentVersionId).toBe(v1Id);
+  });
+
+  it('rejects nonexistent and cross-building CASE targets', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/documents/${documentId}/references`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .send({ entityType: 'CASE', entityId: 'missing-case' })
+      .expect(404);
+
+    const otherBuildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER' });
+    createdBuildingIds.push(otherBuildingId);
+    const otherCase = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${otherBuildingId}/cases`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        type: 'GENERAL',
+        title: 'Other-building Case',
+        description: 'Must not accept a document from another building.',
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/documents/${documentId}/references`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ entityType: 'CASE', entityId: otherCase.body.data.id })
+      .expect(404);
+  });
+
+  it('prevents direct document and download routes from bypassing a private Case', async () => {
+    const privateCase = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        type: 'GENERAL',
+        title: 'Private manager Case',
+        description: 'Only privileged roles and the creator can see this Case.',
+        visibility: 'PRIVATE',
+      })
+      .expect(201);
+    const privateAttachment = await createDocument(app, buildingId, manager.accessToken, {
+      title: 'Private Case evidence',
+      visibility: 'MEMBERS_ONLY',
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/documents/${privateAttachment.documentId}/references`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ entityType: 'CASE', entityId: privateCase.body.data.id })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/documents/${privateAttachment.documentId}`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .get(`/api/v1/document-versions/${privateAttachment.versionId}/download`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(403);
+  });
+
+  it('allows an owner and tenant to read a PUBLIC Case attachment under existing CasePolicy', async () => {
+    const publicCase = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        type: 'GENERAL',
+        title: 'Public attachment Case',
+        description: 'All current building members may see this Case.',
+        visibility: 'PUBLIC',
+      })
+      .expect(201);
+    const attachment = await createDocument(app, buildingId, manager.accessToken, {
+      title: 'Public Case attachment',
+      visibility: 'MEMBERS_ONLY',
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/documents/${attachment.documentId}/references`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ entityType: 'CASE', entityId: publicCase.body.data.id })
+      .expect(201);
+
+    for (const accessToken of [member.accessToken, tenant.accessToken]) {
+      await request(app.getHttpServer())
+        .get(`/api/v1/documents/${attachment.documentId}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+    }
+  });
+
+  it('fails closed for a dangling CASE reference instead of exposing an orphan attachment', async () => {
+    const transientCase = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .send({
+        type: 'GENERAL',
+        title: 'Transient Case',
+        description: 'Deleted directly to simulate a legacy dangling polymorphic target.',
+      })
+      .expect(201);
+    const attachment = await createDocument(app, buildingId, member.accessToken, {
+      title: 'Orphan safety fixture',
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/documents/${attachment.documentId}/references`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .send({ entityType: 'CASE', entityId: transientCase.body.data.id })
+      .expect(201);
+
+    await prisma.case.delete({ where: { id: transientCase.body.data.id } });
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/documents/${attachment.documentId}`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(404);
   });
 
   it('08.09 Rule 017: downloading records a real DocumentDownload row', async () => {
@@ -1114,17 +1248,17 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
     await request(app.getHttpServer())
       .post(`/api/v1/documents/${staffDocId}/references`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
-      .send({ entityType: 'CASE', entityId: 'e2e-shared-case-id' })
+      .send({ entityType: 'CASE', entityId: caseId })
       .expect(201);
     await request(app.getHttpServer())
       .post(`/api/v1/documents/${documentId}/references`)
       .set('Authorization', `Bearer ${member.accessToken}`)
-      .send({ entityType: 'CASE', entityId: 'e2e-shared-case-id' })
+      .send({ entityType: 'CASE', entityId: caseId })
       .expect(201);
 
     const memberView = await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingId}/document-references`)
-      .query({ entityType: 'CASE', entityId: 'e2e-shared-case-id' })
+      .query({ entityType: 'CASE', entityId: caseId })
       .set('Authorization', `Bearer ${member.accessToken}`)
       .expect(200);
     const memberDocIds = memberView.body.data.map(
@@ -1135,7 +1269,7 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
 
     const managerView = await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingId}/document-references`)
-      .query({ entityType: 'CASE', entityId: 'e2e-shared-case-id' })
+      .query({ entityType: 'CASE', entityId: caseId })
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
     const managerDocIds = managerView.body.data.map(

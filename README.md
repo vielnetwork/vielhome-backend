@@ -128,8 +128,13 @@ this section is a map, not a replacement for those.
   and a manager-election vote electing a new VERIFIED manager end to end.
 - **Cases** (`src/modules/cases`): submit/list/detail/message-thread/reopen,
   staff assign/resolve/close, duplicate-case merging (`ADR-045`), a validated
-  `resolutionCode` enum (`ADR-052`). Full e2e coverage — `ADR-076`, Testing
-  Phase 3b.
+  `resolutionCode` enum (`ADR-052`). Cases Hardening Sprints C/D (`ADR-122`)
+  add canonical `page`/`limit` pagination to the Case list, messages,
+  assignment history, and member Support “My Cases”; prevent merge chains,
+  terminal-target merges, and reopening merged Cases; preserve attributed,
+  timestamped fraud evidence as append-only rows; and complete secure
+  Cases↔Documents attachments. Full e2e coverage — `ADR-076`, Testing Phase
+  3b.
 - **Documents** (`src/modules/documents`): upload (first version)/list/
   detail/download, version history, bulk upload (`ADR-051`), expiration metadata
   (`ADR-046`),
@@ -171,6 +176,11 @@ this section is a map, not a replacement for those.
   `GET /document-versions/:versionId/download` operation. This backend contract
   unblocks Mobile Documents MD-05B; it does not claim the mobile Version
   History UI is implemented.
+  CASE references are validated against an existing Case in the same building
+  and inherit Case visibility for attachment listing, direct document detail,
+  version history, and download. Dangling legacy targets fail closed; storage
+  keys and presigned URLs remain confined to the existing authorized download
+  response (`ADR-122`).
 - **Notifications** (`src/modules/notifications`): a real, independent
   in-app (`IN_APP`) delivery channel since `ADR-027` — list/unread-count/get/
   mark-read/mark-all-read/archive/preferences — plus a real BullMQ async

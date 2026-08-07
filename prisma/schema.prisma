@@ -150,6 +150,7 @@ model Person {
   fraudCasesAgainst         FraudCase[]         @relation("FraudCaseTargetPerson")
   assignedFraudCases        FraudCase[]         @relation("FraudCaseAssignee")
   reviewedFraudCases        FraudCase[]         @relation("FraudCaseReviewer")
+  fraudEvidenceAuthored     FraudCaseEvidence[] @relation("FraudCaseEvidenceAuthor")
   enforcementActionsIssued  EnforcementAction[] @relation("EnforcementActionIssuedBy")
   enforcementActionsAgainst EnforcementAction[] @relation("EnforcementActionTargetPerson")
   enforcementAppealsDecided EnforcementAction[] @relation("EnforcementActionAppealDecidedBy")
@@ -2955,9 +2956,8 @@ model FraudCase {
   targetBuildingId String?
   targetBuilding   Building?            @relation(fields: [targetBuildingId], references: [id])
   description      String?
-  // Rule 005 "Evidence Aggregation" — free-text notes an investigator
-  // accumulates during UNDER_INVESTIGATION; no structured evidence-item
-  // model this sprint (no source field list to build one against).
+  // Backward-compatible latest-evidence projection. The durable,
+  // append-only history is `evidence` below.
   evidenceNotes    String?
   assignedToId     String?
   assignedTo       Person?              @relation("FraudCaseAssignee", fields: [assignedToId], references: [id])
@@ -2973,11 +2973,27 @@ model FraudCase {
   updatedAt        DateTime             @updatedAt
 
   enforcementActions EnforcementAction[]
+  evidence           FraudCaseEvidence[]
 
   @@index([status, priority])
   @@index([targetPersonId])
   @@index([targetBuildingId])
   @@map("fraud_cases")
+}
+
+// 07.03 Rule 005/018 — evidence is append-only and attributable. Updating
+// `FraudCase.evidenceNotes` never destroys this history.
+model FraudCaseEvidence {
+  id          String    @id @default(cuid())
+  fraudCaseId String
+  fraudCase   FraudCase @relation(fields: [fraudCaseId], references: [id])
+  notes       String
+  authorId    String?
+  author      Person?   @relation("FraudCaseEvidenceAuthor", fields: [authorId], references: [id])
+  createdAt   DateTime  @default(now())
+
+  @@index([fraudCaseId, createdAt, id])
+  @@map("fraud_case_evidence")
 }
 
 // 07.03 Rule 013/014/017/019. Deliberately NOT its own "Appeal Case" per

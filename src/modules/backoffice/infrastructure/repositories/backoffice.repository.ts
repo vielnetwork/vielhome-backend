@@ -280,6 +280,10 @@ export class BackOfficeRepository {
         targetPerson: { select: { id: true, fullName: true, phone: true } },
         targetBuilding: { select: { id: true, name: true } },
         enforcementActions: true,
+        evidence: {
+          select: { id: true, notes: true, authorId: true, createdAt: true },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        },
       },
     });
   }
@@ -325,8 +329,22 @@ export class BackOfficeRepository {
     return this.prisma.fraudCase.findUniqueOrThrow({ where: { id } });
   }
 
-  addFraudCaseEvidence(id: string, evidenceNotes: string) {
-    return this.prisma.fraudCase.update({ where: { id }, data: { evidenceNotes } });
+  addFraudCaseEvidence(id: string, evidenceNotes: string, authorId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.fraudCaseEvidence.create({
+        data: { fraudCaseId: id, notes: evidenceNotes, authorId },
+      });
+      return tx.fraudCase.update({
+        where: { id },
+        data: { evidenceNotes },
+        include: {
+          evidence: {
+            select: { id: true, notes: true, authorId: true, createdAt: true },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          },
+        },
+      });
+    });
   }
 
   async decideFraudCase(params: {
@@ -1020,11 +1038,20 @@ export class BackOfficeRepository {
     return { items, total };
   }
 
-  listSupportCasesForCreator(createdById: string) {
-    return this.prisma.supportCase.findMany({
-      where: { createdById },
-      orderBy: { createdAt: 'desc' },
-    });
+  async listSupportCasesForCreator(
+    createdById: string,
+    pagination: { skip: number; take: number },
+  ) {
+    const where = { createdById };
+    const [items, total] = await Promise.all([
+      this.prisma.supportCase.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        ...pagination,
+      }),
+      this.prisma.supportCase.count({ where }),
+    ]);
+    return { items, total };
   }
 
   async assignSupportCase(id: string, assignedToId: string, expectedStatus: CaseStatus) {

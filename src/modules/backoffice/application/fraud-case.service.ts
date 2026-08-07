@@ -169,7 +169,11 @@ export class FraudCaseService {
     const kase = await this.getCase(caseId);
     this.policy.assertInvestigable(kase.status);
 
-    const updated = await this.backOffice.addFraudCaseEvidence(caseId, evidenceNotes);
+    const updated = await this.backOffice.addFraudCaseEvidence(
+      caseId,
+      evidenceNotes,
+      actorPersonId,
+    );
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -177,6 +181,7 @@ export class FraudCaseService {
       entityType: 'FraudCase',
       entityId: caseId,
       requestId,
+      metadata: { evidenceId: updated.evidence.at(-1)?.id },
     });
 
     return updated;

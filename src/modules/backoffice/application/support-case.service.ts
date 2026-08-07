@@ -104,8 +104,12 @@ export class SupportCaseService {
     return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
-  listMine(createdById: string) {
-    return this.backOffice.listSupportCasesForCreator(createdById);
+  async listMine(createdById: string, pagination: PaginationParams) {
+    const { items, total } = await this.backOffice.listSupportCasesForCreator(
+      createdById,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   /** 07.05 Rule 004 — assigning a ticket moves it from OPEN to IN_PROGRESS. */
@@ -254,6 +258,7 @@ export class SupportCaseService {
    */
   async reopen(caseId: string, reason: string, actorPersonId: string, requestId: string) {
     const kase = await this.getCaseForOwner(caseId, actorPersonId);
+    if (kase.mergedIntoId) throw new ValidationError('A merged support case cannot be reopened.');
     this.policy.assertCanReopen(kase.status);
 
     const updated = await this.backOffice.reopenSupportCase(caseId, kase.status);
@@ -303,9 +308,15 @@ export class SupportCaseService {
     }
     const kase = await this.getCase(caseId);
     this.policy.assertActionable(kase.status);
+    if (kase.mergedIntoId) throw new ValidationError('Cannot merge an already merged case.');
     const target = await this.getCase(intoCaseId);
+    if (target.mergedIntoId === caseId) {
+      throw new ValidationError('This support-case merge would create a cycle.');
+    }
     if (target.mergedIntoId) throw new ValidationError('Cannot merge into an already merged case.');
-    if (target.status === 'CLOSED') throw new ValidationError('Cannot merge into a closed case.');
+    if (target.status === 'RESOLVED' || target.status === 'CLOSED') {
+      throw new ValidationError('Cannot merge into a terminal case.');
+    }
 
     const updated = await this.backOffice.mergeSupportCase(caseId, intoCaseId, kase.status);
 

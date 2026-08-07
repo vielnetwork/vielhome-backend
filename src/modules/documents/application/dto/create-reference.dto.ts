@@ -24,10 +24,10 @@ const REFERENCE_ENTITY_TYPES = [
  * "referenced records keep their original document version" even if a
  * newer version is uploaded afterwards).
  *
- * `entityId` existence is not cross-checked against the target domain
- * (see the Documents header comment in `schema.prisma` for why) — this is
- * how a Case attachment (`entityType: 'CASE'`) is wired up without the
- * Documents module importing the Cases module. `SERVICE_PROVIDER`/
+ * CASE targets are cross-checked through CasesService: the Case must
+ * exist in the same building and the caller must be allowed to see it.
+ * Other polymorphic targets retain the existing decoupled behavior.
+ * `SERVICE_PROVIDER`/
  * `SUPPORT_CASE` (21_ADRs > ADR-056) follow the identical pattern —
  * Marketplace listing photos and Support ticket attachments, neither
  * requiring any change to the Marketplace/BackOffice modules themselves.

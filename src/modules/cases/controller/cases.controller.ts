@@ -16,6 +16,8 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
+import { parsePagination } from '../../../common/pagination/pagination.util';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
 
 /**
  * Cases / Requests / Complaints / Suggestions (06.07_Request_And_
@@ -53,15 +55,23 @@ export class CasesController {
 
   @Get(':id/cases')
   @UseGuards(MembershipGuard)
-  listCases(
+  async listCases(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
     @Query('type', new ParseEnumPipe(CaseType, { optional: true })) type?: CaseType,
     @Query('status', new ParseEnumPipe(CaseStatus, { optional: true })) status?: CaseStatus,
     @Query('priority', new ParseEnumPipe(CasePriority, { optional: true })) priority?: CasePriority,
     @Query('assigneeId') assigneeId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.cases.listCases(id, user.sub, { type, status, priority, assigneeId });
+    const { items, meta } = await this.cases.listCases(
+      id,
+      user.sub,
+      { type, status, priority, assigneeId },
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Get(':id/cases/:caseId')
@@ -101,12 +111,20 @@ export class CasesController {
 
   @Get(':id/cases/:caseId/assignments')
   @UseGuards(MembershipGuard)
-  listAssignments(
+  async listAssignments(
     @Param('id') id: string,
     @Param('caseId') caseId: string,
     @CurrentUser() user: JwtPayload,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.cases.listAssignments(id, caseId, user.sub);
+    const { items, meta } = await this.cases.listAssignments(
+      id,
+      caseId,
+      user.sub,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Post(':id/cases/:caseId/messages')
@@ -123,12 +141,20 @@ export class CasesController {
 
   @Get(':id/cases/:caseId/messages')
   @UseGuards(MembershipGuard)
-  listMessages(
+  async listMessages(
     @Param('id') id: string,
     @Param('caseId') caseId: string,
     @CurrentUser() user: JwtPayload,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.cases.listMessages(id, caseId, user.sub);
+    const { items, meta } = await this.cases.listMessages(
+      id,
+      caseId,
+      user.sub,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Post(':id/cases/:caseId/resolve')

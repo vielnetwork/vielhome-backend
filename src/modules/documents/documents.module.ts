@@ -7,13 +7,14 @@ import { DocumentRepository } from './infrastructure/repositories/document.repos
 import { DocumentPolicy } from './domain/policies/document.policy';
 import { MembershipGuard } from '../../common/guards/membership.guard';
 import { BuildingModule } from '../building/building.module';
+import { CasesModule } from '../cases/cases.module';
 
 @Module({
   // Reuses BuildingRepository for building/unit lookups and role
   // resolution (privileged-category checks, inline membership checks on
   // the non-nested /documents and /document-versions routes) — same
   // pattern as FinanceModule/GovernanceModule/CasesModule.
-  imports: [BuildingModule],
+  imports: [BuildingModule, CasesModule],
   controllers: [BuildingDocumentsController, DocumentsController, DocumentVersionsController],
   providers: [DocumentsService, DocumentRepository, DocumentPolicy, MembershipGuard],
   exports: [DocumentsService, DocumentRepository],

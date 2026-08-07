@@ -19,6 +19,11 @@ import {
   ValidationError,
 } from '../../../common/errors/app-error';
 import { CaseAssignedEvent, CaseCreatedEvent, CaseStatusChangedEvent } from '../events/case.events';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 
 /** 08.08 Rule 008: cases are assignable to Manager/Board Member/Accountant — the same set gets privileged read/edit/internal-note access throughout this service. */
 const PRIVILEGED_ROLES: MembershipRole[] = ['MANAGER', 'BOARD_MEMBER', 'ACCOUNTANT'];
@@ -103,20 +108,16 @@ export class CasesService {
     buildingId: string,
     actorPersonId: string,
     filter?: { type?: CaseType; status?: CaseStatus; priority?: CasePriority; assigneeId?: string },
+    pagination: PaginationParams = { page: 1, limit: 20 },
   ) {
-    const [all, privileged] = await Promise.all([
-      this.cases.listCases(buildingId, filter),
-      this.isPrivileged(actorPersonId, buildingId),
-    ]);
-
-    if (privileged) return all;
-
-    return all.filter(
-      (c) =>
-        c.visibility === 'PUBLIC' ||
-        c.createdById === actorPersonId ||
-        c.assigneeId === actorPersonId,
+    const privileged = await this.isPrivileged(actorPersonId, buildingId);
+    const { items, total } = await this.cases.listCases(
+      buildingId,
+      filter,
+      { actorPersonId, privileged },
+      toSkipTake(pagination),
     );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async getCase(buildingId: string, caseId: string, actorPersonId: string) {
@@ -192,9 +193,15 @@ export class CasesService {
     return { case: updated, assignment };
   }
 
-  async listAssignments(buildingId: string, caseId: string, actorPersonId: string) {
+  async listAssignments(
+    buildingId: string,
+    caseId: string,
+    actorPersonId: string,
+    pagination: PaginationParams,
+  ) {
     await this.getCase(buildingId, caseId, actorPersonId);
-    return this.cases.listAssignments(caseId);
+    const { items, total } = await this.cases.listAssignments(caseId, toSkipTake(pagination));
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async addMessage(
@@ -231,13 +238,22 @@ export class CasesService {
   }
 
   /** Internal notes (06.07 Rule 016) are stripped out for a non-privileged reader — never returned, not even as a redacted placeholder. */
-  async listMessages(buildingId: string, caseId: string, actorPersonId: string) {
+  async listMessages(
+    buildingId: string,
+    caseId: string,
+    actorPersonId: string,
+    pagination: PaginationParams,
+  ) {
     const found = await this.getCaseOrThrow(buildingId, caseId);
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
     this.policy.assertVisible(found, actorPersonId, privileged);
 
-    const messages = await this.cases.listMessages(caseId);
-    return privileged ? messages : messages.filter((m) => !m.isInternal);
+    const { items, total } = await this.cases.listMessages(
+      caseId,
+      privileged,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async resolveCase(
@@ -308,6 +324,9 @@ export class CasesService {
       );
     }
     this.policy.assertReopenable(found.status);
+    if (found.mergedIntoId) {
+      throw new BusinessRuleViolationError('A merged case cannot be reopened.');
+    }
 
     const updated = await this.cases.reopenCase(caseId, found.status);
 
@@ -350,11 +369,17 @@ export class CasesService {
       throw new ValidationError('A case cannot be merged into itself.');
     }
     const found = await this.getCaseOrThrow(buildingId, caseId);
+    if (found.mergedIntoId)
+      throw new ValidationError('Cannot merge a case that is already merged.');
     this.policy.assertNotClosed(found.status);
     const target = await this.getCaseOrThrow(buildingId, dto.intoCaseId);
-    if (target.mergedIntoId) throw new ValidationError('Cannot merge into a case that is already merged.');
-    if (target.status === 'CLOSED') throw new ValidationError('Cannot merge into a closed case.');
-    if (target.mergedIntoId === caseId) throw new ValidationError('This merge would create a cycle.');
+    if (target.mergedIntoId === caseId)
+      throw new ValidationError('This merge would create a cycle.');
+    if (target.mergedIntoId)
+      throw new ValidationError('Cannot merge into a case that is already merged.');
+    if (target.status === 'RESOLVED' || target.status === 'CLOSED') {
+      throw new ValidationError('Cannot merge into a terminal case.');
+    }
 
     const updated = await this.cases.mergeCase(caseId, dto.intoCaseId, found.status);
 

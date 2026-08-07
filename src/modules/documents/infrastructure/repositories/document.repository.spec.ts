@@ -33,6 +33,7 @@ describe('DocumentRepository', () => {
       updateMany: jest.Mock;
     };
     documentUploadIntent: { create: jest.Mock; findUnique: jest.Mock; updateMany: jest.Mock };
+    documentReference: { findMany: jest.Mock };
     $transaction: jest.Mock;
   };
   let repo: DocumentRepository;
@@ -56,6 +57,7 @@ describe('DocumentRepository', () => {
         findUnique: jest.fn().mockResolvedValue(null),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
+      documentReference: { findMany: jest.fn().mockResolvedValue([]) },
       $transaction: jest.fn((cb: (tx: unknown) => unknown) => cb(prisma)),
     };
     repo = new DocumentRepository(prisma as unknown as PrismaService);
@@ -220,6 +222,24 @@ describe('DocumentRepository', () => {
       expect(select).not.toHaveProperty('fileUrl');
       expect(select).not.toHaveProperty('uploadedById');
       expect(select).not.toHaveProperty('uploadedBy');
+    });
+  });
+
+  describe('CASE attachment targets', () => {
+    it('returns distinct Case ids for every version of the document without exposing storage fields', async () => {
+      prisma.documentReference.findMany.mockResolvedValue([
+        { entityId: 'case-1' },
+        { entityId: 'case-2' },
+      ]);
+      await expect(repo.listCaseReferenceTargetsForDocument('doc-1')).resolves.toEqual([
+        'case-1',
+        'case-2',
+      ]);
+      expect(prisma.documentReference.findMany).toHaveBeenCalledWith({
+        where: { entityType: 'CASE', documentVersion: { documentId: 'doc-1' } },
+        select: { entityId: true },
+        distinct: ['entityId'],
+      });
     });
   });
 

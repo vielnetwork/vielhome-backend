@@ -479,6 +479,9 @@ describe('Support & Operations Center (e2e) — Member Lifecycle & Ownership Gat
       .expect(200);
 
     expect(res.body.data.map((c: { id: string }) => c.id)).toContain(caseId);
+    expect(res.body.metadata.pagination).toEqual(
+      expect.objectContaining({ page: 1, limit: 20, total: 1 }),
+    );
   });
 
   it('a different person cannot view the ticket (real behavior: 403, not 404)', async () => {

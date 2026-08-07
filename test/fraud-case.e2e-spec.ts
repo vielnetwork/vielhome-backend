@@ -312,6 +312,7 @@ async function deleteFraudArtifactsOnceBatch(
   };
 
   await prisma.enforcementAction.deleteMany({ where: { fraudCase: caseWhere } });
+  await prisma.fraudCaseEvidence.deleteMany({ where: { fraudCase: caseWhere } });
   await prisma.fraudCase.deleteMany({ where: caseWhere });
   await prisma.platformStaff.deleteMany({ where: { personId: { in: personIds } } });
 }
@@ -761,13 +762,35 @@ describe('Fraud & Abuse Center (e2e) — Report, Case Lifecycle & Metrics (07.03
   });
 
   it('REVIEWER appends Evidence Aggregation notes while investigating (Rule 005)', async () => {
-    const res = await request(app.getHttpServer())
+    const first = await request(app.getHttpServer())
       .post(`/api/v1/backoffice/fraud-cases/${caseId}/evidence`)
       .set('Authorization', `Bearer ${reviewer.accessToken}`)
       .send({ evidenceNotes: 'Confirmed: 3 accounts share one device fingerprint.' })
       .expect(201);
 
-    expect(res.body.data.evidenceNotes).toBe('Confirmed: 3 accounts share one device fingerprint.');
+    expect(first.body.data.evidenceNotes).toBe(
+      'Confirmed: 3 accounts share one device fingerprint.',
+    );
+
+    const second = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/fraud-cases/${caseId}/evidence`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ evidenceNotes: 'Payment trail corroborated the device signal.' })
+      .expect(201);
+
+    expect(second.body.data.evidenceNotes).toBe('Payment trail corroborated the device signal.');
+    expect(second.body.data.evidence).toHaveLength(2);
+    expect(second.body.data.evidence.map((item: { notes: string }) => item.notes)).toEqual([
+      'Confirmed: 3 accounts share one device fingerprint.',
+      'Payment trail corroborated the device signal.',
+    ]);
+    expect(second.body.data.evidence.map((item: { authorId: string }) => item.authorId)).toEqual([
+      reviewer.personId,
+      admin.personId,
+    ]);
+    expect(
+      second.body.data.evidence.every((item: { createdAt: string }) => Boolean(item.createdAt)),
+    ).toBe(true);
   });
 
   it('REVIEWER confirms the case — CONFIRMED, decidedAt set (Rule 007/011)', async () => {

@@ -11,6 +11,7 @@ import type {
 import { DocumentRepository } from '../infrastructure/repositories/document.repository';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { DocumentPolicy } from '../domain/policies/document.policy';
+import { CasesService } from '../../cases/application/cases.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { BulkCreateDocumentDto } from './dto/bulk-create-document.dto';
 import { UploadVersionDto } from './dto/upload-version.dto';
@@ -48,10 +49,23 @@ export class DocumentsService {
     private readonly documents: DocumentRepository,
     private readonly buildings: BuildingRepository,
     private readonly policy: DocumentPolicy,
+    private readonly cases: CasesService,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
     private readonly storage: StorageService,
   ) {}
+
+  /** CASE attachments inherit CasePolicy even when reached through a direct Document route. */
+  private async assertCaseReferenceAccess(
+    documentId: string,
+    buildingId: string,
+    actorPersonId: string,
+  ): Promise<void> {
+    const caseIds = await this.documents.listCaseReferenceTargetsForDocument(documentId);
+    await Promise.all(
+      caseIds.map((caseId) => this.cases.getCase(buildingId, caseId, actorPersonId)),
+    );
+  }
 
   private async getBuilding(buildingId: string) {
     const building = await this.buildings.findById(buildingId);
@@ -504,6 +518,7 @@ export class DocumentsService {
     await this.assertMember(actorPersonId, found.buildingId);
     const privileged = await this.isPrivileged(actorPersonId, found.buildingId);
     this.policy.assertVisible(found.visibility, privileged);
+    await this.assertCaseReferenceAccess(documentId, found.buildingId, actorPersonId);
 
     const currentVersion = await this.documents.getCurrentVersion(documentId);
     return { ...found, currentVersion };
@@ -518,6 +533,7 @@ export class DocumentsService {
     await this.assertMember(actorPersonId, found.buildingId);
     const privileged = await this.isPrivileged(actorPersonId, found.buildingId);
     this.policy.assertVisible(found.visibility, privileged);
+    await this.assertCaseReferenceAccess(documentId, found.buildingId, actorPersonId);
 
     const { items, total } = await this.documents.listDocumentVersions(
       documentId,
@@ -623,8 +639,24 @@ export class DocumentsService {
   ) {
     const found = await this.getDocumentOrThrow(documentId);
     await this.assertMember(actorPersonId, found.buildingId);
+    const privileged = await this.isPrivileged(actorPersonId, found.buildingId);
+    this.policy.assertVisible(found.visibility, privileged);
 
-    const versionId = dto.versionId ?? (await this.documents.getCurrentVersion(documentId))?.id;
+    if (dto.entityType === 'CASE') {
+      await this.cases.getCase(found.buildingId, dto.entityId, actorPersonId);
+    }
+
+    const explicitVersion = dto.versionId
+      ? await this.documents.findVersionWithDocument(dto.versionId)
+      : undefined;
+    if (dto.versionId && !explicitVersion) {
+      throw new NotFoundAppError('Document version not found.');
+    }
+    if (explicitVersion && explicitVersion.documentId !== documentId) {
+      throw new ValidationError('The referenced version does not belong to this document.');
+    }
+    const versionId =
+      explicitVersion?.id ?? (await this.documents.getCurrentVersion(documentId))?.id;
     if (!versionId) throw new NotFoundAppError('This document has no version to reference.');
 
     const reference = await this.documents.createReference({
@@ -659,6 +691,9 @@ export class DocumentsService {
     actorPersonId: string,
   ) {
     await this.assertMember(actorPersonId, buildingId);
+    if (entityType === 'CASE') {
+      await this.cases.getCase(buildingId, entityId, actorPersonId);
+    }
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
 
     const refs = await this.documents.listReferencesForEntity(entityType, entityId);
@@ -693,6 +728,11 @@ export class DocumentsService {
     await this.assertMember(actorPersonId, version.document.buildingId);
     const privileged = await this.isPrivileged(actorPersonId, version.document.buildingId);
     this.policy.assertVisible(version.document.visibility, privileged);
+    await this.assertCaseReferenceAccess(
+      version.document.id,
+      version.document.buildingId,
+      actorPersonId,
+    );
 
     await this.documents.recordDownload(versionId, actorPersonId);
 

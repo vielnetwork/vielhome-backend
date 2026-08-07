@@ -5,6 +5,7 @@ import {
   CaseStatus,
   CaseType,
   CaseVisibility,
+  Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 import { ConflictError } from '../../../../common/errors/app-error';
@@ -31,20 +32,37 @@ export class CaseRepository {
     return this.prisma.case.findUnique({ where: { id } });
   }
 
-  listCases(
+  async listCases(
     buildingId: string,
-    filter?: { type?: CaseType; status?: CaseStatus; priority?: CasePriority; assigneeId?: string },
+    filter: { type?: CaseType; status?: CaseStatus; priority?: CasePriority; assigneeId?: string } | undefined,
+    access: { actorPersonId: string; privileged: boolean },
+    pagination: { skip: number; take: number },
   ) {
-    return this.prisma.case.findMany({
-      where: {
-        buildingId,
-        ...(filter?.type ? { type: filter.type } : {}),
-        ...(filter?.status ? { status: filter.status } : {}),
-        ...(filter?.priority ? { priority: filter.priority } : {}),
-        ...(filter?.assigneeId ? { assigneeId: filter.assigneeId } : {}),
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const where: Prisma.CaseWhereInput = {
+      buildingId,
+      ...(filter?.type ? { type: filter.type } : {}),
+      ...(filter?.status ? { status: filter.status } : {}),
+      ...(filter?.priority ? { priority: filter.priority } : {}),
+      ...(filter?.assigneeId ? { assigneeId: filter.assigneeId } : {}),
+      ...(!access.privileged
+        ? {
+            OR: [
+              { visibility: 'PUBLIC' },
+              { createdById: access.actorPersonId },
+              { assigneeId: access.actorPersonId },
+            ],
+          }
+        : {}),
+    };
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.case.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        ...pagination,
+      }),
+      this.prisma.case.count({ where }),
+    ]);
+    return { items, total };
   }
 
   updateCaseFields(
@@ -91,11 +109,17 @@ export class CaseRepository {
     });
   }
 
-  listAssignments(caseId: string) {
-    return this.prisma.caseAssignment.findMany({
-      where: { caseId },
-      orderBy: { assignedAt: 'desc' },
-    });
+  async listAssignments(caseId: string, pagination: { skip: number; take: number }) {
+    const where = { caseId };
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.caseAssignment.findMany({
+        where,
+        orderBy: [{ assignedAt: 'desc' }, { id: 'desc' }],
+        ...pagination,
+      }),
+      this.prisma.caseAssignment.count({ where }),
+    ]);
+    return { items, total };
   }
 
   createMessage(params: {
@@ -107,8 +131,24 @@ export class CaseRepository {
     return this.prisma.caseMessage.create({ data: params });
   }
 
-  listMessages(caseId: string) {
-    return this.prisma.caseMessage.findMany({ where: { caseId }, orderBy: { createdAt: 'asc' } });
+  async listMessages(
+    caseId: string,
+    includeInternal: boolean,
+    pagination: { skip: number; take: number },
+  ) {
+    const where: Prisma.CaseMessageWhereInput = {
+      caseId,
+      ...(!includeInternal ? { isInternal: false } : {}),
+    };
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.caseMessage.findMany({
+        where,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        ...pagination,
+      }),
+      this.prisma.caseMessage.count({ where }),
+    ]);
+    return { items, total };
   }
 
   async resolveCase(id: string, expectedStatus: CaseStatus, resolutionCode: CaseResolutionCode) {

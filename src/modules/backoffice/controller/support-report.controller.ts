@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { SupportCaseService } from '../application/support-case.service';
 import { OpenSupportCaseDto } from '../application/dto/open-support-case.dto';
@@ -8,6 +8,8 @@ import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
+import { parsePagination } from '../../../common/pagination/pagination.util';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
 
 /**
  * 07.05 Rule 001/002/011/017 — member-facing entry points: opening a
@@ -37,8 +39,13 @@ export class SupportReportController {
   }
 
   @Get('me')
-  listMine(@CurrentUser() user: JwtPayload) {
-    return this.service.listMine(user.sub);
+  async listMine(
+    @CurrentUser() user: JwtPayload,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.service.listMine(user.sub, parsePagination(page, limit));
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Get(':caseId')

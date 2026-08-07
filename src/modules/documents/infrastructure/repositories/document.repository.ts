@@ -339,6 +339,18 @@ export class DocumentRepository {
     });
   }
 
+  async listCaseReferenceTargetsForDocument(documentId: string): Promise<string[]> {
+    const references = await this.prisma.documentReference.findMany({
+      where: {
+        entityType: 'CASE',
+        documentVersion: { documentId },
+      },
+      select: { entityId: true },
+      distinct: ['entityId'],
+    });
+    return references.map((reference) => reference.entityId);
+  }
+
   recordDownload(documentVersionId: string, downloadedById: string) {
     return this.prisma.documentDownload.create({ data: { documentVersionId, downloadedById } });
   }

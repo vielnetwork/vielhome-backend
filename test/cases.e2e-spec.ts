@@ -479,6 +479,9 @@ describe('Cases (e2e) — Creation, Listing & Visibility (06.07 Rule 001/004/021
     const ids = res.body.data.map((c: { id: string }) => c.id);
     expect(ids).toContain(privateCaseId);
     expect(ids).toContain(publicCaseId);
+    expect(res.body.metadata.pagination).toEqual(
+      expect.objectContaining({ page: 1, limit: 20, totalPages: expect.any(Number) }),
+    );
   });
 
   it('06.07 Rule 021: a non-privileged member sees only PUBLIC cases plus their own', async () => {
@@ -681,6 +684,9 @@ describe('Cases (e2e) — Assignment (08.08 Rule 008/017)', () => {
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
     expect(listRes.body.data.length).toBe(1);
+    expect(listRes.body.metadata.pagination).toEqual(
+      expect.objectContaining({ page: 1, limit: 20, total: 1 }),
+    );
   });
 
   it('rejects assigning to someone who is not a current member', async () => {
@@ -797,12 +803,14 @@ describe('Cases (e2e) — Messaging (06.07 Rule 016)', () => {
       .set('Authorization', `Bearer ${member.accessToken}`)
       .expect(200);
     expect(memberView.body.data.some((m: { isInternal: boolean }) => m.isInternal)).toBe(false);
+    expect(memberView.body.metadata.pagination.total).toBe(1);
 
     const managerView = await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingId}/cases/${caseId}/messages`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
     expect(managerView.body.data.some((m: { isInternal: boolean }) => m.isInternal)).toBe(true);
+    expect(managerView.body.metadata.pagination.total).toBe(2);
   });
 });
 
@@ -987,6 +995,15 @@ describe('Cases (e2e) — Status Lifecycle & Gamification XP (CASE_RESOLVED)', (
 
     expect(res.body.data.status).toBe('CLOSED');
     expect(res.body.data.mergedIntoId).toBe(mergeTargetId);
+  });
+
+  it('does not allow a merged Case to be reopened', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases/${mergeSourceId}/reopen`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .send({ reason: 'merged cases remain terminal' })
+      .expect(422);
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
 
   it('rejects merging a case into itself (VALIDATION_ERROR)', async () => {

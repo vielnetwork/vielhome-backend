@@ -65,6 +65,7 @@ describe('DocumentsService — listDocuments / searchDocuments pagination', () =
       documents as unknown as DocumentRepository,
       buildings as unknown as BuildingRepository,
       new DocumentPolicy(),
+      { getCase: jest.fn() } as never,
       audit as unknown as AuditService,
       events as unknown as EventEmitter2,
       storage as unknown as StorageService,
@@ -187,6 +188,7 @@ describe('DocumentsService — version history', () => {
         items: [{ id: 'v2', versionNumber: 2, isCurrent: true }],
         total: 3,
       }),
+      listCaseReferenceTargetsForDocument: jest.fn().mockResolvedValue([]),
     };
     buildings = {
       getRoles: jest.fn().mockResolvedValue(['TENANT']),
@@ -195,6 +197,7 @@ describe('DocumentsService — version history', () => {
       documents as unknown as DocumentRepository,
       buildings as unknown as BuildingRepository,
       new DocumentPolicy(),
+      { getCase: jest.fn() } as never,
       { record: jest.fn() } as unknown as AuditService,
       { emit: jest.fn() } as unknown as EventEmitter2,
       { isConfigured: jest.fn().mockReturnValue(false) } as unknown as StorageService,
@@ -257,6 +260,105 @@ describe('DocumentsService — version history', () => {
     ).resolves.toEqual(
       expect.objectContaining({ items: [{ id: 'v2', versionNumber: 2, isCurrent: true }] }),
     );
+  });
+});
+
+describe('DocumentsService — CASE attachment authorization', () => {
+  const document = {
+    id: 'doc-1',
+    buildingId: 'building-1',
+    visibility: 'MEMBERS_ONLY',
+    status: 'ACTIVE',
+  };
+  let documents: Record<string, jest.Mock>;
+  let cases: { getCase: jest.Mock };
+  let service: DocumentsService;
+
+  beforeEach(() => {
+    documents = {
+      findDocumentById: jest.fn().mockResolvedValue(document),
+      getCurrentVersion: jest.fn().mockResolvedValue({ id: 'version-1' }),
+      findVersionWithDocument: jest.fn(),
+      createReference: jest.fn().mockResolvedValue({ id: 'reference-1' }),
+      listCaseReferenceTargetsForDocument: jest.fn().mockResolvedValue([]),
+      recordDownload: jest.fn(),
+    };
+    cases = { getCase: jest.fn().mockResolvedValue({ id: 'case-1' }) };
+    service = new DocumentsService(
+      documents as unknown as DocumentRepository,
+      { getRoles: jest.fn().mockResolvedValue(['TENANT']) } as unknown as BuildingRepository,
+      new DocumentPolicy(),
+      cases as never,
+      { record: jest.fn() } as unknown as AuditService,
+      { emit: jest.fn() } as unknown as EventEmitter2,
+      { isConfigured: jest.fn().mockReturnValue(false) } as unknown as StorageService,
+    );
+  });
+
+  it('validates CASE existence, same-building scope, and CasePolicy visibility before attaching', async () => {
+    await service.createReference(
+      'doc-1',
+      { entityType: 'CASE', entityId: 'case-1' },
+      'person-1',
+      'request-1',
+    );
+    expect(cases.getCase).toHaveBeenCalledWith('building-1', 'case-1', 'person-1');
+    expect(documents.createReference).toHaveBeenCalledWith({
+      documentVersionId: 'version-1',
+      entityType: 'CASE',
+      entityId: 'case-1',
+    });
+  });
+
+  it('does not create a reference when CasePolicy denies the target', async () => {
+    cases.getCase.mockRejectedValue(new AuthorizationError('private case'));
+    await expect(
+      service.createReference(
+        'doc-1',
+        { entityType: 'CASE', entityId: 'case-1' },
+        'person-2',
+        'request-1',
+      ),
+    ).rejects.toThrow(AuthorizationError);
+    expect(documents.createReference).not.toHaveBeenCalled();
+  });
+
+  it('prevents an explicit version from another document being attached', async () => {
+    documents.findVersionWithDocument.mockResolvedValue({
+      id: 'version-other',
+      documentId: 'doc-other',
+    });
+    await expect(
+      service.createReference(
+        'doc-1',
+        { entityType: 'CASE', entityId: 'case-1', versionId: 'version-other' },
+        'person-1',
+        'request-1',
+      ),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it('re-applies CasePolicy on direct document lookup and rejects dangling Case targets', async () => {
+    documents.listCaseReferenceTargetsForDocument.mockResolvedValue(['deleted-case']);
+    cases.getCase.mockRejectedValue(new NotFoundAppError('Case not found.'));
+    await expect(service.getDocument('doc-1', 'person-1')).rejects.toThrow(NotFoundAppError);
+  });
+
+  it('re-applies CasePolicy before direct version download', async () => {
+    documents.findVersionWithDocument.mockResolvedValue({
+      id: 'version-1',
+      documentId: 'doc-1',
+      document,
+      fileUrl: 'internal/storage/key',
+      fileName: 'evidence.pdf',
+      fileType: 'PDF',
+    });
+    documents.listCaseReferenceTargetsForDocument.mockResolvedValue(['case-1']);
+    cases.getCase.mockRejectedValue(new AuthorizationError('private case'));
+    await expect(service.downloadVersion('version-1', 'person-2', 'request-1')).rejects.toThrow(
+      AuthorizationError,
+    );
+    expect(documents.recordDownload).not.toHaveBeenCalled();
   });
 });
 
@@ -324,6 +426,7 @@ describe('DocumentsService — upload-intent trust-boundary closure (Sections B-
       documents as unknown as DocumentRepository,
       buildings as unknown as BuildingRepository,
       new DocumentPolicy(),
+      { getCase: jest.fn() } as never,
       audit as unknown as AuditService,
       events as unknown as EventEmitter2,
       storage as unknown as StorageService,
