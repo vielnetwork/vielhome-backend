@@ -28,6 +28,11 @@ import {
 /** 08.08 Rule 008: cases are assignable to Manager/Board Member/Accountant — the same set gets privileged read/edit/internal-note access throughout this service. */
 const PRIVILEGED_ROLES: MembershipRole[] = ['MANAGER', 'BOARD_MEMBER', 'ACCOUNTANT'];
 
+type MessageRow = {
+  senderId: string;
+  createdAt: Date;
+};
+
 @Injectable()
 export class CasesService {
   constructor(
@@ -55,6 +60,60 @@ export class CasesService {
       throw new NotFoundAppError('Case not found.');
     }
     return found;
+  }
+
+  private async presentMessageAuthors<T extends MessageRow>(
+    messages: T[],
+    buildingId: string,
+    caseUnitId: string | null,
+  ): Promise<Array<T & { authorUnitNumber: string | null; authorRole: MembershipRole | null }>> {
+    const contexts = await this.cases.findMessageAuthorContexts(
+      [...new Set(messages.map((message) => message.senderId))],
+      buildingId,
+    );
+    const byPersonId = new Map(contexts.map((context) => [context.id, context]));
+
+    return messages.map((message) => {
+      const context = byPersonId.get(message.senderId);
+      const activeAtMessage = (start: Date, end: Date | null) =>
+        start <= message.createdAt && (end === null || end >= message.createdAt);
+      const memberships =
+        context?.memberships.filter((membership) =>
+          activeAtMessage(membership.startedAt, membership.endedAt),
+        ) ?? [];
+      const roles = memberships.map((membership) => membership.role);
+      const authorRole =
+        [...PRIVILEGED_ROLES, 'OWNER' as const, 'TENANT' as const].find((role) =>
+          roles.includes(role),
+        ) ?? null;
+
+      if (authorRole !== 'OWNER' && authorRole !== 'TENANT') {
+        return { ...message, authorUnitNumber: null, authorRole };
+      }
+
+      const units = new Map<string, string>();
+      for (const membership of memberships) {
+        if (membership.unitId && membership.unit?.unitNumber) {
+          units.set(membership.unitId, membership.unit.unitNumber);
+        }
+      }
+      for (const ownership of context?.ownerships ?? []) {
+        if (activeAtMessage(ownership.startDate, ownership.endDate)) {
+          units.set(ownership.unitId, ownership.unit.unitNumber);
+        }
+      }
+      for (const tenancy of context?.tenancies ?? []) {
+        if (activeAtMessage(tenancy.startDate, tenancy.endDate)) {
+          units.set(tenancy.unitId, tenancy.unit.unitNumber);
+        }
+      }
+
+      const authorUnitNumber =
+        (caseUnitId ? units.get(caseUnitId) : null) ??
+        (units.size === 1 ? units.values().next().value : null) ??
+        null;
+      return { ...message, authorUnitNumber, authorRole };
+    });
   }
 
   async createCase(
@@ -234,7 +293,7 @@ export class CasesService {
       metadata: { isInternal: message.isInternal },
     });
 
-    return message;
+    return (await this.presentMessageAuthors([message], buildingId, found.unitId))[0];
   }
 
   /** Internal notes (06.07 Rule 016) are stripped out for a non-privileged reader — never returned, not even as a redacted placeholder. */
@@ -253,7 +312,10 @@ export class CasesService {
       privileged,
       toSkipTake(pagination),
     );
-    return { items, meta: buildPaginationMeta(pagination, total) };
+    return {
+      items: await this.presentMessageAuthors(items, buildingId, found.unitId),
+      meta: buildPaginationMeta(pagination, total),
+    };
   }
 
   async resolveCase(

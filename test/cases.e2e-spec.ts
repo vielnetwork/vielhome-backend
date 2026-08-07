@@ -758,6 +758,25 @@ describe('Cases (e2e) — Messaging (06.07 Rule 016)', () => {
     buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER' });
     createdBuildingIds.push(buildingId);
     await joinBuildingAsApprovedMember(app, buildingId, member.accessToken, manager.accessToken);
+    const originalUnit = await prisma.unit.findFirstOrThrow({
+      where: { buildingId },
+      orderBy: { unitNumber: 'asc' },
+    });
+    await prisma.membership.updateMany({
+      where: { buildingId, personId: member.personId, isCurrent: true },
+      data: { unitId: originalUnit.id },
+    });
+
+    const otherBuildingId = await createBuilding(app, member.accessToken, { role: 'OWNER' });
+    createdBuildingIds.push(otherBuildingId);
+    const otherUnit = await prisma.unit.findFirstOrThrow({
+      where: { buildingId: otherBuildingId },
+      orderBy: { unitNumber: 'desc' },
+    });
+    await prisma.membership.updateMany({
+      where: { buildingId: otherBuildingId, personId: member.personId, isCurrent: true },
+      data: { unitId: otherUnit.id },
+    });
     caseId = await createCase(app, buildingId, member.accessToken);
   });
 
@@ -775,6 +794,23 @@ describe('Cases (e2e) — Messaging (06.07 Rule 016)', () => {
       .expect(201);
 
     expect(res.body.data.isInternal).toBe(false);
+    expect(res.body.data.authorUnitNumber).toBe('1');
+    expect(res.body.data.authorRole).toBe('OWNER');
+  });
+
+  it('returns the building-scoped unit for a Tenant message', async () => {
+    await prisma.membership.updateMany({
+      where: { buildingId, personId: member.personId, isCurrent: true },
+      data: { role: 'TENANT' },
+    });
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases/${caseId}/messages`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .send({ message: 'Tenant follow-up' })
+      .expect(201);
+
+    expect(res.body.data.authorUnitNumber).toBe('1');
+    expect(res.body.data.authorRole).toBe('TENANT');
   });
 
   it('blocks a non-privileged member from posting an internal note', async () => {
@@ -795,6 +831,8 @@ describe('Cases (e2e) — Messaging (06.07 Rule 016)', () => {
       .expect(201);
 
     expect(res.body.data.isInternal).toBe(true);
+    expect(res.body.data.authorUnitNumber).toBeNull();
+    expect(res.body.data.authorRole).toBe('MANAGER');
   });
 
   it('Rule 016: strips internal notes for non-privileged readers, keeps for staff', async () => {
@@ -803,14 +841,17 @@ describe('Cases (e2e) — Messaging (06.07 Rule 016)', () => {
       .set('Authorization', `Bearer ${member.accessToken}`)
       .expect(200);
     expect(memberView.body.data.some((m: { isInternal: boolean }) => m.isInternal)).toBe(false);
-    expect(memberView.body.metadata.pagination.total).toBe(1);
+    expect(memberView.body.metadata.pagination.total).toBe(2);
+    expect(
+      memberView.body.data.map((message: { authorUnitNumber: string }) => message.authorUnitNumber),
+    ).toEqual(['1', '1']);
 
     const managerView = await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingId}/cases/${caseId}/messages`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
     expect(managerView.body.data.some((m: { isInternal: boolean }) => m.isInternal)).toBe(true);
-    expect(managerView.body.metadata.pagination.total).toBe(2);
+    expect(managerView.body.metadata.pagination.total).toBe(3);
   });
 });
 

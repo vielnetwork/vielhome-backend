@@ -6,6 +6,7 @@ describe('CaseRepository pagination and history', () => {
     case: { findMany: jest.fn(), count: jest.fn() },
     caseMessage: { findMany: jest.fn(), count: jest.fn() },
     caseAssignment: { findMany: jest.fn(), count: jest.fn() },
+    person: { findMany: jest.fn() },
     $transaction: jest.fn((operations: Promise<unknown>[]) => Promise.all(operations)),
   };
   const repository = new CaseRepository(prisma as unknown as PrismaService);
@@ -18,6 +19,7 @@ describe('CaseRepository pagination and history', () => {
     prisma.caseMessage.count.mockResolvedValue(0);
     prisma.caseAssignment.findMany.mockResolvedValue([]);
     prisma.caseAssignment.count.mockResolvedValue(0);
+    prisma.person.findMany.mockResolvedValue([]);
   });
 
   it('paginates the visibility-filtered Case set with deterministic ordering', async () => {
@@ -74,6 +76,23 @@ describe('CaseRepository pagination and history', () => {
       orderBy: [{ assignedAt: 'desc' }, { id: 'desc' }],
       skip: 0,
       take: 2,
+    });
+  });
+
+  it('scopes author presentation relationships to the Case building', async () => {
+    await repository.findMessageAuthorContexts(['person-1'], 'building-1');
+
+    expect(prisma.person.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ['person-1'] } },
+      select: expect.objectContaining({
+        memberships: expect.objectContaining({ where: { buildingId: 'building-1' } }),
+        ownerships: expect.objectContaining({
+          where: { unit: { buildingId: 'building-1' } },
+        }),
+        tenancies: expect.objectContaining({
+          where: { unit: { buildingId: 'building-1' } },
+        }),
+      }),
     });
   });
 });

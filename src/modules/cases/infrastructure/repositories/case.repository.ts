@@ -151,6 +151,44 @@ export class CaseRepository {
     return { items, total };
   }
 
+  findMessageAuthorContexts(personIds: string[], buildingId: string) {
+    if (personIds.length === 0) return Promise.resolve([]);
+    return this.prisma.person.findMany({
+      where: { id: { in: personIds } },
+      select: {
+        id: true,
+        memberships: {
+          where: { buildingId },
+          select: {
+            role: true,
+            unitId: true,
+            startedAt: true,
+            endedAt: true,
+            unit: { select: { unitNumber: true } },
+          },
+        },
+        ownerships: {
+          where: { unit: { buildingId } },
+          select: {
+            unitId: true,
+            startDate: true,
+            endDate: true,
+            unit: { select: { unitNumber: true } },
+          },
+        },
+        tenancies: {
+          where: { unit: { buildingId } },
+          select: {
+            unitId: true,
+            startDate: true,
+            endDate: true,
+            unit: { select: { unitNumber: true } },
+          },
+        },
+      },
+    });
+  }
+
   async resolveCase(id: string, expectedStatus: CaseStatus, resolutionCode: CaseResolutionCode) {
     const result = await this.prisma.case.updateMany({
       where: { id, status: expectedStatus }, data: { status: 'RESOLVED', resolutionCode },
