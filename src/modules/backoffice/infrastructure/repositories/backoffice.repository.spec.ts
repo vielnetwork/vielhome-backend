@@ -1,5 +1,6 @@
 import { BackOfficeRepository } from './backoffice.repository';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
+import { ConflictError } from '../../../../common/errors/app-error';
 
 describe('BackOfficeRepository fraud evidence', () => {
   it('appends an attributed evidence row and updates only the compatibility projection atomically', async () => {
@@ -43,5 +44,41 @@ describe('BackOfficeRepository fraud evidence', () => {
       }),
     );
     expect(result.evidence).toHaveLength(2);
+  });
+});
+
+describe('BackOfficeRepository enforcement reversal', () => {
+  it('rolls back the appeal decision instead of overwriting a later target change', async () => {
+    const action = {
+      id: 'action-1',
+      type: 'ACCOUNT_SUSPENSION',
+      targetType: 'PERSON',
+      targetPersonId: 'person-1',
+      targetBuildingId: null,
+      targetMembershipId: null,
+      appealStatus: 'PENDING',
+      effectApplied: true,
+      effectReversedAt: null,
+      previousTargetState: JSON.stringify({ isSuspended: false }),
+    };
+    const prisma = {
+      enforcementAction: {
+        findUniqueOrThrow: jest.fn().mockResolvedValue(action),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        update: jest.fn(),
+      },
+      person: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      $transaction: jest.fn((callback: (tx: unknown) => unknown): unknown => callback(prisma)),
+    };
+    const repository = new BackOfficeRepository(prisma as unknown as PrismaService);
+
+    await expect(
+      repository.decideEnforcementAppeal({
+        id: action.id,
+        appealStatus: 'OVERTURNED',
+        appealDecidedById: 'reviewer-1',
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(prisma.enforcementAction.update).not.toHaveBeenCalled();
   });
 });

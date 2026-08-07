@@ -283,7 +283,7 @@ export class FraudCaseService {
         'Enforcement actions may only be issued against a CONFIRMED fraud case.',
       );
     }
-    this.assertTargetMatchesType(params);
+    this.assertTargetMatchesType(params, kase);
 
     // 21_ADRs > ADR-044 — `FraudCaseController`'s own `@PlatformRoles
     // ('SENIOR_REVIEWER')` guard already confirmed the caller holds at
@@ -332,25 +332,53 @@ export class FraudCaseService {
     return action;
   }
 
-  private assertTargetMatchesType(params: {
-    targetType: EnforcementTargetType;
-    targetPersonId?: string;
-    targetBuildingId?: string;
-    targetMembershipId?: string;
-  }): void {
-    if (params.targetType === 'PERSON' && !params.targetPersonId) {
-      throw new ValidationError('targetPersonId is required when targetType is PERSON.');
-    }
-    if (params.targetType === 'BUILDING' && !params.targetBuildingId) {
-      throw new ValidationError('targetBuildingId is required when targetType is BUILDING.');
+  private assertTargetMatchesType(
+    params: {
+      type: EnforcementActionType;
+      targetType: EnforcementTargetType;
+      targetPersonId?: string;
+      targetBuildingId?: string;
+      targetMembershipId?: string;
+    },
+    kase: { targetPersonId: string | null; targetBuildingId: string | null },
+  ): void {
+    if (params.type === 'ACCOUNT_SUSPENSION' && params.targetType !== 'PERSON') {
+      throw new ValidationError('ACCOUNT_SUSPENSION may only target a PERSON.');
     }
     if (
-      params.targetType === 'MANAGER_CLAIM' &&
-      (!params.targetMembershipId || !params.targetBuildingId)
+      params.type === 'VERIFICATION_REVOCATION' &&
+      params.targetType !== 'BUILDING' &&
+      params.targetType !== 'MANAGER_CLAIM'
     ) {
       throw new ValidationError(
-        'targetMembershipId and targetBuildingId are both required when targetType is MANAGER_CLAIM.',
+        'VERIFICATION_REVOCATION may only target a BUILDING or MANAGER_CLAIM.',
       );
+    }
+    if (params.targetType === 'PERSON') {
+      if (!params.targetPersonId || params.targetBuildingId || params.targetMembershipId) {
+        throw new ValidationError('PERSON requires only targetPersonId.');
+      }
+      if (kase.targetPersonId !== params.targetPersonId) {
+        throw new ValidationError('The enforcement target must match the confirmed fraud case.');
+      }
+    }
+    if (params.targetType === 'BUILDING') {
+      if (!params.targetBuildingId || params.targetPersonId || params.targetMembershipId) {
+        throw new ValidationError('BUILDING requires only targetBuildingId.');
+      }
+      if (kase.targetBuildingId !== params.targetBuildingId) {
+        throw new ValidationError('The enforcement target must match the confirmed fraud case.');
+      }
+    }
+    if (params.targetType === 'MANAGER_CLAIM') {
+      if (!params.targetMembershipId || !params.targetBuildingId || params.targetPersonId) {
+        throw new ValidationError(
+          'MANAGER_CLAIM requires targetMembershipId and targetBuildingId only.',
+        );
+      }
+      if (kase.targetBuildingId !== params.targetBuildingId) {
+        throw new ValidationError('The enforcement target must match the confirmed fraud case.');
+      }
     }
   }
 

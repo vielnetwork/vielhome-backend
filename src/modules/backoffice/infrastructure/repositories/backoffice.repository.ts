@@ -24,7 +24,7 @@ import type {
   VerificationPriority,
 } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
-import { ConflictError } from '../../../../common/errors/app-error';
+import { ConflictError, ValidationError } from '../../../../common/errors/app-error';
 
 @Injectable()
 export class BackOfficeRepository {
@@ -411,6 +411,9 @@ export class BackOfficeRepository {
             tx.membership.findUniqueOrThrow({ where: { id: params.targetMembershipId } }),
             tx.building.findUniqueOrThrow({ where: { id: params.targetBuildingId } }),
           ]);
+          if (membership.buildingId !== building.id) {
+            throw new ValidationError('The manager claim does not belong to the target building.');
+          }
           previousTargetState = JSON.stringify({
             managerState: membership.managerState,
             recoveryModeEnteredAt: building.recoveryModeEnteredAt,
@@ -489,19 +492,57 @@ export class BackOfficeRepository {
           appealDecidedAt: new Date(),
         },
       });
-      if (changed.count !== 1) throw new ConflictError('Enforcement appeal status changed; reload and retry.');
+      if (changed.count !== 1)
+        throw new ConflictError('Enforcement appeal status changed; reload and retry.');
 
-      if (params.appealStatus === 'OVERTURNED' && action.effectApplied && !action.effectReversedAt) {
+      if (
+        params.appealStatus === 'OVERTURNED' &&
+        action.effectApplied &&
+        !action.effectReversedAt
+      ) {
         const previous = action.previousTargetState ? JSON.parse(action.previousTargetState) : {};
         if (action.type === 'ACCOUNT_SUSPENSION' && action.targetPersonId) {
-          await tx.person.update({ where: { id: action.targetPersonId }, data: { isSuspended: previous.isSuspended } });
-        } else if (action.type === 'VERIFICATION_REVOCATION' && action.targetType === 'BUILDING' && action.targetBuildingId) {
-          await tx.building.update({ where: { id: action.targetBuildingId }, data: { status: previous.status } });
-        } else if (action.type === 'VERIFICATION_REVOCATION' && action.targetType === 'MANAGER_CLAIM' && action.targetMembershipId && action.targetBuildingId) {
-          await tx.membership.update({ where: { id: action.targetMembershipId }, data: { managerState: previous.managerState } });
-          await tx.building.update({ where: { id: action.targetBuildingId }, data: { recoveryModeEnteredAt: previous.recoveryModeEnteredAt } });
+          const restored = await tx.person.updateMany({
+            where: { id: action.targetPersonId, isSuspended: true },
+            data: { isSuspended: previous.isSuspended },
+          });
+          if (restored.count !== 1) {
+            throw new ConflictError('The enforcement target changed after this action.');
+          }
+        } else if (
+          action.type === 'VERIFICATION_REVOCATION' &&
+          action.targetType === 'BUILDING' &&
+          action.targetBuildingId
+        ) {
+          const restored = await tx.building.updateMany({
+            where: { id: action.targetBuildingId, status: 'REJECTED' },
+            data: { status: previous.status },
+          });
+          if (restored.count !== 1) {
+            throw new ConflictError('The enforcement target changed after this action.');
+          }
+        } else if (
+          action.type === 'VERIFICATION_REVOCATION' &&
+          action.targetType === 'MANAGER_CLAIM' &&
+          action.targetMembershipId &&
+          action.targetBuildingId
+        ) {
+          const membershipRestored = await tx.membership.updateMany({
+            where: { id: action.targetMembershipId, managerState: 'SUSPENDED' },
+            data: { managerState: previous.managerState },
+          });
+          const buildingRestored = await tx.building.updateMany({
+            where: { id: action.targetBuildingId, recoveryModeEnteredAt: { not: null } },
+            data: { recoveryModeEnteredAt: previous.recoveryModeEnteredAt },
+          });
+          if (membershipRestored.count !== 1 || buildingRestored.count !== 1) {
+            throw new ConflictError('The enforcement target changed after this action.');
+          }
         }
-        await tx.enforcementAction.update({ where: { id: params.id }, data: { effectReversedAt: new Date() } });
+        await tx.enforcementAction.update({
+          where: { id: params.id },
+          data: { effectReversedAt: new Date() },
+        });
       }
       return tx.enforcementAction.findUniqueOrThrow({ where: { id: params.id } });
     });
