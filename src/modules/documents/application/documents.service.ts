@@ -509,6 +509,23 @@ export class DocumentsService {
     return { ...found, currentVersion };
   }
 
+  async listDocumentVersions(
+    documentId: string,
+    actorPersonId: string,
+    pagination: PaginationParams,
+  ) {
+    const found = await this.getDocumentOrThrow(documentId);
+    await this.assertMember(actorPersonId, found.buildingId);
+    const privileged = await this.isPrivileged(actorPersonId, found.buildingId);
+    this.policy.assertVisible(found.visibility, privileged);
+
+    const { items, total } = await this.documents.listDocumentVersions(
+      documentId,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
+  }
+
   async uploadVersion(
     documentId: string,
     dto: UploadVersionDto,

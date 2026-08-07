@@ -170,6 +170,96 @@ describe('DocumentsService — listDocuments / searchDocuments pagination', () =
   });
 });
 
+describe('DocumentsService — version history', () => {
+  let documents: Record<string, jest.Mock>;
+  let buildings: Record<string, jest.Mock>;
+  let service: DocumentsService;
+
+  beforeEach(() => {
+    documents = {
+      findDocumentById: jest.fn().mockResolvedValue({
+        id: 'doc-1',
+        buildingId: 'building-1',
+        visibility: 'MEMBERS_ONLY',
+        status: 'ACTIVE',
+      }),
+      listDocumentVersions: jest.fn().mockResolvedValue({
+        items: [{ id: 'v2', versionNumber: 2, isCurrent: true }],
+        total: 3,
+      }),
+    };
+    buildings = {
+      getRoles: jest.fn().mockResolvedValue(['TENANT']),
+    };
+    service = new DocumentsService(
+      documents as unknown as DocumentRepository,
+      buildings as unknown as BuildingRepository,
+      new DocumentPolicy(),
+      { record: jest.fn() } as unknown as AuditService,
+      { emit: jest.fn() } as unknown as EventEmitter2,
+      { isConfigured: jest.fn().mockReturnValue(false) } as unknown as StorageService,
+    );
+  });
+
+  it('authorizes like document detail and returns canonical pagination metadata', async () => {
+    const result = await service.listDocumentVersions('doc-1', 'person-1', {
+      page: 2,
+      limit: 1,
+    });
+
+    expect(documents.listDocumentVersions).toHaveBeenCalledWith('doc-1', {
+      skip: 1,
+      take: 1,
+    });
+    expect(result.meta).toEqual({ page: 2, limit: 1, total: 3, totalPages: 3 });
+  });
+
+  it('rejects a non-member before querying versions', async () => {
+    buildings.getRoles.mockResolvedValue([]);
+
+    await expect(
+      service.listDocumentVersions('doc-1', 'outsider', { page: 1, limit: 20 }),
+    ).rejects.toThrow(AuthorizationError);
+    expect(documents.listDocumentVersions).not.toHaveBeenCalled();
+  });
+
+  it('protects MANAGEMENT_ONLY history for a non-privileged member', async () => {
+    documents.findDocumentById.mockResolvedValue({
+      id: 'doc-1',
+      buildingId: 'building-1',
+      visibility: 'MANAGEMENT_ONLY',
+      status: 'ACTIVE',
+    });
+
+    await expect(
+      service.listDocumentVersions('doc-1', 'person-1', { page: 1, limit: 20 }),
+    ).rejects.toThrow(AuthorizationError);
+  });
+
+  it('returns canonical not-found for a missing document', async () => {
+    documents.findDocumentById.mockResolvedValue(null);
+
+    await expect(
+      service.listDocumentVersions('missing', 'person-1', { page: 1, limit: 20 }),
+    ).rejects.toThrow(NotFoundAppError);
+  });
+
+  it('allows archived history because existing read policy allows archived detail/download', async () => {
+    documents.findDocumentById.mockResolvedValue({
+      id: 'doc-1',
+      buildingId: 'building-1',
+      visibility: 'MEMBERS_ONLY',
+      status: 'ARCHIVED',
+    });
+
+    await expect(
+      service.listDocumentVersions('doc-1', 'person-1', { page: 1, limit: 20 }),
+    ).resolves.toEqual(
+      expect.objectContaining({ items: [{ id: 'v2', versionNumber: 2, isCurrent: true }] }),
+    );
+  });
+});
+
 describe('DocumentsService — upload-intent trust-boundary closure (Sections B-G)', () => {
   let documents: Record<string, jest.Mock>;
   let buildings: Record<string, jest.Mock>;

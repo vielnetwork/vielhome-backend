@@ -646,7 +646,7 @@ describe('Documents (e2e) — Listing, Search & Visibility (08.09 Rule 007)', ()
 });
 
 describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
-  // Budget: 2 calls to POST /auth/otp/request (manager + member).
+  // Budget: 3 calls to POST /auth/otp/request (manager + member + outsider).
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
@@ -654,6 +654,7 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
 
   let manager: RegisteredPerson;
   let member: RegisteredPerson;
+  let outsider: RegisteredPerson;
   let buildingId: string;
 
   beforeAll(async () => {
@@ -662,9 +663,15 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
     createdPhones.push(manager.phone);
     member = await registerPerson(app);
     createdPhones.push(member.phone);
+    outsider = await registerPerson(app);
+    createdPhones.push(outsider.phone);
 
     buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER' });
     createdBuildingIds.push(buildingId);
+    const outsiderBuildingId = await createBuilding(app, outsider.accessToken, {
+      role: 'MANAGER',
+    });
+    createdBuildingIds.push(outsiderBuildingId);
     await joinBuildingAsApprovedMember(app, buildingId, member.accessToken, manager.accessToken);
   });
 
@@ -675,11 +682,23 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
   });
 
   let openDocId: string;
+  let firstVersionId: string;
 
   it('06.08 Rule 007: uploading a new version supersedes the current one', async () => {
-    ({ documentId: openDocId } = await createDocument(app, buildingId, member.accessToken, {
-      title: 'Insurance policy',
-    }));
+    ({ documentId: openDocId, versionId: firstVersionId } = await createDocument(
+      app,
+      buildingId,
+      member.accessToken,
+      { title: 'Insurance policy' },
+    ));
+
+    const beforeUpload = await request(app.getHttpServer())
+      .get(`/api/v1/documents/${openDocId}/versions`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(200);
+    expect(beforeUpload.body.data).toEqual([
+      expect.objectContaining({ id: firstVersionId, versionNumber: 1, isCurrent: true }),
+    ]);
 
     const { versionNumber, isCurrent } = await uploadDocumentVersion(
       app,
@@ -692,11 +711,93 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
     expect(versionNumber).toBe(2);
     expect(isCurrent).toBe(true);
 
+    const afterUpload = await request(app.getHttpServer())
+      .get(`/api/v1/documents/${openDocId}/versions`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(200);
+    expect(afterUpload.body.data).toEqual([
+      expect.objectContaining({ versionNumber: 2, isCurrent: true }),
+      expect.objectContaining({ id: firstVersionId, versionNumber: 1, isCurrent: false }),
+    ]);
+
     const doc = await request(app.getHttpServer())
       .get(`/api/v1/documents/${openDocId}`)
       .set('Authorization', `Bearer ${member.accessToken}`)
       .expect(200);
     expect(doc.body.data.currentVersion.versionNumber).toBe(2);
+  });
+
+  it('lists version metadata newest-first with canonical pagination and no storage key', async () => {
+    const page1 = await request(app.getHttpServer())
+      .get(`/api/v1/documents/${openDocId}/versions`)
+      .query({ page: 1, limit: 1 })
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(200);
+    const page2 = await request(app.getHttpServer())
+      .get(`/api/v1/documents/${openDocId}/versions`)
+      .query({ page: 2, limit: 1 })
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(200);
+
+    expect(page1.body.metadata.pagination).toEqual({
+      page: 1,
+      limit: 1,
+      total: 2,
+      totalPages: 2,
+    });
+    expect(page1.body.data[0]).toEqual(
+      expect.objectContaining({
+        documentId: openDocId,
+        versionNumber: 2,
+        fileName: 'insurance-v2.pdf',
+        fileType: 'PDF',
+        fileSize: 4096,
+        isCurrent: true,
+      }),
+    );
+    expect(page1.body.data[0].uploadedAt).toEqual(expect.any(String));
+    expect(page1.body.data[0]).not.toHaveProperty('fileUrl');
+    expect(page1.body.data[0]).not.toHaveProperty('storageKey');
+    expect(page1.body.data[0]).not.toHaveProperty('uploadedById');
+    expect(page2.body.data[0]).toEqual(
+      expect.objectContaining({ id: firstVersionId, versionNumber: 1, isCurrent: false }),
+    );
+  });
+
+  it('an older version discovered through history still downloads via the authorized endpoint', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/document-versions/${firstVersionId}/download`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data.fileName).toBe('e2e-file.pdf');
+  });
+
+  it('denies cross-building access by a non-member and returns canonical 404', async () => {
+    const denied = await request(app.getHttpServer())
+      .get(`/api/v1/documents/${openDocId}/versions`)
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(403);
+    expect(denied.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+
+    const missing = await request(app.getHttpServer())
+      .get('/api/v1/documents/nonexistent-document/versions')
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(404);
+    expect(missing.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('keeps MANAGEMENT_ONLY version history protected', async () => {
+    const { documentId } = await createDocument(app, buildingId, manager.accessToken, {
+      title: 'Restricted history',
+      visibility: 'MANAGEMENT_ONLY',
+    });
+
+    const denied = await request(app.getHttpServer())
+      .get(`/api/v1/documents/${documentId}/versions`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(403);
+    expect(denied.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
 
   it('rejects an unsupported file type on a new version (VALIDATION_ERROR)', async () => {
@@ -742,6 +843,15 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
       .expect(201);
 
     expect(res.body.data.status).toBe('ARCHIVED');
+  });
+
+  it('keeps archived document history readable under the existing read policy', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/documents/${openDocId}/versions`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data).toHaveLength(2);
   });
 
   it('rejects a new version on an archived doc (BUSINESS_RULE_VIOLATION)', async () => {

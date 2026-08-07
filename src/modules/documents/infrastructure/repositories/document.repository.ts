@@ -238,6 +238,31 @@ export class DocumentRepository {
     return this.prisma.documentVersion.findFirst({ where: { documentId, isCurrent: true } });
   }
 
+  async listDocumentVersions(documentId: string, pagination: { skip: number; take: number }) {
+    const where: Prisma.DocumentVersionWhereInput = { documentId };
+    const [items, total] = await Promise.all([
+      this.prisma.documentVersion.findMany({
+        where,
+        select: {
+          id: true,
+          documentId: true,
+          versionNumber: true,
+          fileName: true,
+          fileType: true,
+          fileSize: true,
+          uploadedAt: true,
+          isCurrent: true,
+          expiresAt: true,
+        },
+        orderBy: [{ versionNumber: 'desc' }, { id: 'desc' }],
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.documentVersion.count({ where }),
+    ]);
+    return { items, total };
+  }
+
   findVersionWithDocument(versionId: string) {
     return this.prisma.documentVersion.findUnique({
       where: { id: versionId },

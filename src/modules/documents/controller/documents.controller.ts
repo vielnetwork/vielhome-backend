@@ -54,6 +54,21 @@ export class DocumentsController {
     return this.documents.getDocument(documentId, user.sub);
   }
 
+  @Get(':documentId/versions')
+  async listDocumentVersions(
+    @Param('documentId') documentId: string,
+    @CurrentUser() user: JwtPayload,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.documents.listDocumentVersions(
+      documentId,
+      user.sub,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
+  }
+
   @Post(':documentId/versions')
   uploadVersion(
     @Param('documentId') documentId: string,

@@ -131,7 +131,8 @@ this section is a map, not a replacement for those.
   `resolutionCode` enum (`ADR-052`). Full e2e coverage — `ADR-076`, Testing
   Phase 3b.
 - **Documents** (`src/modules/documents`): upload (first version)/list/
-  detail/download, bulk upload (`ADR-051`), expiration metadata (`ADR-046`),
+  detail/download, version history, bulk upload (`ADR-051`), expiration metadata
+  (`ADR-046`),
   deterministic `page`/`limit` pagination on list/search (`ADR-072`/
   `ADR-120`); real S3/MinIO-compatible object storage (`ADR-087`) is wired
   up — a client requests a presigned PUT via `POST
@@ -162,6 +163,14 @@ this section is a map, not a replacement for those.
   fixture helpers in `test/documents.e2e-spec.ts`/`test/notifications.
   e2e-spec.ts` were migrated onto the same real upload-intent flow
   (`test/helpers/create-document.ts`) so both suites pass storage-configured.
+  `GET /documents/:documentId/versions` exposes the authorized, metadata-only
+  version timeline newest-first using the canonical `page`/`limit` and
+  `metadata.pagination` contract. It applies the same building membership and
+  document visibility policy as detail/download and never includes
+  object-storage URLs or credentials. Download remains the separate authorized
+  `GET /document-versions/:versionId/download` operation. This backend contract
+  unblocks Mobile Documents MD-05B; it does not claim the mobile Version
+  History UI is implemented.
 - **Notifications** (`src/modules/notifications`): a real, independent
   in-app (`IN_APP`) delivery channel since `ADR-027` — list/unread-count/get/
   mark-read/mark-all-read/archive/preferences — plus a real BullMQ async

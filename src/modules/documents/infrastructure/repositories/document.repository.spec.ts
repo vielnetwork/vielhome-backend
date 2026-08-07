@@ -25,7 +25,13 @@ import { ConflictError } from '../../../../common/errors/app-error';
 describe('DocumentRepository', () => {
   let prisma: {
     document: { findMany: jest.Mock; count: jest.Mock; create: jest.Mock };
-    documentVersion: { create: jest.Mock; findFirst: jest.Mock; updateMany: jest.Mock };
+    documentVersion: {
+      create: jest.Mock;
+      findFirst: jest.Mock;
+      findMany: jest.Mock;
+      count: jest.Mock;
+      updateMany: jest.Mock;
+    };
     documentUploadIntent: { create: jest.Mock; findUnique: jest.Mock; updateMany: jest.Mock };
     $transaction: jest.Mock;
   };
@@ -41,6 +47,8 @@ describe('DocumentRepository', () => {
       documentVersion: {
         create: jest.fn().mockResolvedValue({ id: 'version-1', versionNumber: 1 }),
         findFirst: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       documentUploadIntent: {
@@ -174,6 +182,44 @@ describe('DocumentRepository', () => {
       const result = await repo.searchDocuments('building-1', {}, false, { skip: 0, take: 20 });
 
       expect(result).toEqual({ items: rows, total: 1 });
+    });
+  });
+
+  describe('listDocumentVersions', () => {
+    it('filters, paginates, and orders newest-first deterministically', async () => {
+      await repo.listDocumentVersions('doc-1', { skip: 2, take: 2 });
+
+      expect(prisma.documentVersion.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { documentId: 'doc-1' },
+          orderBy: [{ versionNumber: 'desc' }, { id: 'desc' }],
+          skip: 2,
+          take: 2,
+        }),
+      );
+      expect(prisma.documentVersion.count).toHaveBeenCalledWith({
+        where: { documentId: 'doc-1' },
+      });
+    });
+
+    it('selects metadata only and never exposes fileUrl or uploader internals', async () => {
+      await repo.listDocumentVersions('doc-1', { skip: 0, take: 20 });
+
+      const select = prisma.documentVersion.findMany.mock.calls[0][0].select;
+      expect(select).toEqual({
+        id: true,
+        documentId: true,
+        versionNumber: true,
+        fileName: true,
+        fileType: true,
+        fileSize: true,
+        uploadedAt: true,
+        isCurrent: true,
+        expiresAt: true,
+      });
+      expect(select).not.toHaveProperty('fileUrl');
+      expect(select).not.toHaveProperty('uploadedById');
+      expect(select).not.toHaveProperty('uploadedBy');
     });
   });
 

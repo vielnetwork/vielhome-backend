@@ -46,6 +46,20 @@ When storage is **not** configured, `resolveUploadIntent` returns immediately wi
 
 **Resolved in a follow-up pass:** `test/documents.e2e-spec.ts`'s and `test/notifications.e2e-spec.ts`'s own document-creation fixtures originally used arbitrary client-supplied `fileUrl` strings (the legacy shape), which this hardening pass's `resolveUploadIntent` rejects once storage is configured. Both files' independent, duplicated `createDocument` helpers were replaced with one shared implementation (`test/helpers/create-document.ts`) that requests a real upload-intent, PUTs real bytes, and finalizes with the returned `storageKey` whenever storage is configured (falling back to the legacy arbitrary `fileUrl` when it isn't, so a storage-less environment stays regression-free). Every 201-success path in both files — direct create-document calls, version-upload calls, and bulk-upload items expected to succeed — was audited and migrated; negative-path tests that fail earlier in the service's own validation order (membership/category/fileType/archived-state, all of which run before the upload-intent check) were deliberately left on the legacy arbitrary `fileUrl`, since they never reach that check. Confirmed via the full e2e run recorded in Verification status below.
 
+### Version-history contract follow-up
+
+Mobile Documents MD-05B required a read contract for versions already persisted by
+this upload flow. `GET /documents/:documentId/versions` now returns metadata only,
+newest-first by `versionNumber DESC, id DESC`, using the platform's canonical
+`page`/`limit` query and `metadata.pagination` response contract. It reuses the
+same building-membership and `DocumentPolicy` visibility checks as document detail
+and version download. Raw `fileUrl`/object paths and presigned URLs are not exposed;
+an item discovered in history is downloaded only through the existing authorized
+`GET /document-versions/:versionId/download` endpoint. Archived history remains
+readable because the existing detail/download read policy permits it. This makes
+the backend contract available for MD-05B without claiming the mobile UI itself is
+implemented.
+
 ## Consequences
 
 - Closes a real, confirmed trust-boundary gap: a `fileUrl`/`storageKey` can no longer be recorded as Document metadata without proof the caller was actually issued a presigned URL for it and actually uploaded to it.
@@ -53,6 +67,8 @@ When storage is **not** configured, `resolveUploadIntent` returns immediately wi
 - Adds one required field (`purpose`) and one conditionally-required field (`documentId`) to `POST :id/documents/upload-url`'s request body — a breaking API contract change for any existing client of that endpoint once this ships. `uploadIntentId` is added to that endpoint's response (additive, non-breaking).
 - Adds one real network round-trip (a presigned HEAD Object request) to `createDocument`/`uploadVersion`/each bulk item, only when storage is configured.
 - `test/documents.e2e-spec.ts` and `test/notifications.e2e-spec.ts` were migrated onto the real upload-intent flow via a shared fixture helper (see "Resolved in a follow-up pass" above) — no suite in this repository still assumes the pre-ADR-121 arbitrary-`fileUrl` contract when storage is configured.
+- Adds a paginated, metadata-only version-history read endpoint without changing
+  the schema or the upload/download storage contracts.
 
 ## Verification status
 
