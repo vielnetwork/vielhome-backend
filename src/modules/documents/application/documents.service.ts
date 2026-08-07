@@ -94,6 +94,13 @@ export class DocumentsService {
     }
   }
 
+  private async assertManager(personId: string, buildingId: string): Promise<void> {
+    const roles = await this.buildings.getRoles(personId, buildingId);
+    if (!roles.includes('MANAGER')) {
+      throw new AuthorizationError('Only the current building Manager may upload documents.');
+    }
+  }
+
   private async getDocumentOrThrow(documentId: string) {
     const found = await this.documents.findDocumentById(documentId);
     if (!found) throw new NotFoundAppError('Document not found.');
@@ -127,7 +134,7 @@ export class DocumentsService {
    */
   async requestUploadUrl(buildingId: string, dto: RequestUploadUrlDto, actorPersonId: string) {
     await this.getBuilding(buildingId);
-    await this.assertMember(actorPersonId, buildingId);
+    await this.assertManager(actorPersonId, buildingId);
     this.policy.assertFileTypeSupported(dto.fileType);
     this.policy.assertFileSizeWithinLimit(dto.fileSize);
 
@@ -289,7 +296,7 @@ export class DocumentsService {
     requestId: string,
   ) {
     await this.getBuilding(buildingId);
-    await this.assertMember(actorPersonId, buildingId);
+    await this.assertManager(actorPersonId, buildingId);
 
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
     this.policy.assertCategoryManageable(dto.category, privileged);
@@ -382,7 +389,7 @@ export class DocumentsService {
     requestId: string,
   ) {
     await this.getBuilding(buildingId);
-    await this.assertMember(actorPersonId, buildingId);
+    await this.assertManager(actorPersonId, buildingId);
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
 
     const results: Array<
@@ -549,7 +556,7 @@ export class DocumentsService {
     requestId: string,
   ) {
     const found = await this.getDocumentOrThrow(documentId);
-    await this.assertMember(actorPersonId, found.buildingId);
+    await this.assertManager(actorPersonId, found.buildingId);
     const privileged = await this.isPrivileged(actorPersonId, found.buildingId);
     this.policy.assertCategoryManageable(found.category, privileged);
     this.policy.assertNotArchived(found.status);

@@ -290,7 +290,7 @@ describe('Documents — Real Storage Upload Flow (e2e, ADR-087)', () => {
 
     founder = await registerPerson(app);
     createdPhones.push(founder.phone);
-    buildingId = await createBuilding(app, founder.accessToken, { role: 'OWNER' });
+    buildingId = await createBuilding(app, founder.accessToken, { role: 'MANAGER' });
     createdBuildingIds.push(buildingId);
 
     otherPerson = await registerPerson(app);

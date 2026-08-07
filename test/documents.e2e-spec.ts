@@ -410,6 +410,9 @@ describe('Documents (e2e) — Creation & Category Gating (06.08 Rule 011/012)', 
     buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER' });
     createdBuildingIds.push(buildingId);
     await joinBuildingAsApprovedMember(app, buildingId, member.accessToken, manager.accessToken);
+    createdBuildingIds.push(
+      await createBuilding(app, nonMember.accessToken, { role: 'MANAGER' }),
+    );
   });
 
   afterAll(async () => {
@@ -418,35 +421,47 @@ describe('Documents (e2e) — Creation & Category Gating (06.08 Rule 011/012)', 
     await app.close();
   });
 
-  it('lets a member create an open-category document with real defaults', async () => {
-    const fileName = 'elevator.pdf';
-    const fileType = 'PDF';
-    const fileSize = 2048;
-    const fileUrl = await requestRealFileUrl(app, buildingId, member.accessToken, {
-      fileName,
-      fileType,
-      fileSize,
+  it.each([
+    'OWNER',
+    'TENANT',
+    'BOARD_MEMBER',
+    'ACCOUNTANT',
+  ])('rejects %s requesting a direct upload intent', async (role) => {
+    await prisma.membership.updateMany({
+      where: { buildingId, personId: member.personId },
+      data: { role: role as never },
     });
-
     const res = await request(app.getHttpServer())
-      .post(`/api/v1/buildings/${buildingId}/documents`)
+      .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
       .set('Authorization', `Bearer ${member.accessToken}`)
       .send({
-        category: 'MAINTENANCE',
-        title: 'Elevator service report',
-        fileUrl,
-        fileName,
-        fileType,
-        fileSize,
+        fileName: 'blocked.pdf',
+        fileType: 'PDF',
+        fileSize: 128,
+        purpose: 'CREATE_DOCUMENT',
       })
-      .expect(201);
+      .expect(403);
 
-    expect(res.body.data.document.status).toBe('ACTIVE');
-    expect(res.body.data.document.visibility).toBe('MEMBERS_ONLY');
-    expect(res.body.data.document.createdById).toBe(member.personId);
-    expect(res.body.data.version.versionNumber).toBe(1);
-    expect(res.body.data.version.isCurrent).toBe(true);
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
+
+  it.each(['CROSS_BUILDING_MANAGER', 'NON_MEMBER'])(
+    'rejects %s requesting a direct upload intent',
+    async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
+        .set('Authorization', `Bearer ${nonMember.accessToken}`)
+        .send({
+          fileName: 'blocked.pdf',
+          fileType: 'PDF',
+          fileSize: 128,
+          purpose: 'CREATE_DOCUMENT',
+        })
+        .expect(403);
+
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    },
+  );
 
   it('blocks a non-privileged member from creating a GOVERNANCE doc (403)', async () => {
     const res = await request(app.getHttpServer())
@@ -494,7 +509,7 @@ describe('Documents (e2e) — Creation & Category Gating (06.08 Rule 011/012)', 
   it('rejects an unsupported file type (VALIDATION_ERROR)', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/documents`)
-      .set('Authorization', `Bearer ${member.accessToken}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({
         category: 'GENERAL',
         title: 'Bad file type',
@@ -559,7 +574,7 @@ describe('Documents (e2e) — Listing, Search & Visibility (08.09 Rule 007)', ()
       manager.accessToken,
       { title: 'Staff-only budget file', visibility: 'MANAGEMENT_ONLY' },
     ));
-    ({ documentId: membersOnlyDocId } = await createDocument(app, buildingId, member.accessToken, {
+    ({ documentId: membersOnlyDocId } = await createDocument(app, buildingId, manager.accessToken, {
       title: 'Community newsletter',
     }));
   });
@@ -688,7 +703,7 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
     ({ documentId: openDocId, versionId: firstVersionId } = await createDocument(
       app,
       buildingId,
-      member.accessToken,
+      manager.accessToken,
       { title: 'Insurance policy' },
     ));
 
@@ -704,7 +719,7 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
       app,
       buildingId,
       openDocId,
-      member.accessToken,
+      manager.accessToken,
       { fileName: 'insurance-v2.pdf', fileSize: 4096 },
     );
 
@@ -803,7 +818,7 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
   it('rejects an unsupported file type on a new version (VALIDATION_ERROR)', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/documents/${openDocId}/versions`)
-      .set('Authorization', `Bearer ${member.accessToken}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({
         fileUrl: 'https://storage.example.com/bad.exe',
         fileName: 'bad.exe',
@@ -838,7 +853,7 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
   it('lets the creator archive their own open-category document', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/documents/${openDocId}/archive`)
-      .set('Authorization', `Bearer ${member.accessToken}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({ reason: 'superseded by new policy' })
       .expect(201);
 
@@ -857,7 +872,7 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
   it('rejects a new version on an archived doc (BUSINESS_RULE_VIOLATION)', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/documents/${openDocId}/versions`)
-      .set('Authorization', `Bearer ${member.accessToken}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({
         fileUrl: 'https://storage.example.com/insurance-v3.pdf',
         fileName: 'insurance-v3.pdf',
@@ -872,7 +887,7 @@ describe('Documents (e2e) — Versioning & Archive Lifecycle', () => {
   it('rejects archiving an already-archived document (BUSINESS_RULE_VIOLATION)', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/documents/${openDocId}/archive`)
-      .set('Authorization', `Bearer ${member.accessToken}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({})
       .expect(422);
 
@@ -953,38 +968,25 @@ describe('Documents (e2e) — Bulk Upload (08.09 Rule 018, ADR-051)', () => {
     expect(res.body.data.results[2].status).toBe('created');
   });
 
-  it('captures a per-item AUTHORIZATION_ERROR without failing the whole batch', async () => {
-    // The open item passes every policy check and reaches the
-    // upload-intent check, so it needs a real presigned+uploaded object
-    // once storage is configured; the privileged-only item fails at
-    // `assertCategoryManageable`, before ever reaching that check.
-    const openItem = await buildSuccessfulBulkItem(app, buildingId, member.accessToken, {
-      title: 'Open item',
-      fileName: 'open.pdf',
-      fileType: 'PDF',
-      fileSize: 100,
-    });
-
+  it('rejects the entire bulk upload endpoint for a non-Manager', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/documents/bulk`)
       .set('Authorization', `Bearer ${member.accessToken}`)
       .send({
         documents: [
-          openItem,
           {
-            category: 'FINANCIAL',
-            title: 'Privileged-only item',
-            fileUrl: 'https://storage.example.com/financial.pdf',
-            fileName: 'financial.pdf',
+            category: 'GENERAL',
+            title: 'Blocked item',
+            fileUrl: 'blocked-key',
+            fileName: 'blocked.pdf',
             fileType: 'PDF',
             fileSize: 100,
           },
         ],
       })
-      .expect(201);
+      .expect(403);
 
-    expect(res.body.data.summary).toEqual({ total: 2, succeeded: 1, failed: 1 });
-    expect(res.body.data.results[1].error.code).toBe('AUTHORIZATION_ERROR');
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
 
   it('rejects an empty batch (VALIDATION_ERROR)', async () => {
@@ -1055,7 +1057,7 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
       .expect(201);
     caseId = createdCase.body.data.id;
 
-    ({ documentId, versionId: v1Id } = await createDocument(app, buildingId, member.accessToken, {
+    ({ documentId, versionId: v1Id } = await createDocument(app, buildingId, manager.accessToken, {
       title: 'Maintenance photo set',
     }));
 
@@ -1077,7 +1079,7 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
       .expect(201);
     expect(pinnedRef.body.data.documentVersionId).toBe(v1Id);
 
-    await uploadDocumentVersion(app, buildingId, documentId, member.accessToken, {
+    await uploadDocumentVersion(app, buildingId, documentId, manager.accessToken, {
       fileName: 'photo-v2.pdf',
       fileSize: 4096,
     });
@@ -1184,7 +1186,7 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
         description: 'Deleted directly to simulate a legacy dangling polymorphic target.',
       })
       .expect(201);
-    const attachment = await createDocument(app, buildingId, member.accessToken, {
+    const attachment = await createDocument(app, buildingId, manager.accessToken, {
       title: 'Orphan safety fixture',
     });
     await request(app.getHttpServer())

@@ -370,7 +370,7 @@ describe('DocumentsService — upload-intent trust-boundary closure (Sections B-
   let storage: Record<string, jest.Mock>;
   let service: DocumentsService;
 
-  const MEMBER_ROLE = ['TENANT'];
+  const MEMBER_ROLE = ['MANAGER'];
   const ACTOR_ID = 'person-1';
   const BUILDING_ID = 'building-1';
   const STORAGE_KEY = 'documents/building-1/2026/08/abc-lease.pdf';
@@ -434,6 +434,28 @@ describe('DocumentsService — upload-intent trust-boundary closure (Sections B-
   });
 
   describe('requestUploadUrl', () => {
+    it.each(['OWNER', 'TENANT', 'BOARD_MEMBER', 'ACCOUNTANT'])(
+      'rejects %s before creating a presigned upload intent',
+      async (role) => {
+        buildings.getRoles.mockResolvedValue([role]);
+
+        await expect(
+          service.requestUploadUrl(
+            BUILDING_ID,
+            {
+              fileName: 'lease.pdf',
+              fileType: 'PDF',
+              fileSize: 1024,
+              purpose: 'CREATE_DOCUMENT',
+            },
+            ACTOR_ID,
+          ),
+        ).rejects.toThrow(AuthorizationError);
+        expect(storage.getPresignedUploadUrl).not.toHaveBeenCalled();
+        expect(documents.createUploadIntent).not.toHaveBeenCalled();
+      },
+    );
+
     it('creates a CREATE_DOCUMENT intent and returns uploadIntentId alongside the presigned URL fields', async () => {
       const result = await service.requestUploadUrl(
         BUILDING_ID,
@@ -539,6 +561,14 @@ describe('DocumentsService — upload-intent trust-boundary closure (Sections B-
   });
 
   describe('createDocument — intent validation (storage configured)', () => {
+    it('rejects direct finalization when the caller is no longer Manager', async () => {
+      buildings.getRoles.mockResolvedValue(['OWNER']);
+
+      await expect(
+        service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1'),
+      ).rejects.toThrow(AuthorizationError);
+      expect(documents.createDocumentWithFirstVersion).not.toHaveBeenCalled();
+    });
     const baseDto = {
       category: 'GENERAL' as const,
       title: 'Lease',
@@ -663,6 +693,20 @@ describe('DocumentsService — upload-intent trust-boundary closure (Sections B-
   });
 
   describe('uploadVersion — intent must be bound to the target document', () => {
+    it('rejects direct version finalization when the caller is not Manager', async () => {
+      documents.findDocumentById.mockResolvedValue({
+        id: 'doc-1',
+        buildingId: BUILDING_ID,
+        category: 'GENERAL',
+        status: 'ACTIVE',
+      });
+      buildings.getRoles.mockResolvedValue(['ACCOUNTANT']);
+
+      await expect(
+        service.uploadVersion('doc-1', baseDto, ACTOR_ID, 'req-1'),
+      ).rejects.toThrow(AuthorizationError);
+      expect(documents.addVersion).not.toHaveBeenCalled();
+    });
     const baseDto = {
       fileUrl: STORAGE_KEY,
       fileName: 'lease.pdf',
@@ -704,6 +748,30 @@ describe('DocumentsService — upload-intent trust-boundary closure (Sections B-
   });
 
   describe('bulkCreateDocuments — per-item intent validation (Section F)', () => {
+    it('rejects the complete bulk creation endpoint for non-Managers', async () => {
+      buildings.getRoles.mockResolvedValue(['BOARD_MEMBER']);
+
+      await expect(
+        service.bulkCreateDocuments(
+          BUILDING_ID,
+          {
+            documents: [
+              {
+                category: 'GENERAL',
+                title: 'Lease',
+                fileUrl: STORAGE_KEY,
+                fileName: 'lease.pdf',
+                fileType: 'PDF',
+                fileSize: 1024,
+              },
+            ],
+          } as never,
+          ACTOR_ID,
+          'req-1',
+        ),
+      ).rejects.toThrow(AuthorizationError);
+      expect(documents.createDocumentWithFirstVersion).not.toHaveBeenCalled();
+    });
     it('fails only the item with an invalid intent; a sibling item with a valid intent still succeeds', async () => {
       documents.findUploadIntentByStorageKey.mockImplementation(async (key: string) =>
         key === 'good-key' ? validIntent({ storageKey: 'good-key' }) : null,
