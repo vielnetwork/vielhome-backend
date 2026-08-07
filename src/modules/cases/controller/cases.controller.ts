@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseEnumPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import type { CasePriority, CaseStatus, CaseType } from '@prisma/client';
+import { CasePriority, CaseStatus, CaseType } from '@prisma/client';
 import { CasesService } from '../application/cases.service';
 import { CreateCaseDto } from '../application/dto/create-case.dto';
 import { UpdateCaseDto } from '../application/dto/update-case.dto';
@@ -56,9 +56,9 @@ export class CasesController {
   listCases(
     @Param('id') id: string,
     @CurrentUser() user: JwtPayload,
-    @Query('type') type?: CaseType,
-    @Query('status') status?: CaseStatus,
-    @Query('priority') priority?: CasePriority,
+    @Query('type', new ParseEnumPipe(CaseType, { optional: true })) type?: CaseType,
+    @Query('status', new ParseEnumPipe(CaseStatus, { optional: true })) status?: CaseStatus,
+    @Query('priority', new ParseEnumPipe(CasePriority, { optional: true })) priority?: CasePriority,
     @Query('assigneeId') assigneeId?: string,
   ) {
     return this.cases.listCases(id, user.sub, { type, status, priority, assigneeId });

@@ -15,6 +15,7 @@ import {
   type PaginationParams,
 } from '../../../common/pagination/pagination.util';
 import { SupportCaseResolvedEvent } from '../events/backoffice.events';
+import { PermissionResolverService } from '../../backoffice-rbac/application/permission-resolver.service';
 
 /**
  * Support & Operations Center (07.05_Support_And_Operations_Center_v1.0 —
@@ -31,6 +32,7 @@ export class SupportCaseService {
     private readonly policy: SupportCasePolicy,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
+    private readonly permissions: PermissionResolverService,
   ) {}
 
   /** 07.05 Rule 001/002 — any authenticated Person may open a ticket. */
@@ -76,8 +78,12 @@ export class SupportCaseService {
 
   /** Member-facing: 404s (via the policy, an AuthorizationError translated at the controller boundary like Marketplace's own non-staff visibility check) rather than exposing another Person's ticket. */
   async getCaseForOwner(caseId: string, callerPersonId: string) {
-    const kase = await this.getCase(caseId);
-    this.policy.assertVisibleToNonStaff(kase.createdById, callerPersonId);
+    const kase = await this.backOffice.findSupportCaseForOwner(caseId, callerPersonId);
+    if (!kase) {
+      const existing = await this.getCase(caseId);
+      this.policy.assertVisibleToNonStaff(existing.createdById, callerPersonId);
+      throw new NotFoundAppError('Support case not found.');
+    }
     return kase;
   }
 
@@ -106,8 +112,12 @@ export class SupportCaseService {
   async assign(caseId: string, assigneeId: string, actorPersonId: string, requestId: string) {
     const kase = await this.getCase(caseId);
     this.policy.assertActionable(kase.status);
+    const granted = await this.permissions.resolve(assigneeId);
+    if (!granted.has('SUPPORT_MANAGE')) {
+      throw new ValidationError('The assignee must be active platform staff with SUPPORT_MANAGE.');
+    }
 
-    const updated = await this.backOffice.assignSupportCase(caseId, assigneeId);
+    const updated = await this.backOffice.assignSupportCase(caseId, assigneeId, kase.status);
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -197,6 +207,7 @@ export class SupportCaseService {
       id: caseId,
       resolutionCode,
       resolution,
+      expectedStatus: kase.status,
     });
 
     await this.audit.record({
@@ -245,7 +256,7 @@ export class SupportCaseService {
     const kase = await this.getCaseForOwner(caseId, actorPersonId);
     this.policy.assertCanReopen(kase.status);
 
-    const updated = await this.backOffice.reopenSupportCase(caseId);
+    const updated = await this.backOffice.reopenSupportCase(caseId, kase.status);
     await this.backOffice.addSupportCaseMessage({
       caseId,
       senderId: actorPersonId,
@@ -292,9 +303,11 @@ export class SupportCaseService {
     }
     const kase = await this.getCase(caseId);
     this.policy.assertActionable(kase.status);
-    await this.getCase(intoCaseId); // 404s if the target doesn't exist
+    const target = await this.getCase(intoCaseId);
+    if (target.mergedIntoId) throw new ValidationError('Cannot merge into an already merged case.');
+    if (target.status === 'CLOSED') throw new ValidationError('Cannot merge into a closed case.');
 
-    const updated = await this.backOffice.mergeSupportCase(caseId, intoCaseId);
+    const updated = await this.backOffice.mergeSupportCase(caseId, intoCaseId, kase.status);
 
     await this.audit.record({
       actorId: actorPersonId,

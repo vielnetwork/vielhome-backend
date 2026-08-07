@@ -10,6 +10,8 @@ export interface CaseAccessInput {
   assigneeId: string | null;
 }
 
+const ACTIVE_STATUSES = ['OPEN', 'IN_PROGRESS', 'WAITING_USER'];
+
 /**
  * Business rules for Cases/Requests (06.07_Request_And_Complaint_Flow,
  * 08.08_Request_And_Complaint_API — see 21_ADRs > ADR-025). Never touches
@@ -60,6 +62,20 @@ export class CasePolicy {
     }
   }
 
+  assertAssignableStatus(status: string): void {
+    if (!ACTIVE_STATUSES.includes(status)) {
+      throw new BusinessRuleViolationError('Only an active case may be assigned.');
+    }
+  }
+
+  assertMessageable(status: string): void {
+    if (!ACTIVE_STATUSES.includes(status)) {
+      throw new BusinessRuleViolationError(
+        'A resolved or closed case must be reopened before adding messages.',
+      );
+    }
+  }
+
   /** 06.07 Rule 017: a complaint against the manager cannot be routed to the manager. */
   assertAssignable(isAgainstManager: boolean, assigneeHoldsManagerRole: boolean): void {
     if (isAgainstManager && assigneeHoldsManagerRole) {
@@ -77,8 +93,8 @@ export class CasePolicy {
   }
 
   assertCloseable(status: string): void {
-    if (status === 'CLOSED') {
-      throw new BusinessRuleViolationError('This case is already closed.');
+    if (status !== 'RESOLVED') {
+      throw new BusinessRuleViolationError('Only a resolved case may be closed.');
     }
   }
 

@@ -588,6 +588,11 @@ describe('Cases (e2e) — Editing (06.07 general / BusinessRuleViolation on CLOS
 
   it('rejects editing a CLOSED case until it is reopened', async () => {
     await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases/${caseId}/resolve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ resolutionCode: 'COMPLETED' })
+      .expect(201);
+    await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/cases/${caseId}/close`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(201);
@@ -705,6 +710,11 @@ describe('Cases (e2e) — Assignment (08.08 Rule 008/017)', () => {
 
   it('rejects assigning an already-CLOSED case (BUSINESS_RULE_VIOLATION)', async () => {
     const closedCase = await createCase(app, buildingId, member.accessToken);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases/${closedCase}/resolve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ resolutionCode: 'COMPLETED' })
+      .expect(201);
     await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/cases/${closedCase}/close`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
@@ -885,8 +895,19 @@ describe('Cases (e2e) — Status Lifecycle & Gamification XP (CASE_RESOLVED)', (
 
   let caseBId: string;
 
-  it('lets a privileged member close a case', async () => {
+  it('rejects direct OPEN to CLOSED and closes only after resolution', async () => {
     caseBId = await createCase(app, buildingId, member.accessToken);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases/${caseBId}/close`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(422);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases/${caseBId}/resolve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ resolutionCode: 'COMPLETED' })
+      .expect(201);
 
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/cases/${caseBId}/close`)
@@ -928,6 +949,11 @@ describe('Cases (e2e) — Status Lifecycle & Gamification XP (CASE_RESOLVED)', (
   });
 
   it('blocks a non-creator, non-privileged member from reopening', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases/${caseBId}/resolve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ resolutionCode: 'COMPLETED' })
+      .expect(201);
     await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/cases/${caseBId}/close`)
       .set('Authorization', `Bearer ${manager.accessToken}`)

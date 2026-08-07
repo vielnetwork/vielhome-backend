@@ -4,6 +4,7 @@ import { FraudCaseService } from '../application/fraud-case.service';
 import { ReportFraudDto } from '../application/dto/report-fraud.dto';
 import { AppealEnforcementDto } from '../application/dto/appeal-enforcement.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { FraudAppealAuthGuard } from '../infrastructure/guards/fraud-appeal-auth.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
@@ -18,12 +19,12 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
  */
 @ApiTags('backoffice')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
 @Controller({ path: 'fraud-reports', version: '1' })
 export class FraudReportController {
   constructor(private readonly service: FraudCaseService) {}
 
   @Post()
+  @UseGuards(JwtAuthGuard)
   report(
     @Body() dto: ReportFraudDto,
     @CurrentUser() user: JwtPayload,
@@ -33,6 +34,7 @@ export class FraudReportController {
   }
 
   @Post('enforcement-actions/:actionId/appeal')
+  @UseGuards(FraudAppealAuthGuard)
   appealEnforcement(
     @Param('actionId') actionId: string,
     @Body() dto: AppealEnforcementDto,

@@ -8,15 +8,15 @@ describe('SupportCasePolicy', () => {
   const policy = new SupportCasePolicy();
 
   describe('assertActionable', () => {
-    it.each(['OPEN', 'IN_PROGRESS', 'WAITING_USER', 'RESOLVED'] as const)(
+    it.each(['OPEN', 'IN_PROGRESS', 'WAITING_USER'] as const)(
       'allows acting on a %s case',
       (status) => {
         expect(() => policy.assertActionable(status)).not.toThrow();
       },
     );
 
-    it('refuses acting on a CLOSED case', () => {
-      expect(() => policy.assertActionable('CLOSED')).toThrow(BusinessRuleViolationError);
+    it.each(['RESOLVED', 'CLOSED'] as const)('refuses acting on a %s case', (status) => {
+      expect(() => policy.assertActionable(status)).toThrow(BusinessRuleViolationError);
     });
   });
 

@@ -8,7 +8,6 @@ import type {
 } from '@prisma/client';
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import { FraudCasePolicy } from '../domain/policies/fraud-case.policy';
-import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { AuditService } from '../../../common/audit/audit.service';
 import {
   AuthorizationError,
@@ -22,6 +21,7 @@ import {
   type PaginationParams,
 } from '../../../common/pagination/pagination.util';
 import { EnforcementActionIssuedEvent, FraudCaseDecidedEvent } from '../events/backoffice.events';
+import { PermissionResolverService } from '../../backoffice-rbac/application/permission-resolver.service';
 
 /**
  * Fraud & Abuse Center (07.03_Fraud_And_Abuse_Center_v1.0 — see 21_ADRs >
@@ -38,9 +38,9 @@ export class FraudCaseService {
   constructor(
     private readonly backOffice: BackOfficeRepository,
     private readonly policy: FraudCasePolicy,
-    private readonly buildings: BuildingRepository,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
+    private readonly permissions: PermissionResolverService,
   ) {}
 
   /** 07.03 Rule 002 — any authenticated Person may report; see ReportFraudDto's header note on the deferred authorized-reporter role gate. */
@@ -140,8 +140,12 @@ export class FraudCaseService {
   async assignCase(caseId: string, assigneeId: string, actorPersonId: string, requestId: string) {
     const kase = await this.getCase(caseId);
     this.policy.assertInvestigable(kase.status);
+    const granted = await this.permissions.resolve(assigneeId);
+    if (!granted.has('FRAUD_MANAGE')) {
+      throw new ValidationError('The assignee must be active platform staff with FRAUD_MANAGE.');
+    }
 
-    const updated = await this.backOffice.assignFraudCase(caseId, assigneeId);
+    const updated = await this.backOffice.assignFraudCase(caseId, assigneeId, kase.status);
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -195,6 +199,7 @@ export class FraudCaseService {
       status,
       reviewedById: reviewerPersonId,
       reason,
+      expectedStatus: kase.status,
     });
 
     await this.audit.record({
@@ -288,7 +293,7 @@ export class FraudCaseService {
     }
     this.policy.assertCanIssueEnforcement(params.type, staff.role);
 
-    const action = await this.backOffice.createEnforcementAction({
+    const { action, created } = await this.backOffice.createEnforcementActionWithEffect({
       fraudCaseId: caseId,
       type: params.type,
       targetType: params.targetType,
@@ -297,9 +302,10 @@ export class FraudCaseService {
       targetMembershipId: params.targetMembershipId,
       reason: params.reason,
       issuedById,
+      idempotencyKey: `${caseId}:${requestId}`,
     });
 
-    await this.applyEnforcementEffect(params);
+    if (!created) return action;
 
     await this.audit.record({
       actorId: issuedById,
@@ -343,42 +349,6 @@ export class FraudCaseService {
     }
   }
 
-  private async applyEnforcementEffect(params: {
-    type: EnforcementActionType;
-    targetType: EnforcementTargetType;
-    targetPersonId?: string;
-    targetBuildingId?: string;
-    targetMembershipId?: string;
-  }): Promise<void> {
-    if (
-      params.type === 'ACCOUNT_SUSPENSION' &&
-      params.targetType === 'PERSON' &&
-      params.targetPersonId
-    ) {
-      await this.backOffice.suspendPerson(params.targetPersonId);
-      return;
-    }
-    if (
-      params.type === 'VERIFICATION_REVOCATION' &&
-      params.targetType === 'BUILDING' &&
-      params.targetBuildingId
-    ) {
-      await this.buildings.updateBuildingStatus(params.targetBuildingId, 'REJECTED');
-      return;
-    }
-    if (
-      params.type === 'VERIFICATION_REVOCATION' &&
-      params.targetType === 'MANAGER_CLAIM' &&
-      params.targetMembershipId &&
-      params.targetBuildingId
-    ) {
-      await this.buildings.suspendManagement(params.targetMembershipId);
-      await this.buildings.setRecoveryMode(params.targetBuildingId, true);
-      return;
-    }
-    // WARNING / TEMPORARY_RESTRICTION: recorded only, no system-enforced effect this sprint.
-  }
-
   /** 07.03 Rule 019 — the target Person appeals an enforcement action. */
   async appealEnforcement(
     actionId: string,
@@ -389,11 +359,8 @@ export class FraudCaseService {
     const action = await this.backOffice.findEnforcementActionById(actionId);
     if (!action) throw new NotFoundAppError('Enforcement action not found.');
 
-    this.policy.assertCanAppealEnforcement(
-      action.appealStatus,
-      action.targetPersonId,
-      callerPersonId,
-    );
+    const entitledAppellant = await this.backOffice.resolveEnforcementAppellant(action);
+    this.policy.assertCanAppealEnforcement(action.appealStatus, entitledAppellant, callerPersonId);
 
     const updated = await this.backOffice.requestEnforcementAppeal(actionId, reason);
 
@@ -429,10 +396,6 @@ export class FraudCaseService {
       appealDecidedById: deciderPersonId,
     });
 
-    if (decision === 'OVERTURN') {
-      await this.reverseEnforcementEffect(action);
-    }
-
     await this.audit.record({
       actorId: deciderPersonId,
       action: 'EnforcementActionAppealDecided',
@@ -444,38 +407,6 @@ export class FraudCaseService {
     });
 
     return updated;
-  }
-
-  private async reverseEnforcementEffect(action: {
-    type: EnforcementActionType;
-    targetType: EnforcementTargetType;
-    targetPersonId: string | null;
-    targetBuildingId: string | null;
-    targetMembershipId: string | null;
-  }): Promise<void> {
-    if (action.type === 'ACCOUNT_SUSPENSION' && action.targetPersonId) {
-      await this.backOffice.reinstatePerson(action.targetPersonId);
-      return;
-    }
-    if (
-      action.type === 'VERIFICATION_REVOCATION' &&
-      action.targetType === 'BUILDING' &&
-      action.targetBuildingId
-    ) {
-      await this.buildings.updateBuildingStatus(action.targetBuildingId, 'VERIFIED');
-      return;
-    }
-    if (
-      action.type === 'VERIFICATION_REVOCATION' &&
-      action.targetType === 'MANAGER_CLAIM' &&
-      action.targetMembershipId &&
-      action.targetBuildingId
-    ) {
-      await this.buildings.verifyManagerMembership(action.targetMembershipId);
-      await this.buildings.setRecoveryMode(action.targetBuildingId, false);
-      return;
-    }
-    // WARNING / TEMPORARY_RESTRICTION: nothing was system-enforced, nothing to reverse.
   }
 
   /** 21_ADRs > ADR-050 — 07.03 Rule 020's staff-facing fraud metrics, see `BackOfficeRepository.getFraudCaseMetrics` for exactly what's computed and how. */

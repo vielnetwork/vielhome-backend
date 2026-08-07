@@ -53,17 +53,17 @@ export class FraudCasePolicy {
    */
   assertCanAppealEnforcement(
     appealStatus: EnforcementAppealStatus,
-    targetPersonId: string | null,
+    entitledAppellantId: string | null,
     callerPersonId: string,
   ): void {
+    if (!entitledAppellantId || entitledAppellantId !== callerPersonId) {
+      throw new AuthorizationError(
+        'Only the person an enforcement action was issued against may appeal it.',
+      );
+    }
     if (appealStatus !== 'NONE') {
       throw new BusinessRuleViolationError(
         `This enforcement action already has an appeal (status: ${appealStatus}).`,
-      );
-    }
-    if (targetPersonId !== callerPersonId) {
-      throw new AuthorizationError(
-        'Only the person an enforcement action was issued against may appeal it.',
       );
     }
   }

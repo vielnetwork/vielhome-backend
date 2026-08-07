@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type {
   BuildingStatus,
   BuildingVerificationDecision,
@@ -23,6 +24,7 @@ import type {
   VerificationPriority,
 } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
+import { ConflictError } from '../../../../common/errors/app-error';
 
 @Injectable()
 export class BackOfficeRepository {
@@ -314,25 +316,28 @@ export class BackOfficeRepository {
     return { items, total };
   }
 
-  assignFraudCase(id: string, assignedToId: string) {
-    return this.prisma.fraudCase.update({
-      where: { id },
+  async assignFraudCase(id: string, assignedToId: string, expectedStatus: FraudCaseStatus) {
+    const result = await this.prisma.fraudCase.updateMany({
+      where: { id, status: expectedStatus },
       data: { assignedToId, status: 'UNDER_INVESTIGATION' },
     });
+    if (result.count !== 1) throw new ConflictError('Fraud case status changed; reload and retry.');
+    return this.prisma.fraudCase.findUniqueOrThrow({ where: { id } });
   }
 
   addFraudCaseEvidence(id: string, evidenceNotes: string) {
     return this.prisma.fraudCase.update({ where: { id }, data: { evidenceNotes } });
   }
 
-  decideFraudCase(params: {
+  async decideFraudCase(params: {
     id: string;
     status: FraudCaseStatus;
     reviewedById: string;
     reason?: string;
+    expectedStatus: FraudCaseStatus;
   }) {
-    return this.prisma.fraudCase.update({
-      where: { id: params.id },
+    const result = await this.prisma.fraudCase.updateMany({
+      where: { id: params.id, status: params.expectedStatus },
       data: {
         status: params.status,
         reviewedById: params.reviewedById,
@@ -340,9 +345,11 @@ export class BackOfficeRepository {
         decidedAt: new Date(),
       },
     });
+    if (result.count !== 1) throw new ConflictError('Fraud case status changed; reload and retry.');
+    return this.prisma.fraudCase.findUniqueOrThrow({ where: { id: params.id } });
   }
 
-  createEnforcementAction(params: {
+  async createEnforcementActionWithEffect(params: {
     fraudCaseId: string;
     type: EnforcementActionType;
     targetType: EnforcementTargetType;
@@ -351,19 +358,82 @@ export class BackOfficeRepository {
     targetMembershipId?: string;
     reason?: string;
     issuedById: string;
+    idempotencyKey: string;
   }) {
-    return this.prisma.enforcementAction.create({
-      data: {
-        fraudCaseId: params.fraudCaseId,
-        type: params.type,
-        targetType: params.targetType,
-        targetPersonId: params.targetPersonId,
-        targetBuildingId: params.targetBuildingId,
-        targetMembershipId: params.targetMembershipId,
-        reason: params.reason,
-        issuedById: params.issuedById,
-      },
+    const existing = await this.prisma.enforcementAction.findUnique({
+      where: { idempotencyKey: params.idempotencyKey },
     });
+    if (existing) return { action: existing, created: false };
+
+    try {
+      const action = await this.prisma.$transaction(async (tx) => {
+        let previousTargetState: string | undefined;
+        let effectApplied = false;
+        if (params.type === 'ACCOUNT_SUSPENSION' && params.targetPersonId) {
+          const target = await tx.person.findUniqueOrThrow({ where: { id: params.targetPersonId } });
+          previousTargetState = JSON.stringify({ isSuspended: target.isSuspended });
+          await tx.person.update({ where: { id: target.id }, data: { isSuspended: true } });
+          effectApplied = true;
+        } else if (
+          params.type === 'VERIFICATION_REVOCATION' &&
+          params.targetType === 'BUILDING' &&
+          params.targetBuildingId
+        ) {
+          const target = await tx.building.findUniqueOrThrow({ where: { id: params.targetBuildingId } });
+          previousTargetState = JSON.stringify({ status: target.status });
+          await tx.building.update({ where: { id: target.id }, data: { status: 'REJECTED' } });
+          effectApplied = true;
+        } else if (
+          params.type === 'VERIFICATION_REVOCATION' &&
+          params.targetType === 'MANAGER_CLAIM' &&
+          params.targetMembershipId &&
+          params.targetBuildingId
+        ) {
+          const [membership, building] = await Promise.all([
+            tx.membership.findUniqueOrThrow({ where: { id: params.targetMembershipId } }),
+            tx.building.findUniqueOrThrow({ where: { id: params.targetBuildingId } }),
+          ]);
+          previousTargetState = JSON.stringify({
+            managerState: membership.managerState,
+            recoveryModeEnteredAt: building.recoveryModeEnteredAt,
+          });
+          await tx.membership.update({
+            where: { id: membership.id },
+            data: { managerState: 'SUSPENDED' },
+          });
+          await tx.building.update({
+            where: { id: building.id },
+            data: { recoveryModeEnteredAt: new Date() },
+          });
+          effectApplied = true;
+        }
+
+        return tx.enforcementAction.create({
+          data: {
+            fraudCaseId: params.fraudCaseId,
+            type: params.type,
+            targetType: params.targetType,
+            targetPersonId: params.targetPersonId,
+            targetBuildingId: params.targetBuildingId,
+            targetMembershipId: params.targetMembershipId,
+            reason: params.reason,
+            issuedById: params.issuedById,
+            idempotencyKey: params.idempotencyKey,
+            effectApplied,
+            previousTargetState,
+          },
+        });
+      });
+      return { action, created: true };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const action = await this.prisma.enforcementAction.findUniqueOrThrow({
+          where: { idempotencyKey: params.idempotencyKey },
+        });
+        return { action, created: false };
+      }
+      throw error;
+    }
   }
 
   findEnforcementActionById(id: string) {
@@ -377,25 +447,45 @@ export class BackOfficeRepository {
     });
   }
 
-  requestEnforcementAppeal(id: string, appealReason?: string) {
-    return this.prisma.enforcementAction.update({
-      where: { id },
+  async requestEnforcementAppeal(id: string, appealReason?: string) {
+    const result = await this.prisma.enforcementAction.updateMany({
+      where: { id, appealStatus: 'NONE' },
       data: { appealStatus: 'PENDING', appealReason, appealedAt: new Date() },
     });
+    if (result.count !== 1) throw new ConflictError('Enforcement appeal status changed; reload and retry.');
+    return this.prisma.enforcementAction.findUniqueOrThrow({ where: { id } });
   }
 
-  decideEnforcementAppeal(params: {
+  async decideEnforcementAppeal(params: {
     id: string;
     appealStatus: EnforcementAppealStatus;
     appealDecidedById: string;
   }) {
-    return this.prisma.enforcementAction.update({
-      where: { id: params.id },
-      data: {
-        appealStatus: params.appealStatus,
-        appealDecidedById: params.appealDecidedById,
-        appealDecidedAt: new Date(),
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const action = await tx.enforcementAction.findUniqueOrThrow({ where: { id: params.id } });
+      const changed = await tx.enforcementAction.updateMany({
+        where: { id: params.id, appealStatus: 'PENDING' },
+        data: {
+          appealStatus: params.appealStatus,
+          appealDecidedById: params.appealDecidedById,
+          appealDecidedAt: new Date(),
+        },
+      });
+      if (changed.count !== 1) throw new ConflictError('Enforcement appeal status changed; reload and retry.');
+
+      if (params.appealStatus === 'OVERTURNED' && action.effectApplied && !action.effectReversedAt) {
+        const previous = action.previousTargetState ? JSON.parse(action.previousTargetState) : {};
+        if (action.type === 'ACCOUNT_SUSPENSION' && action.targetPersonId) {
+          await tx.person.update({ where: { id: action.targetPersonId }, data: { isSuspended: previous.isSuspended } });
+        } else if (action.type === 'VERIFICATION_REVOCATION' && action.targetType === 'BUILDING' && action.targetBuildingId) {
+          await tx.building.update({ where: { id: action.targetBuildingId }, data: { status: previous.status } });
+        } else if (action.type === 'VERIFICATION_REVOCATION' && action.targetType === 'MANAGER_CLAIM' && action.targetMembershipId && action.targetBuildingId) {
+          await tx.membership.update({ where: { id: action.targetMembershipId }, data: { managerState: previous.managerState } });
+          await tx.building.update({ where: { id: action.targetBuildingId }, data: { recoveryModeEnteredAt: previous.recoveryModeEnteredAt } });
+        }
+        await tx.enforcementAction.update({ where: { id: params.id }, data: { effectReversedAt: new Date() } });
+      }
+      return tx.enforcementAction.findUniqueOrThrow({ where: { id: params.id } });
     });
   }
 
@@ -866,6 +956,41 @@ export class BackOfficeRepository {
     });
   }
 
+  findSupportCaseForOwner(id: string, createdById: string) {
+    return this.prisma.supportCase.findFirst({
+      where: { id, createdById },
+      include: {
+        createdBy: { select: { id: true, fullName: true, phone: true } },
+        assignedTo: { select: { id: true, fullName: true, phone: true } },
+        messages: { where: { isInternal: false }, orderBy: { createdAt: 'asc' } },
+      },
+    });
+  }
+
+  async resolveEnforcementAppellant(action: {
+    targetType: EnforcementTargetType;
+    targetPersonId: string | null;
+    targetBuildingId: string | null;
+    targetMembershipId: string | null;
+  }): Promise<string | null> {
+    if (action.targetType === 'PERSON') return action.targetPersonId;
+    if (action.targetType === 'MANAGER_CLAIM' && action.targetMembershipId) {
+      const membership = await this.prisma.membership.findUnique({
+        where: { id: action.targetMembershipId },
+        select: { personId: true },
+      });
+      return membership?.personId ?? null;
+    }
+    if (action.targetType === 'BUILDING' && action.targetBuildingId) {
+      const building = await this.prisma.building.findUnique({
+        where: { id: action.targetBuildingId },
+        select: { createdById: true },
+      });
+      return building?.createdById ?? null;
+    }
+    return null;
+  }
+
   /** 21_ADRs > ADR-072 — paginated (08_API_Architecture > Pagination); this is a platform-wide, unbounded queue (`27_Performance_Review_v1.0` §1.3). */
   async listSupportCases(
     filters: {
@@ -902,11 +1027,13 @@ export class BackOfficeRepository {
     });
   }
 
-  assignSupportCase(id: string, assignedToId: string) {
-    return this.prisma.supportCase.update({
-      where: { id },
+  async assignSupportCase(id: string, assignedToId: string, expectedStatus: CaseStatus) {
+    const result = await this.prisma.supportCase.updateMany({
+      where: { id, status: expectedStatus },
       data: { assignedToId, status: 'IN_PROGRESS' },
     });
+    if (result.count !== 1) throw new ConflictError('Support case status changed; reload and retry.');
+    return this.prisma.supportCase.findUniqueOrThrow({ where: { id } });
   }
 
   updateSupportCaseStatus(id: string, status: CaseStatus) {
@@ -920,13 +1047,14 @@ export class BackOfficeRepository {
     });
   }
 
-  resolveSupportCase(params: {
+  async resolveSupportCase(params: {
     id: string;
     resolutionCode: SupportCaseResolutionCode;
     resolution?: string;
+    expectedStatus: CaseStatus;
   }) {
-    return this.prisma.supportCase.update({
-      where: { id: params.id },
+    const result = await this.prisma.supportCase.updateMany({
+      where: { id: params.id, status: params.expectedStatus },
       data: {
         status: 'RESOLVED',
         resolutionCode: params.resolutionCode,
@@ -934,24 +1062,30 @@ export class BackOfficeRepository {
         resolvedAt: new Date(),
       },
     });
+    if (result.count !== 1) throw new ConflictError('Support case status changed; reload and retry.');
+    return this.prisma.supportCase.findUniqueOrThrow({ where: { id: params.id } });
   }
 
-  reopenSupportCase(id: string) {
-    return this.prisma.supportCase.update({
-      where: { id },
+  async reopenSupportCase(id: string, expectedStatus: CaseStatus) {
+    const result = await this.prisma.supportCase.updateMany({
+      where: { id, status: expectedStatus },
       data: { status: 'OPEN', resolvedAt: null, closedAt: null },
     });
+    if (result.count !== 1) throw new ConflictError('Support case status changed; reload and retry.');
+    return this.prisma.supportCase.findUniqueOrThrow({ where: { id } });
   }
 
   escalateSupportCasePriority(id: string, priority: VerificationPriority) {
     return this.prisma.supportCase.update({ where: { id }, data: { priority } });
   }
 
-  mergeSupportCase(id: string, mergedIntoId: string) {
-    return this.prisma.supportCase.update({
-      where: { id },
+  async mergeSupportCase(id: string, mergedIntoId: string, expectedStatus: CaseStatus) {
+    const result = await this.prisma.supportCase.updateMany({
+      where: { id, status: expectedStatus, mergedIntoId: null },
       data: { mergedIntoId, status: 'CLOSED', closedAt: new Date() },
     });
+    if (result.count !== 1) throw new ConflictError('Support case changed or was already merged.');
+    return this.prisma.supportCase.findUniqueOrThrow({ where: { id } });
   }
 
   addSupportCaseMessage(params: {
@@ -1188,6 +1322,7 @@ export class BackOfficeRepository {
     description: string;
     isAutoDetected?: boolean;
     openedById?: string;
+    activeDetectionKey?: string;
   }) {
     return this.prisma.complianceCase.create({
       data: {
@@ -1201,8 +1336,28 @@ export class BackOfficeRepository {
         description: params.description,
         isAutoDetected: params.isAutoDetected ?? false,
         openedById: params.openedById,
+        activeDetectionKey: params.activeDetectionKey,
       },
     });
+  }
+
+  async createAutoDetectedComplianceCase(params: {
+    category: ComplianceCaseCategory;
+    subjectActorId: string;
+    description: string;
+  }) {
+    try {
+      return await this.createComplianceCase({
+        ...params,
+        isAutoDetected: true,
+        activeDetectionKey: `${params.category}:${params.subjectActorId}`,
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        return null;
+      }
+      throw error;
+    }
   }
 
   findComplianceCaseById(id: string) {
@@ -1239,35 +1394,34 @@ export class BackOfficeRepository {
     return { items, total };
   }
 
-  /** Used by `detectAnomalies` to avoid opening a duplicate case for the same still-open pattern. */
-  findOpenComplianceCaseFor(category: ComplianceCaseCategory, subjectActorId: string) {
-    return this.prisma.complianceCase.findFirst({
-      where: { category, subjectActorId, status: { in: ['OPEN', 'UNDER_INVESTIGATION'] } },
-    });
-  }
-
-  assignComplianceCase(id: string, assignedToId: string) {
-    return this.prisma.complianceCase.update({
-      where: { id },
+  async assignComplianceCase(id: string, assignedToId: string, expectedStatus: FraudCaseStatus) {
+    const result = await this.prisma.complianceCase.updateMany({
+      where: { id, status: expectedStatus },
       data: { assignedToId, status: 'UNDER_INVESTIGATION' },
     });
+    if (result.count !== 1) throw new ConflictError('Compliance case status changed; reload and retry.');
+    return this.prisma.complianceCase.findUniqueOrThrow({ where: { id } });
   }
 
-  decideComplianceCase(params: {
+  async decideComplianceCase(params: {
     id: string;
     status: FraudCaseStatus;
     decidedById: string;
     decisionReason?: string;
+    expectedStatus: FraudCaseStatus;
   }) {
-    return this.prisma.complianceCase.update({
-      where: { id: params.id },
+    const result = await this.prisma.complianceCase.updateMany({
+      where: { id: params.id, status: params.expectedStatus },
       data: {
         status: params.status,
         decidedById: params.decidedById,
         decisionReason: params.decisionReason,
         decidedAt: new Date(),
+        activeDetectionKey: null,
       },
     });
+    if (result.count !== 1) throw new ConflictError('Compliance case status changed; reload and retry.');
+    return this.prisma.complianceCase.findUniqueOrThrow({ where: { id: params.id } });
   }
 
   // Heuristics for `ComplianceCaseService.detectAnomalies` — one honest,

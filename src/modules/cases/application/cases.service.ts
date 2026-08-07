@@ -159,12 +159,12 @@ export class CasesService {
     requestId: string,
   ) {
     const found = await this.getCaseOrThrow(buildingId, caseId);
-    this.policy.assertNotClosed(found.status);
+    this.policy.assertAssignableStatus(found.status);
 
     const assigneeRoles = await this.buildings.getRoles(dto.assignedToId, buildingId);
-    if (assigneeRoles.length === 0) {
+    if (!assigneeRoles.some((role) => PRIVILEGED_ROLES.includes(role))) {
       throw new BusinessRuleViolationError(
-        'The assignee must be a current member of this building.',
+        'The assignee must be a current Manager, Board Member, or Accountant of this building.',
       );
     }
     this.policy.assertAssignable(found.isAgainstManager, assigneeRoles.includes('MANAGER'));
@@ -174,6 +174,7 @@ export class CasesService {
       assignedToId: dto.assignedToId,
       assignedById: actorPersonId,
       note: dto.note,
+      expectedStatus: found.status,
     });
 
     await this.audit.record({
@@ -207,6 +208,7 @@ export class CasesService {
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
     this.policy.assertVisible(found, actorPersonId, privileged);
     this.policy.assertCanPostInternalMessage(dto.isInternal ?? false, privileged);
+    this.policy.assertMessageable(found.status);
 
     const message = await this.cases.createMessage({
       caseId,
@@ -248,7 +250,7 @@ export class CasesService {
     const found = await this.getCaseOrThrow(buildingId, caseId);
     this.policy.assertResolvable(found.status);
 
-    const updated = await this.cases.resolveCase(caseId, dto.resolutionCode);
+    const updated = await this.cases.resolveCase(caseId, found.status, dto.resolutionCode);
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -307,7 +309,7 @@ export class CasesService {
     }
     this.policy.assertReopenable(found.status);
 
-    const updated = await this.cases.reopenCase(caseId);
+    const updated = await this.cases.reopenCase(caseId, found.status);
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -349,9 +351,12 @@ export class CasesService {
     }
     const found = await this.getCaseOrThrow(buildingId, caseId);
     this.policy.assertNotClosed(found.status);
-    await this.getCaseOrThrow(buildingId, dto.intoCaseId); // 404s if the target doesn't exist or belongs to another building
+    const target = await this.getCaseOrThrow(buildingId, dto.intoCaseId);
+    if (target.mergedIntoId) throw new ValidationError('Cannot merge into a case that is already merged.');
+    if (target.status === 'CLOSED') throw new ValidationError('Cannot merge into a closed case.');
+    if (target.mergedIntoId === caseId) throw new ValidationError('This merge would create a cycle.');
 
-    const updated = await this.cases.mergeCase(caseId, dto.intoCaseId);
+    const updated = await this.cases.mergeCase(caseId, dto.intoCaseId, found.status);
 
     await this.audit.record({
       actorId: actorPersonId,

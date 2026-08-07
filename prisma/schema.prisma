@@ -3008,6 +3008,10 @@ model EnforcementAction {
   appealDecidedById  String?
   appealDecidedBy    Person?                 @relation("EnforcementActionAppealDecidedBy", fields: [appealDecidedById], references: [id])
   appealDecidedAt    DateTime?
+  idempotencyKey     String?                 @unique
+  effectApplied      Boolean                 @default(false)
+  previousTargetState String?
+  effectReversedAt   DateTime?
 
   @@index([fraudCaseId])
   @@index([targetPersonId])
@@ -3434,6 +3438,7 @@ model ComplianceCase {
   // member opens it by hand. `openedById` is null exactly when
   // `isAutoDetected` is true.
   isAutoDetected Boolean @default(false)
+  activeDetectionKey String? @unique
   openedById     String?
   openedBy       Person? @relation("ComplianceCaseOpenedBy", fields: [openedById], references: [id])
 

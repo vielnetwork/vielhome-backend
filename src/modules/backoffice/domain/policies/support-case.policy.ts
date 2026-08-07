@@ -15,10 +15,10 @@ const PRIORITY_ORDER: VerificationPriority[] = ['LOW', 'NORMAL', 'HIGH', 'CRITIC
  */
 @Injectable()
 export class SupportCasePolicy {
-  /** A ticket may be worked (assigned/messaged/escalated/resolved) unless it's already CLOSED. RESOLVED still allows a reply before closing. */
+  /** Only a non-terminal ticket may be worked. RESOLVED/CLOSED require an explicit reopen. */
   assertActionable(status: CaseStatus): void {
-    if (status === 'CLOSED') {
-      throw new BusinessRuleViolationError('This support case is closed.');
+    if (CLOSED_STATUSES.includes(status)) {
+      throw new BusinessRuleViolationError('This support case is resolved or closed. Reopen it first.');
     }
   }
 

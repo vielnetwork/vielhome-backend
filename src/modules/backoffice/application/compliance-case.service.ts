@@ -4,6 +4,8 @@ import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.
 import { ComplianceCasePolicy } from '../domain/policies/compliance-case.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
+import { ValidationError } from '../../../common/errors/app-error';
+import { PermissionResolverService } from '../../backoffice-rbac/application/permission-resolver.service';
 import {
   buildPaginationMeta,
   toSkipTake,
@@ -32,6 +34,7 @@ export class ComplianceCaseService {
     private readonly backOffice: BackOfficeRepository,
     private readonly policy: ComplianceCasePolicy,
     private readonly audit: AuditService,
+    private readonly permissions: PermissionResolverService,
   ) {}
 
   async open(
@@ -103,8 +106,14 @@ export class ComplianceCaseService {
   async assign(caseId: string, assignedToId: string, actorPersonId: string, requestId: string) {
     const kase = await this.getCase(caseId);
     this.policy.assertInvestigable(kase.status);
+    const granted = await this.permissions.resolve(assignedToId);
+    if (!granted.has('COMPLIANCE_MANAGE')) {
+      throw new ValidationError(
+        'The assignee must be active platform staff with COMPLIANCE_MANAGE.',
+      );
+    }
 
-    const updated = await this.backOffice.assignComplianceCase(caseId, assignedToId);
+    const updated = await this.backOffice.assignComplianceCase(caseId, assignedToId, kase.status);
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -134,6 +143,7 @@ export class ComplianceCaseService {
       status,
       decidedById: deciderPersonId,
       decisionReason: reason,
+      expectedStatus: kase.status,
     });
 
     await this.audit.record({
@@ -163,21 +173,15 @@ export class ComplianceCaseService {
       await this.backOffice.findPersonsWithRepeatedConfirmedFraud(REPEATED_FRAUD_THRESHOLD);
     for (const g of fraudGroups) {
       if (!g.targetPersonId) continue;
-      const existing = await this.backOffice.findOpenComplianceCaseFor(
-        'REPEATED_FRAUD',
-        g.targetPersonId,
-      );
-      if (existing) continue;
-      created.push(
-        await this.autoOpen(
+      const opened = await this.autoOpen(
           'REPEATED_FRAUD',
           g.targetPersonId,
           g._count.targetPersonId,
           staffPersonId,
           requestId,
           'CONFIRMED fraud cases',
-        ),
-      );
+        );
+      if (opened) created.push(opened);
     }
 
     const suspensionGroups = await this.backOffice.findPersonsWithRepeatedSuspensions(
@@ -185,21 +189,15 @@ export class ComplianceCaseService {
     );
     for (const g of suspensionGroups) {
       if (!g.targetPersonId) continue;
-      const existing = await this.backOffice.findOpenComplianceCaseFor(
-        'REPEATED_SUSPENSION',
-        g.targetPersonId,
-      );
-      if (existing) continue;
-      created.push(
-        await this.autoOpen(
+      const opened = await this.autoOpen(
           'REPEATED_SUSPENSION',
           g.targetPersonId,
           g._count.targetPersonId,
           staffPersonId,
           requestId,
           'ACCOUNT_SUSPENSION enforcement actions',
-        ),
-      );
+        );
+      if (opened) created.push(opened);
     }
 
     const financialGroups = await this.backOffice.findActorsWithRepeatedRejectedPayments(
@@ -207,21 +205,15 @@ export class ComplianceCaseService {
     );
     for (const g of financialGroups) {
       if (!g.actorId) continue;
-      const existing = await this.backOffice.findOpenComplianceCaseFor(
-        'FINANCIAL_ANOMALY',
-        g.actorId,
-      );
-      if (existing) continue;
-      created.push(
-        await this.autoOpen(
+      const opened = await this.autoOpen(
           'FINANCIAL_ANOMALY',
           g.actorId,
           g._count.actorId,
           staffPersonId,
           requestId,
           'rejected-payment audit events',
-        ),
-      );
+        );
+      if (opened) created.push(opened);
     }
 
     return created;
@@ -235,12 +227,12 @@ export class ComplianceCaseService {
     requestId: string,
     describedAs: string,
   ) {
-    const kase = await this.backOffice.createComplianceCase({
+    const kase = await this.backOffice.createAutoDetectedComplianceCase({
       category,
       subjectActorId,
       description: `Auto-detected: ${count} ${describedAs} for this actor.`,
-      isAutoDetected: true,
     });
+    if (!kase) return null;
 
     await this.audit.record({
       actorId: staffPersonId,

@@ -1053,6 +1053,7 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     const res = await request(app.getHttpServer())
       .post(`/api/v1/backoffice/fraud-cases/${caseSuspendId}/enforce`)
       .set('Authorization', `Bearer ${admin.accessToken}`)
+      .set('X-Request-Id', 'fraud-enforcement-idempotency-e2e')
       .send({
         type: 'ACCOUNT_SUSPENSION',
         targetType: 'PERSON',
@@ -1064,20 +1065,42 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     suspensionActionId = res.body.data.id;
     expect(res.body.data.appealStatus).toBe('NONE');
 
+    const replay = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/fraud-cases/${caseSuspendId}/enforce`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .set('X-Request-Id', 'fraud-enforcement-idempotency-e2e')
+      .send({
+        type: 'ACCOUNT_SUSPENSION',
+        targetType: 'PERSON',
+        targetPersonId: targetSuspend.personId,
+        reason: 'Confirmed multi-accounting fraud.',
+      })
+      .expect(201);
+    expect(replay.body.data.id).toBe(suspensionActionId);
+    expect(
+      await prisma.enforcementAction.count({
+        where: { idempotencyKey: `${caseSuspendId}:fraud-enforcement-idempotency-e2e` },
+      }),
+    ).toBe(1);
+
     const person = await waitFor(() =>
       prisma.person.findUnique({ where: { id: targetSuspend.personId } }),
     );
     expect(person?.isSuspended).toBe(true);
   });
 
-  it("blocks the suspended person's own token on the appeal route itself (403)", async () => {
+  it("keeps the suspended person's token blocked on ordinary APIs but permits their own appeal", async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/support-cases/me')
+      .set('Authorization', `Bearer ${targetSuspend.accessToken}`)
+      .expect(403);
+
     const res = await request(app.getHttpServer())
       .post(`/api/v1/fraud-reports/enforcement-actions/${suspensionActionId}/appeal`)
       .set('Authorization', `Bearer ${targetSuspend.accessToken}`)
       .send({ reason: 'This is a mistake, I only have one account.' })
-      .expect(403);
-
-    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+      .expect(201);
+    expect(res.body.data.appealStatus).toBe('PENDING');
   });
 
   it('rejects a different Person appealing on the suspended target’s behalf (403)', async () => {
@@ -1090,26 +1113,28 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Person (07.03, AD
     expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
 
-  it('confirms the appeal never reaches PENDING — stuck at NONE (direct read)', async () => {
+  it('persists the eligible suspension appeal as PENDING', async () => {
     const action = await prisma.enforcementAction.findUnique({
       where: { id: suspensionActionId },
     });
-    expect(action?.appealStatus).toBe('NONE');
+    expect(action?.appealStatus).toBe('PENDING');
   });
 
-  it('rejects deciding a never-requested appeal (422) — reversal is unreachable', async () => {
-    const res = await request(app.getHttpServer())
+  it('overturns a requested suspension appeal and restores ordinary access', async () => {
+    await request(app.getHttpServer())
       .post(
         `/api/v1/backoffice/fraud-cases/enforcement-actions/${suspensionActionId}/appeal-decision`,
       )
       .set('Authorization', `Bearer ${admin.accessToken}`)
       .send({ decision: 'OVERTURN' })
-      .expect(422);
-
-    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+      .expect(201);
+    await request(app.getHttpServer())
+      .get('/api/v1/support-cases/me')
+      .set('Authorization', `Bearer ${targetSuspend.accessToken}`)
+      .expect(200);
 
     const person = await prisma.person.findUnique({ where: { id: targetSuspend.personId } });
-    expect(person?.isSuspended).toBe(true);
+    expect(person?.isSuspended).toBe(false);
   });
 
   it('SENIOR_REVIEWER issues a record-only WARNING against a never-suspended target', async () => {
@@ -1261,30 +1286,26 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Building (07.03)'
     expect(building?.status).toBe('REJECTED');
   });
 
-  it("rejects the building founder's appeal — no targetPersonId (403)", async () => {
+  it("allows the sanctioned building's founder to appeal", async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/fraud-reports/enforcement-actions/${actionId}/appeal`)
       .set('Authorization', `Bearer ${founder.accessToken}`)
       .send({ reason: 'My building is legitimate.' })
-      .expect(403);
-
-    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+      .expect(201);
   });
 
-  it('confirms appealStatus is permanently stuck at NONE for a BUILDING-target', async () => {
+  it('persists a building-target appeal as PENDING', async () => {
     const action = await prisma.enforcementAction.findUnique({ where: { id: actionId } });
     expect(action?.targetPersonId).toBeNull();
-    expect(action?.appealStatus).toBe('NONE');
+    expect(action?.appealStatus).toBe('PENDING');
   });
 
-  it('rejects deciding a never-requested appeal (422) — reversal is dead code', async () => {
-    const res = await request(app.getHttpServer())
+  it('allows staff to overturn the requested building appeal', async () => {
+    await request(app.getHttpServer())
       .post(`/api/v1/backoffice/fraud-cases/enforcement-actions/${actionId}/appeal-decision`)
       .set('Authorization', `Bearer ${admin.accessToken}`)
       .send({ decision: 'OVERTURN' })
-      .expect(422);
-
-    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+      .expect(201);
   });
 });
 
@@ -1429,27 +1450,23 @@ describe('Fraud & Abuse Center (e2e) — Enforcement Against a Manager Claim (07
     expect(building?.recoveryModeEnteredAt).not.toBeNull();
   });
 
-  it("rejects the manager's appeal — no targetPersonId on this action either (403)", async () => {
+  it("allows the sanctioned membership's manager to appeal", async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/fraud-reports/enforcement-actions/${actionId}/appeal`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({ reason: 'My management of this building is legitimate.' })
-      .expect(403);
-
-    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+      .expect(201);
   });
 
-  it('rejects deciding a never-requested appeal (422) — reversal is dead code', async () => {
-    const res = await request(app.getHttpServer())
+  it('allows staff to overturn the requested manager-claim appeal', async () => {
+    await request(app.getHttpServer())
       .post(`/api/v1/backoffice/fraud-cases/enforcement-actions/${actionId}/appeal-decision`)
       .set('Authorization', `Bearer ${admin.accessToken}`)
       .send({ decision: 'OVERTURN' })
-      .expect(422);
-
-    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+      .expect(201);
 
     const membership = await prisma.membership.findUnique({ where: { id: membershipId } });
-    expect(membership?.managerState).toBe('SUSPENDED');
+    expect(membership?.managerState).toBe('PROVISIONAL');
   });
 });
 

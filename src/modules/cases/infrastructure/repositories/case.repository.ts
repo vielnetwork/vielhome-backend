@@ -7,6 +7,7 @@ import {
   CaseVisibility,
 } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
+import { ConflictError } from '../../../../common/errors/app-error';
 
 @Injectable()
 export class CaseRepository {
@@ -69,12 +70,15 @@ export class CaseRepository {
     assignedToId: string;
     assignedById: string;
     note?: string;
+    expectedStatus: CaseStatus;
   }) {
     return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.case.update({
-        where: { id: params.caseId },
+      const claimed = await tx.case.updateMany({
+        where: { id: params.caseId, status: params.expectedStatus },
         data: { assigneeId: params.assignedToId, status: 'IN_PROGRESS' },
       });
+      if (claimed.count !== 1) throw new ConflictError('Case status changed; reload and retry.');
+      const updated = await tx.case.findUniqueOrThrow({ where: { id: params.caseId } });
       const assignment = await tx.caseAssignment.create({
         data: {
           caseId: params.caseId,
@@ -107,32 +111,38 @@ export class CaseRepository {
     return this.prisma.caseMessage.findMany({ where: { caseId }, orderBy: { createdAt: 'asc' } });
   }
 
-  resolveCase(id: string, resolutionCode: CaseResolutionCode) {
-    return this.prisma.case.update({
-      where: { id },
-      data: { status: 'RESOLVED', resolutionCode },
+  async resolveCase(id: string, expectedStatus: CaseStatus, resolutionCode: CaseResolutionCode) {
+    const result = await this.prisma.case.updateMany({
+      where: { id, status: expectedStatus }, data: { status: 'RESOLVED', resolutionCode },
     });
+    if (result.count !== 1) throw new ConflictError('Case status changed; reload and retry.');
+    return this.prisma.case.findUniqueOrThrow({ where: { id } });
   }
 
-  closeCase(id: string) {
-    return this.prisma.case.update({
-      where: { id },
-      data: { status: 'CLOSED', closedAt: new Date() },
+  async closeCase(id: string) {
+    const result = await this.prisma.case.updateMany({
+      where: { id, status: 'RESOLVED' }, data: { status: 'CLOSED', closedAt: new Date() },
     });
+    if (result.count !== 1) throw new ConflictError('Case is no longer resolved.');
+    return this.prisma.case.findUniqueOrThrow({ where: { id } });
   }
 
-  reopenCase(id: string) {
-    return this.prisma.case.update({
-      where: { id },
+  async reopenCase(id: string, expectedStatus: CaseStatus) {
+    const result = await this.prisma.case.updateMany({
+      where: { id, status: expectedStatus },
       data: { status: 'OPEN', closedAt: null, resolutionCode: null },
     });
+    if (result.count !== 1) throw new ConflictError('Case status changed; reload and retry.');
+    return this.prisma.case.findUniqueOrThrow({ where: { id } });
   }
 
   /** 08.08 Rule 016 — merges this case into another, closing this one. Mirrors `BackOfficeRepository.mergeSupportCase` (ADR-032). */
-  mergeCase(id: string, mergedIntoId: string) {
-    return this.prisma.case.update({
-      where: { id },
+  async mergeCase(id: string, mergedIntoId: string, expectedStatus: CaseStatus) {
+    const result = await this.prisma.case.updateMany({
+      where: { id, status: expectedStatus, mergedIntoId: null },
       data: { mergedIntoId, status: 'CLOSED', closedAt: new Date() },
     });
+    if (result.count !== 1) throw new ConflictError('Case status changed or was already merged.');
+    return this.prisma.case.findUniqueOrThrow({ where: { id } });
   }
 }

@@ -12,7 +12,7 @@ import { RequiresPermission } from '../../../common/decorators/requires-permissi
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
-import { parsePagination } from '../../../common/pagination/pagination.util';
+import { assertCaseFilter, parseCasePagination } from '../application/case-query.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
 /**
@@ -56,9 +56,12 @@ export class ComplianceCaseController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
+    assertCaseFilter(status, ['OPEN', 'UNDER_INVESTIGATION', 'CONFIRMED', 'DISMISSED'], 'status');
+    assertCaseFilter(priority, ['LOW', 'NORMAL', 'HIGH', 'URGENT'], 'priority');
+    assertCaseFilter(category, ['REPEATED_FRAUD', 'REPEATED_SUSPENSION', 'FINANCIAL_ANOMALY', 'OTHER'], 'category');
     const { items, meta } = await this.service.listCases(
       { status, category, priority, assignedToId, subjectActorId },
-      parsePagination(page, limit),
+      parseCasePagination(page, limit),
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
   }

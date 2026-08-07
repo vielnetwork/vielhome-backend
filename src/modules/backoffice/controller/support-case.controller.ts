@@ -14,7 +14,7 @@ import { RequiresPermission } from '../../../common/decorators/requires-permissi
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
-import { parsePagination } from '../../../common/pagination/pagination.util';
+import { assertCaseFilter, parseCaseDateRange, parseCasePagination } from '../application/case-query.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
 /**
@@ -48,10 +48,8 @@ export class SupportCaseController {
   @PlatformRoles('SENIOR_REVIEWER')
   @RequiresPermission('SUPPORT_VIEW')
   getMetrics(@Query('fromDate') fromDate?: string, @Query('toDate') toDate?: string) {
-    return this.service.getMetrics(
-      fromDate ? new Date(fromDate) : undefined,
-      toDate ? new Date(toDate) : undefined,
-    );
+    const range = parseCaseDateRange(fromDate, toDate);
+    return this.service.getMetrics(range.fromDate, range.toDate);
   }
 
   /** 21_ADRs > ADR-072 — `page`/`limit` (08_API_Architecture > Pagination). */
@@ -66,9 +64,12 @@ export class SupportCaseController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
+    assertCaseFilter(status, ['OPEN', 'IN_PROGRESS', 'WAITING_USER', 'RESOLVED', 'CLOSED'], 'status');
+    assertCaseFilter(priority, ['LOW', 'NORMAL', 'HIGH', 'URGENT'], 'priority');
+    assertCaseFilter(category, ['TECHNICAL', 'BILLING', 'ACCOUNT', 'BUILDING', 'OTHER'], 'category');
     const { items, meta } = await this.service.listCases(
       { status, priority, category, assignedToId },
-      parsePagination(page, limit),
+      parseCasePagination(page, limit),
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
   }

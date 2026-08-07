@@ -513,7 +513,7 @@ describe('Support & Operations Center (e2e) — Member Lifecycle & Ownership Gat
     expect(res.body.data.status).toBe('WAITING_USER');
   });
 
-  it('staff adds an internal note — FINDING: the creator can see it too via GET', async () => {
+  it('staff internal notes are visible to staff but never returned to the creator', async () => {
     await request(app.getHttpServer())
       .post(`/api/v1/backoffice/support-cases/${caseId}/messages`)
       .set('Authorization', `Bearer ${reviewer.accessToken}`)
@@ -523,15 +523,24 @@ describe('Support & Operations Center (e2e) — Member Lifecycle & Ownership Gat
       })
       .expect(201);
 
-    const res = await request(app.getHttpServer())
+    const ownerRes = await request(app.getHttpServer())
       .get(`/api/v1/support-cases/${caseId}`)
       .set('Authorization', `Bearer ${reporter.accessToken}`)
       .expect(200);
 
-    const messages = res.body.data.messages as Array<{ body: string; isInternal: boolean }>;
-    const internalNote = messages.find((m) => m.body.startsWith('INTERNAL ONLY'));
-    expect(internalNote).toBeDefined();
-    expect(internalNote?.isInternal).toBe(true);
+    const ownerMessages = ownerRes.body.data.messages as Array<{ body: string; isInternal: boolean }>;
+    expect(ownerMessages.some((m) => m.body.startsWith('INTERNAL ONLY'))).toBe(false);
+    expect(ownerMessages.some((m) => m.body === 'Can you tell us your app version?')).toBe(true);
+
+    const staffRes = await request(app.getHttpServer())
+      .get(`/api/v1/backoffice/support-cases/${caseId}`)
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(200);
+    expect(
+      (staffRes.body.data.messages as Array<{ body: string }>).some((m) =>
+        m.body.startsWith('INTERNAL ONLY'),
+      ),
+    ).toBe(true);
   });
 
   it('the creator replies — client isInternal is ignored; status moves on', async () => {

@@ -42,6 +42,8 @@ import { MembershipGuard } from '../../common/guards/membership.guard';
 import { BuildingModule } from '../building/building.module';
 import { FinanceModule } from '../finance/finance.module';
 import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
+import { FraudAppealJwtStrategy } from './infrastructure/strategies/fraud-appeal-jwt.strategy';
+import { FraudAppealAuthGuard } from './infrastructure/guards/fraud-appeal-auth.guard';
 
 @Module({
   // Only BuildingModule — `BackOfficeEventListener` reacts to
@@ -105,6 +107,8 @@ import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module'
     PlatformRolesGuard,
     RolesGuard,
     MembershipGuard,
+    FraudAppealJwtStrategy,
+    FraudAppealAuthGuard,
   ],
   // SubscriptionService/ComplianceCaseService exported starting with
   // ADR-036 — `SchedulerModule`'s worker calls both directly to run their
