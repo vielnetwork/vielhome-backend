@@ -1,9 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import type { LeagueTier, XpReason } from '@prisma/client';
+import { LeagueTier } from '@prisma/client';
+import type { XpReason } from '@prisma/client';
 import { GamificationRepository } from '../infrastructure/repositories/gamification.repository';
 import { GamificationPolicy } from '../domain/policies/gamification.policy';
 import { AuditService } from '../../../common/audit/audit.service';
+import { ValidationError } from '../../../common/errors/app-error';
 import { XP_CATALOG } from '../domain/xp-catalog';
 import {
   AchievementUnlockedEvent,
@@ -19,10 +21,17 @@ export interface AwardXpInput {
   sourceEvent?: string;
   // 21_ADRs > ADR-041 — polymorphic reference to the entity this specific
   // award is tied to (e.g. `('PAYMENT', paymentId)`), so a later clawback
-  // can find it again. Optional — only CHARGE_PAID sets these today.
+  // can find it again. 21_ADRs > ADR-123 — also now the durable
+  // idempotency key for `awardXp` itself (see `XpTransaction`'s own
+  // `@@unique([referenceType, referenceId, reason])` schema comment).
+  // Optional — CHARGE_PAID/CHARGE_PAID_REVERSED and (as of ADR-123)
+  // CASE_RESOLVED set these; the other three XpReason values still don't
+  // (see that unique index's comment for why that's safe).
   referenceType?: string;
   referenceId?: string;
 }
+
+const VALID_LEAGUE_TIERS = new Set<string>(Object.values(LeagueTier));
 
 /**
  * The single entry point every domain event listener calls
@@ -35,7 +44,7 @@ export interface AwardXpInput {
  * Gamification Event -> ... -> Notification" pipeline.
  */
 @Injectable()
-export class GamificationService {
+export class GamificationService implements OnModuleInit {
   private readonly logger = new Logger(GamificationService.name);
 
   constructor(
@@ -45,10 +54,41 @@ export class GamificationService {
     private readonly events: EventEmitter2,
   ) {}
 
+  /**
+   * 21_ADRs > ADR-123 — proactive achievement-seed-integrity check, run
+   * once at boot. Deliberately logs and continues rather than throwing:
+   * a missing seed degrades achievement-unlocking only (XP awarding is
+   * unaffected — see `GamificationRepository.unlockAchievement`'s own doc
+   * comment), so it doesn't meet this codebase's existing "refuse to
+   * boot" bar (`main.ts`'s `CORS_ORIGINS` check is reserved for a genuine
+   * security gap, not a soft data-completeness one).
+   */
+  async onModuleInit(): Promise<void> {
+    const missing = await this.gamification.findMissingAchievementCodes();
+    if (missing.length > 0) {
+      this.logger.error(
+        `Gamification achievement seed is incomplete — no AchievementDefinition row exists for: ` +
+          `${missing.join(', ')}. Run 'prisma/seed.ts' (or an equivalent seed of ` +
+          `ACHIEVEMENT_SEED_DATA) in this environment. XP awarding is unaffected; achievement ` +
+          'unlocking for these codes will silently no-op until this is fixed (ADR-123).',
+      );
+    }
+  }
+
+  /**
+   * 21_ADRs > ADR-123 — when `input.referenceType`/`referenceId` are set
+   * (CHARGE_PAID, CHARGE_PAID_REVERSED, and now CASE_RESOLVED), a repeat
+   * call for the same reference+reason is caught by the repository's own
+   * DB-level uniqueness guarantee and returned here as a clean, logged
+   * no-op: no XpAwarded event, no audit record, no achievement/Building
+   * Score side effect fires a second time. This is what makes event
+   * replay — concretely, a Case being reopened and resolved again — safe
+   * by construction rather than by a best-effort pre-check.
+   */
   async awardXp(input: AwardXpInput): Promise<void> {
     const catalogEntry = XP_CATALOG[input.reason];
 
-    const { newBalance, isFirstOccurrence } = await this.gamification.awardXp({
+    const result = await this.gamification.awardXp({
       personId: input.personId,
       buildingId: input.buildingId,
       reason: input.reason,
@@ -57,6 +97,9 @@ export class GamificationService {
       referenceType: input.referenceType,
       referenceId: input.referenceId,
     });
+
+    if (!result.awarded) return;
+    const { newBalance, isFirstOccurrence } = result;
 
     await this.audit.record({
       actorId: input.personId,
@@ -136,10 +179,17 @@ export class GamificationService {
    * A no-op (not an error) when there's nothing to claw back — either no
    * CHARGE_PAID award exists for this reference (predates this feature,
    * or the payer's XP award failed silently for some other reason) or a
-   * clawback already happened for it (defensive idempotency guard; the
-   * two callers — PaymentReversed/PaymentRefunded — are already mutually
-   * exclusive terminal states per `PaymentPolicy`, so this should never
-   * actually fire twice in practice, but costs one extra read to be sure).
+   * clawback already happened for it. The `alreadyClawedBack` read below
+   * is a cheap early exit for the common case (the two callers —
+   * PaymentReversed/PaymentRefunded — are already mutually exclusive
+   * terminal states per `PaymentPolicy`, so this should never actually
+   * fire twice in practice), not the correctness guarantee itself: 21_ADRs
+   * > ADR-123 made `awardXp` itself idempotent against a duplicate
+   * `('PAYMENT', paymentId, 'CHARGE_PAID_REVERSED')` via the DB-level
+   * `@@unique` constraint, so even a genuine concurrent double-clawback
+   * attempt (both requests racing past this read before either writes)
+   * can no longer double-apply — the second attempt's `awardXp` call
+   * below resolves to a clean, logged no-op instead.
    */
   async clawbackChargePaidXp(params: { paymentId: string; sourceEvent?: string }): Promise<void> {
     const original = await this.gamification.findXpTransactionByReference(
@@ -233,8 +283,19 @@ export class GamificationService {
     return score ?? { buildingId, score: 0, leagueTier: 'BRONZE' as LeagueTier, updatedAt: null };
   }
 
-  getLeaderboard(tier?: LeagueTier) {
-    return this.gamification.listLeaderboard(tier);
+  /**
+   * 21_ADRs > ADR-123 — `tier`, if present, must be a real `LeagueTier`
+   * value. An invalid value is now a clean `ValidationError` (400)
+   * instead of silently reaching Prisma's `where` clause, which would
+   * just never match any row and return an empty (but 200 OK) list.
+   */
+  getLeaderboard(tier?: string) {
+    if (tier !== undefined && !VALID_LEAGUE_TIERS.has(tier)) {
+      throw new ValidationError(
+        `Invalid tier: "${tier}". Must be one of: ${Object.values(LeagueTier).join(', ')}.`,
+      );
+    }
+    return this.gamification.listLeaderboard(tier as LeagueTier | undefined);
   }
 
   /**
@@ -255,8 +316,27 @@ export class GamificationService {
    * threshold anywhere in 15_Gamification — the same "no numeric threshold
    * specified" reason Recovery Mode auto-expiry and Cases/Support SLA stay
    * unwired).
+   *
+   * 21_ADRs > ADR-123 — `fromDate`/`toDate`, now validated the same way
+   * `AnalyticsService.resolveRange` already validates its own identically
+   * shaped params (the closest existing precedent in this codebase for
+   * this exact check, and itself a consumer of this very method): an
+   * unparseable date string reaching here as `Invalid Date`, or
+   * `fromDate` after `toDate`, is now a clean `ValidationError` (400)
+   * instead of silently reaching Prisma as `Invalid Date` (which Prisma
+   * would otherwise just treat as a non-matching filter, not an error).
    */
   async getAnalytics(fromDate?: Date, toDate?: Date) {
+    if (fromDate && Number.isNaN(fromDate.getTime())) {
+      throw new ValidationError('Invalid fromDate.');
+    }
+    if (toDate && Number.isNaN(toDate.getTime())) {
+      throw new ValidationError('Invalid toDate.');
+    }
+    if (fromDate && toDate && fromDate.getTime() > toDate.getTime()) {
+      throw new ValidationError('fromDate must not be after toDate.');
+    }
+
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 

@@ -700,6 +700,17 @@ describe('Gamification (e2e) — Building Score & Cross-Building Leaderboard (AD
     const goldIds = gold.body.data.map((row: { buildingId: string }) => row.buildingId);
     expect(goldIds).not.toContain(buildingId);
   });
+
+  /** 21_ADRs > ADR-123 — an invalid tier is now a clean 400, not a silently-empty 200. */
+  it('rejects an invalid leaderboard tier with a clean 400 VALIDATION_ERROR, not a silent empty list', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/gamification/leaderboard')
+      .query({ tier: 'NOT_A_REAL_TIER' })
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
 });
 
 describe('Gamification (e2e) — Cross-Domain XP via Case Resolution (read-side proof)', () => {
@@ -777,6 +788,151 @@ describe('Gamification (e2e) — Cross-Domain XP via Case Resolution (read-side 
 
     expect(res.body.data.score).toBe(14);
     expect(res.body.data.leagueTier).toBe('BRONZE');
+  });
+});
+
+/**
+ * 21_ADRs > ADR-123 — Gamification Hardening Phase 1. Direct regression
+ * coverage for the confirmed integrity bug this hardening pass closed:
+ * `GamificationEventListener.onCaseStatusChanged` used to award
+ * CASE_RESOLVED XP/Building Score on EVERY transition to RESOLVED, with
+ * no guard — and Cases' own policy legitimately allows
+ * RESOLVED -> reopened -> RESOLVED again ("issue came back"). This suite
+ * proves the fix end-to-end through the real HTTP surface: the second
+ * resolve must still succeed (Cases' own behavior is unchanged), but must
+ * mint no additional XP, Building Score, or achievement.
+ *
+ * `cases.e2e-spec.ts`'s own "Status Lifecycle & Gamification XP" describe
+ * already exercises this exact resolve -> close -> reopen -> resolve
+ * shape (for Cases' own authorization tests) and now carries its own
+ * gamification-idempotency assertion alongside it — this file's version
+ * is the dedicated, from-scratch regression test the hardening pass
+ * itself required, independent of whatever Cases' own suite does.
+ */
+describe('Gamification (e2e) — CASE_RESOLVED Duplicate-Award Prevention (ADR-123)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (manager + member).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let member: RegisteredPerson;
+  let buildingId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    member = await registerPerson(app);
+    createdPhones.push(member.phone);
+
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER' });
+    createdBuildingIds.push(buildingId);
+    await joinBuildingAsApprovedMember(app, buildingId, member.accessToken, manager.accessToken);
+    await waitForBuildingFounderXp(prisma, manager.personId);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('awards CASE_RESOLVED exactly once even after resolve -> reopen -> resolve on the same case, and never re-unlocks COMMUNITY_HELPER', async () => {
+    // 1. create case
+    const caseId = await createCase(app, buildingId, member.accessToken);
+
+    // 2. resolve
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases/${caseId}/resolve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ resolutionCode: 'COMPLETED' })
+      .expect(201);
+
+    // 3. verify XP/Building Score award
+    const firstXp = await waitFor(() =>
+      prisma.xpTransaction.findFirst({
+        where: { personId: manager.personId, buildingId, reason: 'CASE_RESOLVED' },
+      }),
+    );
+    expect(firstXp?.amount).toBe(25);
+
+    const firstScoreEvent = await waitFor(() =>
+      prisma.buildingScoreEvent.findFirst({
+        where: { buildingScore: { buildingId }, reason: 'CASE_RESOLVED' },
+      }),
+    );
+    expect(firstScoreEvent?.delta).toBe(4);
+
+    await waitFor(() =>
+      prisma.personAchievement.findFirst({
+        where: { personId: manager.personId, definition: { code: 'COMMUNITY_HELPER' } },
+      }),
+    );
+
+    const progressAfterFirstResolve = await request(app.getHttpServer())
+      .get('/api/v1/gamification/me')
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const xpBalanceAfterFirstResolve = progressAfterFirstResolve.body.data.xpBalance as number;
+
+    // 4. close/reopen as permitted by Cases policy — reopening directly
+    // from RESOLVED is allowed (06.07 Rule 014: "only a RESOLVED or
+    // CLOSED case may be reopened"), so this goes straight from RESOLVED
+    // back to OPEN without a separate close step.
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases/${caseId}/reopen`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ reason: 'issue came back — verifying it is really fixed' })
+      .expect(201);
+
+    // 5. resolve same case again — Cases itself must still allow this;
+    // the fix must not break legitimate reopen/resolve behavior.
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/cases/${caseId}/resolve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ resolutionCode: 'COMPLETED' })
+      .expect(201);
+
+    // No positive "achievement re-unlocked" event exists to poll for a
+    // suppressed duplicate — give the (rejected) second award's own
+    // un-awaited event chain the same kind of settling window every
+    // other async assertion in this file already grants real ones,
+    // then assert directly on the real rows.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // 6. verify no second CASE_RESOLVED XP or Building Score award
+    const allCaseResolvedXp = await prisma.xpTransaction.findMany({
+      where: { personId: manager.personId, buildingId, reason: 'CASE_RESOLVED' },
+    });
+    expect(allCaseResolvedXp).toHaveLength(1);
+    expect(allCaseResolvedXp[0].amount).toBe(25);
+
+    const allCaseResolvedScoreEvents = await prisma.buildingScoreEvent.findMany({
+      where: { buildingScore: { buildingId }, reason: 'CASE_RESOLVED' },
+    });
+    expect(allCaseResolvedScoreEvents).toHaveLength(1);
+
+    // 7. verify achievement is still only present once
+    const allCommunityHelperUnlocks = await prisma.personAchievement.findMany({
+      where: { personId: manager.personId, definition: { code: 'COMMUNITY_HELPER' } },
+    });
+    expect(allCommunityHelperUnlocks).toHaveLength(1);
+
+    const progressAfterSecondResolve = await request(app.getHttpServer())
+      .get('/api/v1/gamification/me')
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(progressAfterSecondResolve.body.data.xpBalance).toBe(xpBalanceAfterFirstResolve);
+
+    const scoreAfterSecondResolve = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/gamification/score`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    // 10 (BUILDING_SETUP_COMPLETED) + 4 (CASE_RESOLVED, once) — unchanged
+    // from a single resolve; the reopen + second resolve added nothing.
+    expect(scoreAfterSecondResolve.body.data.score).toBe(14);
   });
 });
 
@@ -886,6 +1042,28 @@ describe('Gamification (e2e) — Analytics Staff Access (ADR-047, PlatformRolesG
       .expect(200);
 
     expect(res.body.data.xpByReason).toEqual([]);
+  });
+
+  /** 21_ADRs > ADR-123 — an unparseable date string is now a clean 400, never silently reaching Prisma as `Invalid Date`. */
+  it('rejects an unparseable fromDate with a clean 400 VALIDATION_ERROR', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/gamification/analytics')
+      .query({ fromDate: 'not-a-real-date' })
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  /** 21_ADRs > ADR-123 — fromDate after toDate is a clean 400, not a nonsensical inverted-range query silently reaching Prisma. */
+  it('rejects a fromDate after toDate with a clean 400 VALIDATION_ERROR', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/gamification/analytics')
+      .query({ fromDate: '2026-06-01T00:00:00.000Z', toDate: '2026-01-01T00:00:00.000Z' })
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
   });
 
   it('blocks REVIEWER (rank 1, below the required SENIOR_REVIEWER) from analytics', async () => {

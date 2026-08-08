@@ -2197,6 +2197,15 @@ model NotificationTemplate {
 // that NotificationEventListener now also reacts to — see ADR-028
 // Decision point 8 and the `GAMIFICATION` NotificationCategory value
 // added above.
+//
+// 21_ADRs > ADR-123 (Gamification Hardening Phase 1 — Integrity &
+// Idempotency) closed a confirmed integrity gap found by this codebase's
+// own implementation audit: CASE_RESOLVED XP/Building Score could be
+// re-earned every time a Case was reopened and resolved again (a
+// legitimate Cases lifecycle). Fixed with a durable DB-level uniqueness
+// guarantee on `XpTransaction` rather than an in-memory/read-before-write
+// check — see that model's own `@@unique` comment below for the full
+// reasoning, including why this is safe for every other XpReason.
 // ---------------------------------------------------------------------------
 
 enum XpReason {
@@ -2245,17 +2254,42 @@ model XpTransaction {
   sourceEvent   String?
   // 21_ADRs > ADR-041 — polymorphic non-FK reference (same pattern as
   // `DocumentReference` / `Notification.referenceType`/`referenceId`),
-  // added so a specific award (e.g. CHARGE_PAID for one Payment) can be
-  // found again later for clawback. Nullable/optional — only reasons that
-  // need a reversal path populate it; the other four XpReason values
-  // never set these two fields.
+  // originally added so a specific award (e.g. CHARGE_PAID for one
+  // Payment) can be found again later for clawback. 21_ADRs > ADR-123
+  // extended this to CASE_RESOLVED (`('CASE', caseId)`) purely for the
+  // `@@unique([referenceType, referenceId, reason])` idempotency
+  // guarantee below — CASE_RESOLVED has no clawback path of its own.
+  // Nullable/optional — PROFILE_CREATED/BUILDING_SETUP_COMPLETED/
+  // VOTE_PARTICIPATED still never set these two fields (see the unique
+  // index's own comment for why that's safe).
   referenceType String?
   referenceId   String?
   createdAt     DateTime  @default(now())
 
   @@index([personId])
   @@index([personId, reason])
-  @@index([referenceType, referenceId])
+  // 21_ADRs > ADR-123 — replaces the old plain (referenceType,
+  // referenceId) index with a UNIQUE composite index that also includes
+  // `reason`. This is the durable, DB-level idempotency guarantee behind
+  // `GamificationRepository.awardXp`'s reference-conflict handling: at
+  // most one XpTransaction may ever exist per (referenceType,
+  // referenceId, reason) triple — true under real concurrency, not just
+  // a best-effort read-before-write check. Verified safe for every
+  // currently-defined XpReason before adding this, per ADR-123's own
+  // Decision section: PROFILE_CREATED/BUILDING_SETUP_COMPLETED/
+  // VOTE_PARTICIPATED never populate referenceType/referenceId, and
+  // Postgres treats every NULL as distinct from every other NULL in a
+  // unique index, so this constraint is a guaranteed no-op for those rows
+  // — their existing single-fire guarantees (enforced by their own
+  // source domains, e.g. Governance's one-ballot-per-unit rule) are
+  // untouched. CHARGE_PAID/CHARGE_PAID_REVERSED already set
+  // `('PAYMENT', paymentId)` and are genuinely one-award-per-payment.
+  // CASE_RESOLVED now also sets `('CASE', caseId)` and is genuinely
+  // one-award-per-case — this is what closes the confirmed Cases
+  // resolve -> reopen -> resolve duplicate-XP gap, without inventing an
+  // unrequested "resolution episode" concept the source docs never
+  // named.
+  @@unique([referenceType, referenceId, reason])
   @@map("xp_transactions")
 }
 

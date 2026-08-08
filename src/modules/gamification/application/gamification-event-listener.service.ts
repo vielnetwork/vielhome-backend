@@ -115,7 +115,24 @@ export class GamificationEventListener {
     });
   }
 
-  /** Only the RESOLVED transition awards XP — CLOSED/OPEN (reopen) are not "Help Community" moments. */
+  /**
+   * Only the RESOLVED transition awards XP — CLOSED/OPEN (reopen) are not
+   * "Help Community" moments.
+   *
+   * 21_ADRs > ADR-123 — `referenceType: 'CASE', referenceId: event.caseId`
+   * are new. A Case can legitimately be resolved, reopened, and resolved
+   * again (Cases' own policy explicitly allows this), which previously
+   * re-fired this handler and re-awarded CASE_RESOLVED XP/Building Score
+   * every time with no guard — a confirmed, exploitable duplicate-XP gap.
+   * Setting these two fields makes `GamificationService.awardXp`'s DB-level
+   * `(referenceType, referenceId, reason)` uniqueness guarantee (see
+   * `XpTransaction`'s own schema comment) apply here exactly the way it
+   * already applies to CHARGE_PAID: at most one CASE_RESOLVED award per
+   * Case, ever, regardless of how many times it's resolved. No new
+   * "resolution episode" concept was invented — this collapses to "one
+   * award per case," matching the only policy the source docs actually
+   * describe.
+   */
   @OnEvent('CaseStatusChanged')
   async onCaseStatusChanged(event: CaseStatusChangedEvent) {
     if (event.newStatus !== 'RESOLVED') return;
@@ -124,6 +141,8 @@ export class GamificationEventListener {
       buildingId: event.buildingId,
       reason: 'CASE_RESOLVED',
       sourceEvent: event.eventName,
+      referenceType: 'CASE',
+      referenceId: event.caseId,
     });
   }
 }

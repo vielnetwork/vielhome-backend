@@ -1,8 +1,31 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
-import type { AchievementCode, LeagueTier, XpReason } from '@prisma/client';
+import { AchievementCode, Prisma } from '@prisma/client';
+import type { LeagueTier, XpReason } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
 import { GamificationPolicy } from '../../domain/policies/gamification.policy';
+
+/**
+ * 21_ADRs > ADR-123 — the same "defensive backstop against a real
+ * `@@unique(...)` racing a concurrent duplicate" pattern already used by
+ * `FinanceService`/`VotingService` (their own local, identically-named
+ * `isUniqueConstraintViolation` helpers) — converts Prisma's raw `P2002`
+ * into a typed, deterministic signal instead of letting it surface as an
+ * unhandled 500 or crash an event listener.
+ */
+function isUniqueConstraintViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
+
+export type AwardXpResult =
+  | { awarded: true; newBalance: number; isFirstOccurrence: boolean }
+  // 21_ADRs > ADR-123 — the `XpTransaction` model's own
+  // `@@unique([referenceType, referenceId, reason])` index rejected this
+  // attempt as a duplicate of an already-recorded award for the same
+  // reference+reason. Deliberately not an error: `GamificationService.
+  // awardXp` treats this as a clean, logged no-op — exactly how a
+  // legitimate retried/replayed event, or (concretely) a Case being
+  // reopened and resolved again, should behave.
+  | { awarded: false };
 
 @Injectable()
 export class GamificationRepository {
@@ -19,6 +42,17 @@ export class GamificationRepository {
    * together" pattern as `Fund.balance`. `isFirstOccurrence` tells the
    * caller whether this is the person's first XpTransaction of this
    * reason, which gates achievement unlocking (see xp-catalog.ts).
+   *
+   * 21_ADRs > ADR-123 — when `referenceType`/`referenceId` are set, this
+   * is now also the durable idempotency guarantee for that award: the
+   * `XpTransaction` model's `@@unique([referenceType, referenceId,
+   * reason])` index (see schema.prisma's own comment) means a second
+   * attempt to award the same reason for the same reference can only
+   * ever reach the `catch` below, never create a second row — true under
+   * real concurrency/event-replay, not just a best-effort
+   * read-before-write pre-check. Returns `{ awarded: false }` rather than
+   * throwing, so a duplicate attempt is a clean, deterministic no-op for
+   * the caller.
    */
   async awardXp(params: {
     personId: string;
@@ -28,59 +62,133 @@ export class GamificationRepository {
     sourceEvent?: string;
     referenceType?: string;
     referenceId?: string;
-  }): Promise<{ newBalance: number; isFirstOccurrence: boolean }> {
-    return this.prisma.$transaction(async (tx) => {
-      const priorCount = await tx.xpTransaction.count({
-        where: { personId: params.personId, reason: params.reason },
-      });
+  }): Promise<AwardXpResult> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const priorCount = await tx.xpTransaction.count({
+          where: { personId: params.personId, reason: params.reason },
+        });
 
-      await tx.xpTransaction.create({
-        data: {
-          personId: params.personId,
-          buildingId: params.buildingId,
-          reason: params.reason,
-          amount: params.amount,
-          sourceEvent: params.sourceEvent,
-          referenceType: params.referenceType,
-          referenceId: params.referenceId,
-        },
-      });
+        await tx.xpTransaction.create({
+          data: {
+            personId: params.personId,
+            buildingId: params.buildingId,
+            reason: params.reason,
+            amount: params.amount,
+            sourceEvent: params.sourceEvent,
+            referenceType: params.referenceType,
+            referenceId: params.referenceId,
+          },
+        });
 
-      const person = await tx.person.update({
-        where: { id: params.personId },
-        data: { xpBalance: { increment: params.amount } },
-      });
+        const person = await tx.person.update({
+          where: { id: params.personId },
+          data: { xpBalance: { increment: params.amount } },
+        });
 
-      return { newBalance: person.xpBalance, isFirstOccurrence: priorCount === 0 };
-    });
+        return {
+          awarded: true as const,
+          newBalance: person.xpBalance,
+          isFirstOccurrence: priorCount === 0,
+        };
+      });
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) {
+        this.logger.warn(
+          `awardXp: duplicate award suppressed — an XpTransaction already exists for ` +
+            `reason=${params.reason} referenceType=${params.referenceType ?? 'null'} ` +
+            `referenceId=${params.referenceId ?? 'null'}. No XP/Building Score/event fired for ` +
+            'this attempt (idempotency guard, ADR-123).',
+        );
+        return { awarded: false };
+      }
+      throw error;
+    }
   }
 
-  /** Idempotent — returns null if the person already has this achievement (achievements are permanent, never re-unlocked), or if `code` has no seeded `AchievementDefinition` yet (see `prisma/seed.ts`) — a missing seed silently no-ops here rather than throwing, since XP should still award even if the achievement catalog hasn't been seeded in a given environment. */
+  /**
+   * Idempotent — returns `null` if the person already has this
+   * achievement (achievements are permanent, never re-unlocked).
+   *
+   * 21_ADRs > ADR-123 — if `code` has no seeded `AchievementDefinition`
+   * yet (see `prisma/seed.ts`), XP still awards — this still returns
+   * `null` rather than throwing, preserving the pre-existing "XP
+   * awarding stays resilient to a missing achievement seed" policy — but
+   * the gap is no longer silent: this now logs a structured `error`-level
+   * line every time it happens, so a forgotten seed step becomes
+   * observable instead of invisible. See `GamificationService.
+   * onModuleInit` for the proactive half of this same fix (a boot-time
+   * check across every `AchievementCode`, not just the ones actually
+   * triggered at runtime).
+   */
   async unlockAchievement(
     personId: string,
     code: AchievementCode,
     buildingId?: string,
   ): Promise<{ title: string } | null> {
     const definition = await this.prisma.achievementDefinition.findUnique({ where: { code } });
-    if (!definition) return null;
+    if (!definition) {
+      this.logger.error(
+        `unlockAchievement: no AchievementDefinition seeded for code=${code} — XP still awarded ` +
+          `(by design), but this achievement will never unlock for anyone in this environment ` +
+          `until 'prisma/seed.ts' (or an equivalent seed of ACHIEVEMENT_SEED_DATA) is run. This ` +
+          'is a missing-seed operational gap, not a code defect (ADR-123).',
+      );
+      return null;
+    }
 
     const existing = await this.prisma.personAchievement.findUnique({
       where: { personId_definitionId: { personId, definitionId: definition.id } },
     });
     if (existing) return null;
 
-    await this.prisma.personAchievement.create({
-      data: { personId, definitionId: definition.id, buildingId },
-    });
-
-    if (definition.xpBonus > 0) {
-      await this.prisma.person.update({
-        where: { id: personId },
-        data: { xpBalance: { increment: definition.xpBonus } },
+    // 21_ADRs > ADR-123 — the achievement row and its (possibly non-zero)
+    // XP bonus balance increment are now one atomic `$transaction`,
+    // closing the latent inconsistency window that previously existed
+    // whenever `xpBonus > 0` (safe before this fix only because every
+    // seeded achievement's `xpBonus` is 0 today — see `xp-catalog.ts`'s
+    // own `ACHIEVEMENT_SEED_DATA`). Deliberately does NOT also write a
+    // bonus `XpTransaction` ledger row: doing so would need a new
+    // `XpReason` value purely to describe "an achievement's own bonus" —
+    // a schema/analytics-surface change this narrowly-scoped hardening
+    // pass chose not to make for a path that stays dormant in every
+    // environment today. `Person.xpBalance` and the achievement unlock
+    // itself are guaranteed consistent with each other by this
+    // transaction either way; seeding a non-zero bonus (and, if ever
+    // needed, giving it its own ledger entry) remains a future product
+    // decision, not something this correctness fix should provoke.
+    return this.prisma.$transaction(async (tx) => {
+      await tx.personAchievement.create({
+        data: { personId, definitionId: definition.id, buildingId },
       });
-    }
 
-    return { title: definition.title };
+      if (definition.xpBonus > 0) {
+        await tx.person.update({
+          where: { id: personId },
+          data: { xpBalance: { increment: definition.xpBonus } },
+        });
+      }
+
+      return { title: definition.title };
+    });
+  }
+
+  /**
+   * 21_ADRs > ADR-123 — proactive half of the achievement-seed-safety fix
+   * (the reactive half is `unlockAchievement`'s own structured error log
+   * above). Called once from `GamificationService.onModuleInit`. Compares
+   * every `AchievementCode` enum value against the real seeded
+   * `AchievementDefinition` rows and returns the codes with no matching
+   * row. Deliberately read-only (no seeding/writing happens here — that
+   * stays `prisma/seed.ts`'s job) and deliberately never throws: a
+   * missing seed must not block application boot any more than it blocks
+   * XP awarding.
+   */
+  async findMissingAchievementCodes(): Promise<AchievementCode[]> {
+    const allCodes = Object.values(AchievementCode);
+    const seeded = await this.prisma.achievementDefinition.findMany({ select: { code: true } });
+    const seededCodes = new Set(seeded.map((row) => row.code));
+    return allCodes.filter((code) => !seededCodes.has(code));
   }
 
   /**
@@ -177,8 +285,14 @@ export class GamificationRepository {
    * 21_ADRs > ADR-041 — looks up an XpTransaction by its polymorphic
    * reference (e.g. `('PAYMENT', paymentId)`), optionally narrowed to a
    * specific `reason`. Used both to find the original CHARGE_PAID award
-   * being clawed back, and to check whether a CHARGE_PAID_REVERSED row
-   * already exists for that same reference (idempotency guard).
+   * being clawed back, and (21_ADRs > ADR-123) as a cheap early-exit
+   * check for whether a CHARGE_PAID_REVERSED row already exists for that
+   * same reference — this pre-check is now an optimization only (it
+   * avoids attempting a doomed `awardXp` call in the common case); the
+   * actual correctness guarantee against a concurrent double-clawback is
+   * `XpTransaction`'s own `@@unique([referenceType, referenceId,
+   * reason])` index plus `awardXp`'s deterministic `P2002` handling, not
+   * this read-before-write check by itself.
    */
   findXpTransactionByReference(referenceType: string, referenceId: string, reason?: XpReason) {
     return this.prisma.xpTransaction.findFirst({

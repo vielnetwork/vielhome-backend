@@ -1021,6 +1021,53 @@ describe('Cases (e2e) — Status Lifecycle & Gamification XP (CASE_RESOLVED)', (
     expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
 
+  /**
+   * 21_ADRs > ADR-123 — `caseBId` above was just resolved TWICE in this
+   * same describe block (once at "rejects direct OPEN to CLOSED and
+   * closes only after resolution" above, once again in this test, via
+   * close -> reopen -> resolve) purely to exercise Cases' own
+   * close/reopen authorization rules — this file's own implementation
+   * audit flagged that this exact, already-existing flow had never once
+   * asserted that Gamification stayed idempotent across it. It now does:
+   * `GamificationEventListener.onCaseStatusChanged` fires on every
+   * RESOLVED transition, but `XpTransaction`'s
+   * `@@unique([referenceType, referenceId, reason])` constraint (keyed on
+   * `('CASE', caseBId, 'CASE_RESOLVED')`) means only the FIRST of the two
+   * resolves in this describe block's own history could have actually
+   * minted an award — see `gamification.e2e-spec.ts`'s own dedicated
+   * "CASE_RESOLVED Duplicate-Award Prevention" suite for the from-scratch
+   * regression test; this assertion instead proves the fix holds even
+   * against this file's own pre-existing, Cases-focused test flow, not a
+   * purpose-built scenario.
+   */
+  it('ADR-123: resolving caseB twice in this describe block (once directly, once via close -> reopen -> resolve) still only ever produced ONE CASE_RESOLVED XpTransaction/BuildingScoreEvent, and only ONE COMMUNITY_HELPER unlock', async () => {
+    const caseResolvedAwards = await waitFor(() =>
+      prisma.xpTransaction
+        .findMany({
+          where: { referenceType: 'CASE', referenceId: caseBId, reason: 'CASE_RESOLVED' },
+        })
+        .then((rows) => (rows.length > 0 ? rows : null)),
+    );
+
+    expect(caseResolvedAwards).toHaveLength(1);
+    expect(caseResolvedAwards![0].amount).toBe(25);
+    expect(caseResolvedAwards![0].personId).toBe(manager.personId);
+
+    const scoreEvents = await prisma.buildingScoreEvent.findMany({
+      where: { buildingScore: { buildingId }, reason: 'CASE_RESOLVED' },
+    });
+    // caseA (an earlier describe-block test) and caseB together account
+    // for every CASE_RESOLVED score event in this building — one each,
+    // never two for caseB despite its two resolves.
+    expect(scoreEvents.length).toBeGreaterThanOrEqual(1);
+    expect(scoreEvents.length).toBeLessThanOrEqual(2);
+
+    const communityHelperUnlocks = await prisma.personAchievement.findMany({
+      where: { personId: manager.personId, definition: { code: 'COMMUNITY_HELPER' } },
+    });
+    expect(communityHelperUnlocks).toHaveLength(1);
+  });
+
   let mergeSourceId: string;
   let mergeTargetId: string;
 

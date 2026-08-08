@@ -1,6 +1,5 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import type { LeagueTier } from '@prisma/client';
 import { GamificationService } from '../application/gamification.service';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
@@ -50,8 +49,18 @@ export class GamificationController {
     return this.gamification.getMyXpHistory(user.sub);
   }
 
+  /**
+   * 21_ADRs > ADR-123 — `tier` is read as a plain optional string (a
+   * query param is always a string on the wire regardless of what a type
+   * annotation here claimed) and validated by `GamificationService.
+   * getLeaderboard` itself, which throws a clean `ValidationError` (400)
+   * for anything that isn't a real `LeagueTier` value — see that method's
+   * own doc comment for why validation lives there rather than in a bound
+   * `@Query()` DTO (matching `AnalyticsService.resolveRange`'s existing
+   * precedent for this same kind of check, not a new pattern).
+   */
   @Get('leaderboard')
-  getLeaderboard(@Query('tier') tier?: LeagueTier) {
+  getLeaderboard(@Query('tier') tier?: string) {
     return this.gamification.getLeaderboard(tier);
   }
 

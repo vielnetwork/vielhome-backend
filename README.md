@@ -194,7 +194,17 @@ this section is a map, not a replacement for those.
   (deliberately the one cross-tenant read in this app), XP clawback on
   payment reversal/refund (`ADR-041`), staff-only Analytics (XP Distribution,
   League Progress, Weekly Participation — `ADR-047`). Full e2e coverage —
-  `ADR-079`, Testing Phase 3e.
+  `ADR-079`, Testing Phase 3e. Hardened by `ADR-123` (Gamification Hardening
+  Phase 1 — Integrity & Idempotency), which closed a confirmed duplicate-XP
+  gap on `CASE_RESOLVED` (a Case resolved → reopened → resolved again
+  previously re-earned XP/Building Score every time) with a durable DB-level
+  `XpTransaction` uniqueness guarantee — the same mechanism now also backs
+  the Finance clawback guard against a non-atomic double-clawback race — plus
+  achievement-bonus transactional atomicity, missing-achievement-seed
+  observability, `tier`/date-range query validation (clean `400`s instead of
+  a silent empty list or `Invalid Date`), and dedicated unit coverage for
+  `GamificationService`/`GamificationRepository`/`GamificationEventListener`/
+  `XP_CATALOG`.
 - **BackOffice** (`src/modules/backoffice`) — all six named sub-domains
   shipped: Manager Verification (approve/reject/suspend/restore — `ADR-029`/
   `ADR-040`), Building Verification + appeals, Fraud & Abuse Center (case
@@ -510,7 +520,13 @@ rules live in `domain/`, orchestration in `application/`, persistence in
 - **Test coverage is policy-layer + Auth/Building/Finance/Governance/Cases/
   Documents/Notifications/Gamification e2e only**: 23 unit spec files cover
   the `domain/` policy layer across every module, plus
-  `pagination.util.spec.ts` (`ADR-072`); e2e coverage exists for
+  `pagination.util.spec.ts` (`ADR-072`). `ADR-123` (Gamification Hardening
+  Phase 1) added the first `application`/`infrastructure`-layer unit specs
+  for Gamification specifically (`gamification.service.spec.ts`,
+  `gamification.repository.spec.ts`,
+  `gamification-event-listener.service.spec.ts`, `xp-catalog.spec.ts`) —
+  every other domain's service/repository/listener layer still relies on
+  e2e coverage alone, same as before. e2e coverage exists for
   `test/health.e2e-spec.ts`, `test/auth.e2e-spec.ts` (`ADR-070`, Testing
   Phase 1), `test/building.e2e-spec.ts` (`ADR-073`, Testing Phase 2a),
   `test/finance.e2e-spec.ts` (`ADR-074`, Testing Phase 2b),
