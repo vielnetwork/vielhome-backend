@@ -317,6 +317,10 @@ model Building {
   memberships        Membership[]
   membershipRequests MembershipRequest[]
   auditLogs          AuditLog[]
+  // Monetization & Advertising — Phase 3. Optional building-specific ad
+  // targeting (`AdCampaign.buildingId`) — reuses this model's own
+  // convention rather than a parallel geography/targeting system.
+  adCampaigns        AdCampaign[]
 
   funds          Fund[]
   chargeBatches  ChargeBatch[]
@@ -2781,6 +2785,15 @@ enum PermissionKey {
   // narrowly-scoped correction-tooling surface, not a general
   // Gamification CMS with independently-gated sub-actions.
   GAMIFICATION_CORRECTION_MANAGE
+  // Monetization & Advertising — Phase 3 (Backend/Domain Foundation). A
+  // real VIEW/MANAGE split, same per-domain convention as
+  // ADR-101/ADR-109/ADR-114/ADR-116/ADR-124 above. Not yet gating any
+  // route — no Backoffice controller exists for this domain until Phase
+  // 5; these keys exist now so the permission system is aware of the
+  // domain ahead of that controller landing, same precedent as Phase 1's
+  // `SubscriptionFeatureGuard` shipping unused by any endpoint.
+  ADVERTISING_VIEW
+  ADVERTISING_MANAGE
 }
 
 model Role {
@@ -3705,4 +3718,103 @@ model ProviderSetting {
   updatedBy   Person?     @relation("ProviderSettingUpdatedBy", fields: [updatedById], references: [id])
 
   @@map("provider_settings")
+}
+
+// ---------------------------------------------------------------------------
+// Monetization & Advertising — Phase 3 (Backend/Domain Foundation).
+// First-party advertising: direct VielHome sponsored campaigns and
+// sponsored Marketplace/services today, with room for future external
+// provider fill (e.g. AdMob) via `AdCampaignSource.EXTERNAL` — that
+// provider integration is explicitly a later phase, so `EXTERNAL` is the
+// only AdMob-shaped surface here; no AdMob-specific field exists on
+// `AdCampaign` itself, matching this phase's "AdMob must not become the
+// core domain model" constraint.
+//
+// Deliberately one table, not one-table-per-concept: `Placement` and
+// `Source` are enums (small, closed, stable sets — same precedent as
+// `SubscriptionPlan`/`SubscriptionStatus`), and "Creative" is just the
+// title/description/image/CTA fields on `AdCampaign` itself rather than
+// a separate table — this phase's "avoid over-normalizing" instruction.
+// No delivery/impression/click tables, no advertiser billing, no
+// auction/bidding — those are explicitly later phases.
+// ---------------------------------------------------------------------------
+
+// Provider-neutral origin of a campaign. Never AdMob-specific — a future
+// external-fill integration is expected to map onto EXTERNAL, not add its
+// own parallel source concept.
+enum AdCampaignSource {
+  DIRECT
+  MARKETPLACE
+  EXTERNAL
+}
+
+// Lifecycle. Eligibility for future delivery is derived from this plus
+// schedule/placement/targeting/priority (see `AdCampaignService.isEligibleNow`)
+// — no delivery endpoint exists yet in this phase.
+enum AdCampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+// Logical placement identifiers approved for Phase 3 — not final UI
+// implementation detail, just where a campaign is eligible to be
+// considered for delivery once a delivery API exists.
+enum AdPlacement {
+  HOME_SERVICES_CAROUSEL
+  HOME_TODAY_OFFERS
+  HOME_CONTENT_CAROUSEL
+  HOME_FEATURED_LARGE
+}
+
+// A first-party advertising campaign. See this section's own header
+// comment for why this is one table rather than Campaign/Placement/
+// Source/Creative each as their own model.
+model AdCampaign {
+  id          String           @id @default(cuid())
+  name        String
+  status      AdCampaignStatus @default(DRAFT)
+  source      AdCampaignSource
+  placement   AdPlacement
+  // Higher runs first when multiple eligible campaigns compete for the
+  // same placement. No enforced upper bound in this phase — ordering
+  // semantics only, not a points/budget system.
+  priority    Int              @default(0)
+  startsAt    DateTime
+  endsAt      DateTime
+
+  // Creative — deliberately flat fields on this table, not a separate
+  // model (see header comment).
+  title       String
+  description String?
+  imageUrl    String
+  ctaLabel    String?
+  ctaUrl      String?
+
+  // Targeting foundation — deliberately minimal (no audience
+  // segmentation). `targetCountry`/`targetCity` are plain strings,
+  // reusing `Building.country`/`Building.city`'s own free-text
+  // convention rather than a parallel geography system. Null means
+  // untargeted (no restriction) for that dimension.
+  targetCountry String?
+  targetCity    String?
+  buildingId    String?
+  building      Building? @relation(fields: [buildingId], references: [id])
+
+  // Who created this campaign — plain actor id, no `Person` relation:
+  // full Who/When/What/Why history already lives in `AuditLog` (recorded
+  // by `AdCampaignService` on every mutation), so this column is a cheap
+  // denormalized "who authored this row" pointer only.
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Indexes sized for the future delivery query this phase does not yet
+  // implement: "eligible campaigns for placement X, right now, ordered by
+  // priority" and "campaigns whose schedule window is closing/opening".
+  @@index([placement, status, priority])
+  @@index([status, startsAt, endsAt])
+  @@index([buildingId])
+  @@map("ad_campaigns")
 }
