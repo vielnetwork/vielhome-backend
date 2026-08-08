@@ -97,6 +97,8 @@ export const E2E_SUITE_ID = {
   // 21_ADRs > ADR-124 — Gamification Hardening Phase 2 (Scale +
   // Operations), Backoffice correction tooling.
   GAMIFICATION_ADMINISTRATION: 32,
+  // Monetization & Advertising — Phase 4 (Advertising Delivery API).
+  ADVERTISING: 33,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;

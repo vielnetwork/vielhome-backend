@@ -14,6 +14,8 @@ function makeRepository(overrides: Partial<Record<string, jest.Mock>> = {}) {
     findById: jest.fn(),
     updateStatus: jest.fn(),
     buildingExists: jest.fn().mockResolvedValue(null),
+    findBuildingGeography: jest.fn().mockResolvedValue(null),
+    findEligibleForPlacement: jest.fn().mockResolvedValue([]),
     ...overrides,
   } as unknown as AdCampaignRepository;
 }
@@ -203,15 +205,31 @@ describe('AdCampaignService', () => {
       expect(service.isEligibleNow(campaign, { now, placement: 'HOME_TODAY_OFFERS' })).toBe(true);
     });
 
-    it('is not eligible when PAUSED', () => {
+    it('excludes a DRAFT campaign', () => {
+      const campaign = campaignFixture({ status: 'DRAFT' });
+      expect(service.isEligibleNow(campaign, { now, placement: 'HOME_TODAY_OFFERS' })).toBe(false);
+    });
+
+    it('excludes a PAUSED campaign', () => {
       const campaign = campaignFixture({ status: 'PAUSED' });
       expect(service.isEligibleNow(campaign, { now, placement: 'HOME_TODAY_OFFERS' })).toBe(false);
     });
 
-    it('is not eligible outside the schedule window', () => {
+    it('excludes an ENDED campaign', () => {
+      const campaign = campaignFixture({ status: 'ENDED' });
+      expect(service.isEligibleNow(campaign, { now, placement: 'HOME_TODAY_OFFERS' })).toBe(false);
+    });
+
+    it('excludes a campaign before its startsAt', () => {
       const campaign = campaignFixture({ status: 'ACTIVE' });
-      const outside = new Date('2026-09-15T00:00:00.000Z');
-      expect(service.isEligibleNow(campaign, { now: outside, placement: 'HOME_TODAY_OFFERS' })).toBe(false);
+      const before = new Date('2026-07-15T00:00:00.000Z');
+      expect(service.isEligibleNow(campaign, { now: before, placement: 'HOME_TODAY_OFFERS' })).toBe(false);
+    });
+
+    it('excludes a campaign after its endsAt', () => {
+      const campaign = campaignFixture({ status: 'ACTIVE' });
+      const after = new Date('2026-09-15T00:00:00.000Z');
+      expect(service.isEligibleNow(campaign, { now: after, placement: 'HOME_TODAY_OFFERS' })).toBe(false);
     });
 
     it('is not eligible for a mismatched placement', () => {
@@ -237,6 +255,121 @@ describe('AdCampaignService', () => {
       expect(
         service.isEligibleNow(campaign, { now, placement: 'HOME_TODAY_OFFERS', buildingId: 'bldg-2' }),
       ).toBe(false);
+    });
+  });
+
+  describe('getPlacementInventory (Phase 4 delivery)', () => {
+    const now = new Date('2026-08-15T00:00:00.000Z');
+
+    it('rejects an unrecognized placement without touching the repository', async () => {
+      const repository = makeRepository();
+      const service = new AdCampaignService(repository, makeAudit());
+
+      await expect(
+        service.getPlacementInventory('bldg-1', 'NOT_A_REAL_PLACEMENT', now),
+      ).rejects.toBeInstanceOf(ValidationError);
+      expect(repository.findBuildingGeography).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundAppError when the building does not exist', async () => {
+      const repository = makeRepository({ findBuildingGeography: jest.fn().mockResolvedValue(null) });
+      const service = new AdCampaignService(repository, makeAudit());
+
+      await expect(
+        service.getPlacementInventory('missing-bldg', 'HOME_TODAY_OFFERS', now),
+      ).rejects.toBeInstanceOf(NotFoundAppError);
+    });
+
+    it('queries the repository with the building geography and returns a provider-neutral, mapped response', async () => {
+      const repository = makeRepository({
+        findBuildingGeography: jest.fn().mockResolvedValue({ country: 'DE', city: 'Berlin' }),
+        findEligibleForPlacement: jest.fn().mockResolvedValue([
+          campaignFixture({
+            id: 'camp-a',
+            status: 'ACTIVE',
+            source: 'DIRECT',
+            title: 'A',
+            ctaLabel: 'Go',
+            ctaUrl: 'https://a.example.com',
+          }),
+        ]),
+      });
+      const service = new AdCampaignService(repository, makeAudit());
+
+      const result = await service.getPlacementInventory('bldg-1', 'HOME_TODAY_OFFERS', now);
+
+      expect(repository.findEligibleForPlacement).toHaveBeenCalledWith({
+        placement: 'HOME_TODAY_OFFERS',
+        now,
+        buildingId: 'bldg-1',
+        country: 'DE',
+        city: 'Berlin',
+        limit: 10,
+      });
+      expect(result).toEqual({
+        placement: 'HOME_TODAY_OFFERS',
+        items: [
+          {
+            id: 'camp-a',
+            source: 'DIRECT',
+            title: 'A',
+            description: null,
+            imageUrl: 'https://cdn.example.com/summer.png',
+            ctaLabel: 'Go',
+            ctaUrl: 'https://a.example.com',
+            sponsored: true,
+          },
+        ],
+      });
+      // Never exposes internal/audit fields.
+      expect(result.items[0]).not.toHaveProperty('createdById');
+      expect(result.items[0]).not.toHaveProperty('priority');
+      expect(result.items[0]).not.toHaveProperty('status');
+    });
+
+    it('returns a successful empty-items response when nothing is eligible — not an error', async () => {
+      const repository = makeRepository({
+        findBuildingGeography: jest.fn().mockResolvedValue({ country: 'DE', city: 'Berlin' }),
+        findEligibleForPlacement: jest.fn().mockResolvedValue([]),
+      });
+      const service = new AdCampaignService(repository, makeAudit());
+
+      const result = await service.getPlacementInventory('bldg-1', 'HOME_TODAY_OFFERS', now);
+
+      expect(result).toEqual({ placement: 'HOME_TODAY_OFFERS', items: [] });
+    });
+
+    it('applies isEligibleNow as a safety net over the repository result (defense in depth)', async () => {
+      // Simulates a query/rule mismatch: repository returns a candidate that
+      // is not actually eligible (wrong placement) — the service must still
+      // exclude it rather than trust the query blindly.
+      const repository = makeRepository({
+        findBuildingGeography: jest.fn().mockResolvedValue({ country: 'DE', city: 'Berlin' }),
+        findEligibleForPlacement: jest.fn().mockResolvedValue([
+          campaignFixture({ id: 'camp-wrong', status: 'ACTIVE', placement: 'HOME_FEATURED_LARGE' }),
+        ]),
+      });
+      const service = new AdCampaignService(repository, makeAudit());
+
+      const result = await service.getPlacementInventory('bldg-1', 'HOME_TODAY_OFFERS', now);
+
+      expect(result.items).toEqual([]);
+    });
+
+    it('preserves the repository-provided ordering (priority DESC, then stable tie-breaker) without re-sorting', async () => {
+      const repository = makeRepository({
+        findBuildingGeography: jest.fn().mockResolvedValue({ country: 'DE', city: 'Berlin' }),
+        findEligibleForPlacement: jest.fn().mockResolvedValue([
+          campaignFixture({ id: 'camp-high', status: 'ACTIVE', priority: 10 }),
+          campaignFixture({ id: 'camp-mid', status: 'ACTIVE', priority: 5 }),
+          campaignFixture({ id: 'camp-low', status: 'ACTIVE', priority: 0 }),
+        ]),
+      });
+      const service = new AdCampaignService(repository, makeAudit());
+
+      const result = await service.getPlacementInventory('bldg-1', 'HOME_TODAY_OFFERS', now);
+
+      expect(result.items.map((i) => i.id)).toEqual(['camp-high', 'camp-mid', 'camp-low']);
     });
   });
 });

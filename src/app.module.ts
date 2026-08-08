@@ -32,6 +32,7 @@ import { ProviderSettingsModule } from './modules/provider-settings/provider-set
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { BackofficeBootstrapModule } from './modules/backoffice-bootstrap/backoffice-bootstrap.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
+import { AdvertisingModule } from './modules/advertising/advertising.module';
 
 @Module({
   imports: [
@@ -147,6 +148,11 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     // controller — deliberately no HTTP route (see the module's own doc
     // comment). No startup-order dependency on anything else.
     BackofficeBootstrapModule,
+    // Monetization & Advertising — Phase 3/4. No startup-order dependency
+    // on anything else — purely on-demand, per-request reads/writes over
+    // its own `AdCampaign` table. Registered here, before the
+    // startup-order-sensitive SchedulerModule below.
+    AdvertisingModule,
     // Registered last — the first module in this codebase whose own
     // startup logic (`SchedulerBootstrapService.onApplicationBootstrap`)
     // actively calls into other domains' services, so every domain it

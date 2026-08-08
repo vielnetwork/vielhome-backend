@@ -1,17 +1,35 @@
 import { Module } from '@nestjs/common';
+import { BuildingModule } from '../building/building.module';
+import { MembershipGuard } from '../../common/guards/membership.guard';
 import { AdCampaignRepository } from './infrastructure/repositories/ad-campaign.repository';
 import { AdCampaignService } from './application/ad-campaign.service';
+import { AdvertisingDeliveryController } from './controller/advertising-delivery.controller';
 
 /**
- * Monetization & Advertising — Phase 3 (Backend/Domain Foundation). No
- * controller yet — this module exists so `AdCampaignService` can be
- * injected once a Backoffice controller lands (Phase 5). `PrismaService`/
- * `AuditService` need no import here — both `PrismaModule` and
- * `AuditModule` are `@Global()`, same as every other module in this
- * codebase that only needs them.
+ * Monetization & Advertising — Phase 3/4 (Backend/Domain Foundation +
+ * Delivery API). No admin/mutation controller yet — that's Phase 5.
+ * `PrismaService`/`AuditService` need no import here — both
+ * `PrismaModule` and `AuditModule` are `@Global()`.
+ *
+ * `MembershipGuard` (used by `AdvertisingDeliveryController`) is NOT
+ * globally resolvable — a real local e2e run proved that guard classes
+ * bound via `@UseGuards()` are constructed using THIS module's own
+ * injector, so `MembershipGuard`'s own constructor dependency
+ * (`BuildingRepository`) must be resolvable here, not just somewhere
+ * else in the app. Fixed the same way `CasesModule`/`DocumentsModule`/
+ * `FinanceModule`/`GovernanceModule`/`BackOfficeModule` already do it —
+ * import `BuildingModule` (for its exported `BuildingRepository`) and
+ * redeclare `MembershipGuard` as a local provider (the same guard class,
+ * not a second implementation — Nest resolves its constructor from this
+ * module's own import graph once redeclared here). Does NOT redeclare
+ * `BuildingRepository` itself — it's already available via the
+ * `BuildingModule` import's own export, so declaring it again here would
+ * be the actual duplication this fix must avoid.
  */
 @Module({
-  providers: [AdCampaignRepository, AdCampaignService],
+  imports: [BuildingModule],
+  controllers: [AdvertisingDeliveryController],
+  providers: [AdCampaignRepository, AdCampaignService, MembershipGuard],
   exports: [AdCampaignService, AdCampaignRepository],
 })
 export class AdvertisingModule {}

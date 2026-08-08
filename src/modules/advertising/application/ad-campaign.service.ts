@@ -38,6 +38,22 @@ export interface EligibilityContext {
   buildingId?: string | null;
 }
 
+export interface PlacementInventoryItem {
+  id: string;
+  source: AdCampaignSource;
+  title: string;
+  description: string | null;
+  imageUrl: string;
+  ctaLabel: string | null;
+  ctaUrl: string | null;
+  sponsored: true;
+}
+
+export interface PlacementInventoryResponse {
+  placement: AdPlacement;
+  items: PlacementInventoryItem[];
+}
+
 const SOURCES: AdCampaignSource[] = ['DIRECT', 'MARKETPLACE', 'EXTERNAL'];
 const PLACEMENTS: AdPlacement[] = [
   'HOME_SERVICES_CAROUSEL',
@@ -56,12 +72,21 @@ const ALLOWED_TRANSITIONS: Record<AdCampaignStatus, AdCampaignStatus[]> = {
   ENDED: [],
 };
 
+/** Phase 4 — a conservative cap appropriate for a Home carousel/offers
+ * strip, not a paginated feed. One shared constant rather than
+ * per-placement config: every approved placement is a small Home surface
+ * with the same practical inventory ceiling; a future placement that
+ * genuinely needs a different limit is a deliberate follow-up, not
+ * something to speculatively generalize now. */
+const MAX_PLACEMENT_ITEMS = 10;
+
 /**
- * Monetization & Advertising — Phase 3 (Backend/Domain Foundation).
- * Validation, lifecycle transitions, and eligibility for `AdCampaign` —
- * no delivery endpoint, no mobile rendering, no analytics pipeline; those
- * are later phases. Every mutation is audited, same "Who/When/What/Why"
- * discipline `ProviderSettingsService.setEnabled` already established.
+ * Monetization & Advertising — Phase 3/4 (Backend/Domain Foundation +
+ * Delivery API). Validation, lifecycle transitions, and eligibility for
+ * `AdCampaign` — no impression/click recording, no analytics, no
+ * caching, no recommendation ranking; those are later phases. Every
+ * mutation is audited, same "Who/When/What/Why" discipline
+ * `ProviderSettingsService.setEnabled` already established.
  */
 @Injectable()
 export class AdCampaignService {
@@ -147,8 +172,8 @@ export class AdCampaignService {
   }
 
   /**
-   * Pure eligibility check — domain support for a future delivery query,
-   * not a delivery endpoint itself. A campaign is eligible only when its
+   * Pure eligibility check — domain support for a delivery query, not a
+   * delivery endpoint on its own. A campaign is eligible only when its
    * status is ACTIVE, `now` falls within its schedule, the placement
    * matches, and every targeting dimension the campaign sets either
    * matches the context or the campaign leaves that dimension untargeted
@@ -162,6 +187,68 @@ export class AdCampaignService {
     if (campaign.targetCity && campaign.targetCity !== ctx.city) return false;
     if (campaign.buildingId && campaign.buildingId !== ctx.buildingId) return false;
     return true;
+  }
+
+  /**
+   * Phase 4 — Advertising Delivery API
+   * (`GET /buildings/:id/advertising/placements/:placement`). The real
+   * filtering/ordering/limit happens in
+   * `AdCampaignRepository.findEligibleForPlacement` (efficient — Prisma
+   * does the narrowing, not an in-memory scan of every campaign for the
+   * placement). `isEligibleNow` then re-checks each already-narrow
+   * candidate as a cheap correctness safety net — reusing the same
+   * already-tested domain rule rather than trusting the query's
+   * `WHERE`/`OR` shape to be bug-free, without re-deriving the rule
+   * itself a second time. Returns a successful empty-`items` response
+   * when nothing is eligible — never an error.
+   */
+  async getPlacementInventory(
+    buildingId: string,
+    placementInput: string,
+    now: Date,
+  ): Promise<PlacementInventoryResponse> {
+    if (!PLACEMENTS.includes(placementInput as AdPlacement)) {
+      throw new ValidationError(`Unknown placement: ${placementInput}.`);
+    }
+    const placement = placementInput as AdPlacement;
+
+    const building = await this.repository.findBuildingGeography(buildingId);
+    if (!building) {
+      throw new NotFoundAppError('Building not found.');
+    }
+
+    const candidates = await this.repository.findEligibleForPlacement({
+      placement,
+      now,
+      buildingId,
+      country: building.country,
+      city: building.city,
+      limit: MAX_PLACEMENT_ITEMS,
+    });
+
+    const eligible = candidates.filter((campaign) =>
+      this.isEligibleNow(campaign, {
+        now,
+        placement,
+        country: building.country,
+        city: building.city,
+        buildingId,
+      }),
+    );
+
+    return {
+      placement,
+      items: eligible.map((campaign) => ({
+        id: campaign.id,
+        source: campaign.source,
+        title: campaign.title,
+        description: campaign.description,
+        imageUrl: campaign.imageUrl,
+        ctaLabel: campaign.ctaLabel,
+        ctaUrl: campaign.ctaUrl,
+        sponsored: true as const,
+      })),
+    };
   }
 
   private async assertValidCampaignInput(input: CreateAdCampaignInput): Promise<void> {
