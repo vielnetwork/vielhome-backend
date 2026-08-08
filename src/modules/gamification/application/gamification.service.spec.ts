@@ -1,7 +1,8 @@
 import { GamificationService } from './gamification.service';
 import { GamificationPolicy } from '../domain/policies/gamification.policy';
-import { ValidationError } from '../../../common/errors/app-error';
+import { DuplicateError, NotFoundAppError, UnexpectedAppError, ValidationError } from '../../../common/errors/app-error';
 import { XP_CATALOG } from '../domain/xp-catalog';
+import { DEFAULT_PAGE_LIMIT } from '../../../common/pagination/pagination.util';
 
 /**
  * 21_ADRs > ADR-123 — Gamification Hardening Phase 1. `GamificationService`
@@ -24,12 +25,13 @@ describe('GamificationService', () => {
     gamification = {
       awardXp: jest.fn(),
       unlockAchievement: jest.fn(),
+      revokeAchievement: jest.fn(),
       applyBuildingScoreDelta: jest.fn(),
       findXpTransactionByReference: jest.fn(),
       getPersonProgress: jest.fn(),
-      listXpHistory: jest.fn(),
+      listXpHistory: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       getBuildingScore: jest.fn(),
-      listLeaderboard: jest.fn(),
+      listLeaderboard: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       getXpDistribution: jest.fn().mockResolvedValue([]),
       getLeagueDistribution: jest.fn().mockResolvedValue([]),
       countActiveParticipantsSince: jest.fn().mockResolvedValue(0),
@@ -195,21 +197,228 @@ describe('GamificationService', () => {
   });
 
   describe('getLeaderboard', () => {
-    it('passes a valid tier straight through', async () => {
-      gamification.listLeaderboard.mockResolvedValue([]);
-      await service.getLeaderboard('GOLD');
-      expect(gamification.listLeaderboard).toHaveBeenCalledWith('GOLD');
+    const pagination = { page: 1, limit: DEFAULT_PAGE_LIMIT };
+
+    it('passes a valid tier and translated skip/take straight through, returning items + pagination meta', async () => {
+      gamification.listLeaderboard.mockResolvedValue({ items: [{ id: 'b1' }], total: 1 });
+      const result = await service.getLeaderboard('GOLD', pagination);
+      expect(gamification.listLeaderboard).toHaveBeenCalledWith('GOLD', { skip: 0, take: DEFAULT_PAGE_LIMIT });
+      expect(result).toEqual({
+        items: [{ id: 'b1' }],
+        meta: expect.objectContaining({ page: 1, limit: DEFAULT_PAGE_LIMIT, total: 1 }),
+      });
     });
 
     it('passes undefined straight through when no tier is given', async () => {
-      gamification.listLeaderboard.mockResolvedValue([]);
-      await service.getLeaderboard(undefined);
-      expect(gamification.listLeaderboard).toHaveBeenCalledWith(undefined);
+      gamification.listLeaderboard.mockResolvedValue({ items: [], total: 0 });
+      await service.getLeaderboard(undefined, pagination);
+      expect(gamification.listLeaderboard).toHaveBeenCalledWith(undefined, { skip: 0, take: DEFAULT_PAGE_LIMIT });
     });
 
     it('ADR-123: throws ValidationError for an invalid tier instead of silently querying (which would just return an empty 200)', () => {
-      expect(() => service.getLeaderboard('NOT_A_REAL_TIER')).toThrow(ValidationError);
+      expect(() => service.getLeaderboard('NOT_A_REAL_TIER', pagination)).toThrow(ValidationError);
       expect(gamification.listLeaderboard).not.toHaveBeenCalled();
+    });
+
+    it('ADR-124: page 2 translates to the correct skip offset', async () => {
+      gamification.listLeaderboard.mockResolvedValue({ items: [], total: 0 });
+      await service.getLeaderboard(undefined, { page: 2, limit: 20 });
+      expect(gamification.listLeaderboard).toHaveBeenCalledWith(undefined, { skip: 20, take: 20 });
+    });
+  });
+
+  describe('getMyXpHistory', () => {
+    const pagination = { page: 1, limit: DEFAULT_PAGE_LIMIT };
+
+    it('paginates and returns items + pagination meta for the caller’s own personId only', async () => {
+      gamification.listXpHistory.mockResolvedValue({ items: [{ id: 'tx-1' }], total: 1 });
+      const result = await service.getMyXpHistory('p1', {}, pagination);
+      expect(gamification.listXpHistory).toHaveBeenCalledWith('p1', {}, { skip: 0, take: DEFAULT_PAGE_LIMIT });
+      expect(result).toEqual({
+        items: [{ id: 'tx-1' }],
+        meta: expect.objectContaining({ page: 1, total: 1 }),
+      });
+    });
+
+    it('passes an optional reason filter through unchanged', async () => {
+      gamification.listXpHistory.mockResolvedValue({ items: [], total: 0 });
+      await service.getMyXpHistory('p1', { reason: 'ADMIN_CORRECTION' }, pagination);
+      expect(gamification.listXpHistory).toHaveBeenCalledWith(
+        'p1',
+        { reason: 'ADMIN_CORRECTION' },
+        { skip: 0, take: DEFAULT_PAGE_LIMIT },
+      );
+    });
+
+    it('ADR-124: throws ValidationError for an Invalid Date fromDate', async () => {
+      await expect(
+        service.getMyXpHistory('p1', { fromDate: new Date('not-a-date') }, pagination),
+      ).rejects.toBeInstanceOf(ValidationError);
+      expect(gamification.listXpHistory).not.toHaveBeenCalled();
+    });
+
+    it('ADR-124: throws ValidationError for an Invalid Date toDate', async () => {
+      await expect(
+        service.getMyXpHistory('p1', { toDate: new Date('not-a-date') }, pagination),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('ADR-124: throws ValidationError when fromDate is after toDate', async () => {
+      const fromDate = new Date('2026-06-01');
+      const toDate = new Date('2026-01-01');
+      await expect(
+        service.getMyXpHistory('p1', { fromDate, toDate }, pagination),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+  });
+
+  describe('adjustXp (Backoffice manual XP correction)', () => {
+    it('awards ADMIN_CORRECTION with the staff-specified signed amount and records an audited XpAdjustedByAdmin entry, bypassing XP_CATALOG', async () => {
+      gamification.awardXp.mockResolvedValue({ awarded: true, newBalance: 120 });
+
+      const result = await service.adjustXp({
+        personId: 'p1',
+        buildingId: 'b1',
+        amount: -30,
+        reason: 'Chargeback correction',
+        actorPersonId: 'staff-1',
+      });
+
+      expect(gamification.awardXp).toHaveBeenCalledWith(
+        expect.objectContaining({ personId: 'p1', buildingId: 'b1', reason: 'ADMIN_CORRECTION', amount: -30 }),
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'XpAdjustedByAdmin',
+          actorId: 'staff-1',
+          entityId: 'p1',
+          reason: 'Chargeback correction',
+          metadata: expect.objectContaining({ amount: -30, newBalance: 120 }),
+        }),
+      );
+      expect(result).toEqual({ newBalance: 120 });
+      // Deliberately no gameplay side effects for an admin correction.
+      expect(events.emit).not.toHaveBeenCalled();
+      expect(gamification.unlockAchievement).not.toHaveBeenCalled();
+      expect(gamification.applyBuildingScoreDelta).not.toHaveBeenCalled();
+    });
+
+    it('throws UnexpectedAppError on the structurally-unreachable { awarded: false } path instead of silently returning a stale balance', async () => {
+      gamification.awardXp.mockResolvedValue({ awarded: false });
+
+      await expect(
+        service.adjustXp({ personId: 'p1', amount: 10, reason: 'test', actorPersonId: 'staff-1' }),
+      ).rejects.toBeInstanceOf(UnexpectedAppError);
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('adjustBuildingScore (Backoffice manual Building Score correction)', () => {
+    it('records the correction audit entry and reuses applyBuildingScoreDelta end-to-end (league recalculation + event emission)', async () => {
+      gamification.applyBuildingScoreDelta.mockResolvedValue({
+        score: 110,
+        previousTier: 'BRONZE',
+        newTier: 'SILVER',
+        tierChanged: true,
+      });
+
+      await service.adjustBuildingScore({
+        buildingId: 'b1',
+        delta: 20,
+        reason: 'Community event bonus',
+        actorPersonId: 'staff-1',
+      });
+
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'BuildingScoreAdjustedByAdmin',
+          actorId: 'staff-1',
+          entityId: 'b1',
+          reason: 'Community event bonus',
+          metadata: { delta: 20 },
+        }),
+      );
+      expect(gamification.applyBuildingScoreDelta).toHaveBeenCalledWith('b1', 20, 'ADMIN_CORRECTION', expect.any(String));
+      // A genuine tier change from a correction gets the same event + audit as a gameplay-driven one.
+      expect(events.emit).toHaveBeenCalledWith('BuildingScoreChanged', expect.anything());
+      expect(events.emit).toHaveBeenCalledWith('LeagueTierChanged', expect.anything());
+      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'LeagueTierChanged' }));
+    });
+  });
+
+  describe('grantAchievement (Backoffice manual achievement grant)', () => {
+    it('unlocks the achievement and records an audited AchievementGrantedByAdmin entry', async () => {
+      gamification.unlockAchievement.mockResolvedValue({ title: 'First Steps' });
+
+      const result = await service.grantAchievement({
+        personId: 'p1',
+        code: 'FIRST_STEPS',
+        reason: 'Manual correction for missed trigger',
+        actorPersonId: 'staff-1',
+      });
+
+      expect(gamification.unlockAchievement).toHaveBeenCalledWith('p1', 'FIRST_STEPS', undefined);
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'AchievementGrantedByAdmin',
+          actorId: 'staff-1',
+          reason: 'Manual correction for missed trigger',
+          metadata: { code: 'FIRST_STEPS' },
+        }),
+      );
+      expect(result).toEqual({ title: 'First Steps' });
+    });
+
+    it('throws DuplicateError (409) when the person already actively holds this achievement, matching this codebase’s "already happened" convention', async () => {
+      gamification.unlockAchievement.mockResolvedValue(null);
+
+      await expect(
+        service.grantAchievement({
+          personId: 'p1',
+          code: 'FIRST_STEPS',
+          reason: 'test',
+          actorPersonId: 'staff-1',
+        }),
+      ).rejects.toBeInstanceOf(DuplicateError);
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('revokeAchievement (Backoffice manual achievement revoke)', () => {
+    it('revokes the achievement and records an audited AchievementRevokedByAdmin entry', async () => {
+      gamification.revokeAchievement.mockResolvedValue({ title: 'First Steps' });
+
+      const result = await service.revokeAchievement({
+        personId: 'p1',
+        code: 'FIRST_STEPS',
+        reason: 'Granted in error',
+        actorPersonId: 'staff-1',
+      });
+
+      expect(gamification.revokeAchievement).toHaveBeenCalledWith('p1', 'FIRST_STEPS', 'staff-1');
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'AchievementRevokedByAdmin',
+          actorId: 'staff-1',
+          reason: 'Granted in error',
+          metadata: { code: 'FIRST_STEPS' },
+        }),
+      );
+      expect(result).toEqual({ title: 'First Steps' });
+    });
+
+    it('throws NotFoundAppError (404) when the person does not currently hold this achievement', async () => {
+      gamification.revokeAchievement.mockResolvedValue(null);
+
+      await expect(
+        service.revokeAchievement({
+          personId: 'p1',
+          code: 'FIRST_STEPS',
+          reason: 'test',
+          actorPersonId: 'staff-1',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundAppError);
+      expect(audit.record).not.toHaveBeenCalled();
     });
   });
 

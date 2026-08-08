@@ -116,7 +116,7 @@ describe('GamificationRepository', () => {
     let tx: { personAchievement: { create: jest.Mock }; person: { update: jest.Mock } };
     let prisma: {
       achievementDefinition: { findUnique: jest.Mock };
-      personAchievement: { findUnique: jest.Mock };
+      personAchievement: { findFirst: jest.Mock };
       $transaction: jest.Mock;
     };
     let repository: GamificationRepository;
@@ -128,7 +128,7 @@ describe('GamificationRepository', () => {
       };
       prisma = {
         achievementDefinition: { findUnique: jest.fn() },
-        personAchievement: { findUnique: jest.fn() },
+        personAchievement: { findFirst: jest.fn() },
         $transaction: jest.fn((callback: (tx: unknown) => unknown) => callback(tx)),
       };
       repository = new GamificationRepository(prisma as unknown as PrismaService, policy);
@@ -143,17 +143,39 @@ describe('GamificationRepository', () => {
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
-    it('returns null without creating a second row when the person already holds this achievement (permanent, idempotent)', async () => {
+    it('returns null without creating a second row when the person already ACTIVELY holds this achievement', async () => {
       setup();
       prisma.achievementDefinition.findUnique.mockResolvedValue({
         id: 'def-1',
         title: 'X',
         xpBonus: 0,
       });
-      prisma.personAchievement.findUnique.mockResolvedValue({ id: 'existing' });
+      prisma.personAchievement.findFirst.mockResolvedValue({ id: 'existing' });
       const result = await repository.unlockAchievement('p1', 'FIRST_STEPS');
       expect(result).toBeNull();
       expect(tx.personAchievement.create).not.toHaveBeenCalled();
+      expect(prisma.personAchievement.findFirst).toHaveBeenCalledWith({
+        where: { personId: 'p1', definitionId: 'def-1', revokedAt: null },
+      });
+    });
+
+    it('ADR-124: creates a fresh row when a PRIOR grant of this achievement was revoked — a revoked-then-re-granted achievement is not permanently blocked', async () => {
+      setup();
+      prisma.achievementDefinition.findUnique.mockResolvedValue({
+        id: 'def-1',
+        title: 'First Steps',
+        xpBonus: 0,
+      });
+      // revokedAt: null in the where-clause means findFirst legitimately
+      // finds nothing even though a REVOKED row for this pair exists.
+      prisma.personAchievement.findFirst.mockResolvedValue(null);
+
+      const result = await repository.unlockAchievement('p1', 'FIRST_STEPS');
+
+      expect(result).toEqual({ title: 'First Steps' });
+      expect(tx.personAchievement.create).toHaveBeenCalledWith({
+        data: { personId: 'p1', definitionId: 'def-1', buildingId: undefined },
+      });
     });
 
     it('creates the achievement row without touching Person.xpBalance when xpBonus is 0 (today’s only real seeded value)', async () => {
@@ -163,7 +185,7 @@ describe('GamificationRepository', () => {
         title: 'First Steps',
         xpBonus: 0,
       });
-      prisma.personAchievement.findUnique.mockResolvedValue(null);
+      prisma.personAchievement.findFirst.mockResolvedValue(null);
 
       const result = await repository.unlockAchievement('p1', 'FIRST_STEPS');
 
@@ -181,7 +203,7 @@ describe('GamificationRepository', () => {
         title: 'Bonus Badge',
         xpBonus: 50,
       });
-      prisma.personAchievement.findUnique.mockResolvedValue(null);
+      prisma.personAchievement.findFirst.mockResolvedValue(null);
 
       const result = await repository.unlockAchievement('p1', 'FIRST_STEPS', 'b1');
 
@@ -194,6 +216,166 @@ describe('GamificationRepository', () => {
         where: { id: 'p1' },
         data: { xpBalance: { increment: 50 } },
       });
+    });
+  });
+
+  describe('revokeAchievement', () => {
+    let prisma: {
+      achievementDefinition: { findUnique: jest.Mock };
+      personAchievement: { findFirst: jest.Mock; update: jest.Mock };
+    };
+    let repository: GamificationRepository;
+
+    function setup() {
+      prisma = {
+        achievementDefinition: { findUnique: jest.fn() },
+        personAchievement: { findFirst: jest.fn(), update: jest.fn().mockResolvedValue({}) },
+      };
+      repository = new GamificationRepository(prisma as unknown as PrismaService, policy);
+    }
+
+    it('returns null (not an error) when no AchievementDefinition is seeded for the code', async () => {
+      setup();
+      prisma.achievementDefinition.findUnique.mockResolvedValue(null);
+      const result = await repository.revokeAchievement('p1', 'FIRST_STEPS', 'staff-1');
+      expect(result).toBeNull();
+      expect(prisma.personAchievement.update).not.toHaveBeenCalled();
+    });
+
+    it('returns null (not an error) when the person does not currently hold this achievement', async () => {
+      setup();
+      prisma.achievementDefinition.findUnique.mockResolvedValue({ id: 'def-1', title: 'X' });
+      prisma.personAchievement.findFirst.mockResolvedValue(null);
+      const result = await repository.revokeAchievement('p1', 'FIRST_STEPS', 'staff-1');
+      expect(result).toBeNull();
+      expect(prisma.personAchievement.update).not.toHaveBeenCalled();
+    });
+
+    it('closes out the active row via revokedById/revokedAt — never deletes it — and returns the achievement title', async () => {
+      setup();
+      prisma.achievementDefinition.findUnique.mockResolvedValue({
+        id: 'def-1',
+        title: 'First Steps',
+      });
+      prisma.personAchievement.findFirst.mockResolvedValue({ id: 'row-1' });
+
+      const result = await repository.revokeAchievement('p1', 'FIRST_STEPS', 'staff-1');
+
+      expect(result).toEqual({ title: 'First Steps' });
+      expect(prisma.personAchievement.update).toHaveBeenCalledWith({
+        where: { id: 'row-1' },
+        data: { revokedById: 'staff-1', revokedAt: expect.any(Date) },
+      });
+    });
+  });
+
+  describe('personExists / buildingExists', () => {
+    it('personExists returns true when a matching Person row is found, false otherwise', async () => {
+      const prisma = { person: { findUnique: jest.fn() } };
+      const repository = new GamificationRepository(prisma as unknown as PrismaService, policy);
+
+      prisma.person.findUnique.mockResolvedValue({ id: 'p1' });
+      expect(await repository.personExists('p1')).toBe(true);
+
+      prisma.person.findUnique.mockResolvedValue(null);
+      expect(await repository.personExists('missing')).toBe(false);
+    });
+
+    it('buildingExists returns true when a matching Building row is found, false otherwise', async () => {
+      const prisma = { building: { findUnique: jest.fn() } };
+      const repository = new GamificationRepository(prisma as unknown as PrismaService, policy);
+
+      prisma.building.findUnique.mockResolvedValue({ id: 'b1' });
+      expect(await repository.buildingExists('b1')).toBe(true);
+
+      prisma.building.findUnique.mockResolvedValue(null);
+      expect(await repository.buildingExists('missing')).toBe(false);
+    });
+  });
+
+  describe('listXpHistory', () => {
+    it('applies personId + optional reason/date-range filters, orders by createdAt desc with an id desc tie-breaker, and returns items+total from one $transaction', async () => {
+      const findMany = jest.fn().mockResolvedValue([{ id: 'tx-2' }, { id: 'tx-1' }]);
+      const count = jest.fn().mockResolvedValue(2);
+      const prisma = {
+        xpTransaction: { findMany, count },
+        $transaction: jest.fn((ops: unknown[]) => Promise.all(ops as Promise<unknown>[])),
+      };
+      const repository = new GamificationRepository(prisma as unknown as PrismaService, policy);
+
+      const result = await repository.listXpHistory(
+        'p1',
+        { reason: 'ADMIN_CORRECTION' },
+        { skip: 0, take: 20 },
+      );
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { personId: 'p1', reason: 'ADMIN_CORRECTION' },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          skip: 0,
+          take: 20,
+        }),
+      );
+      expect(result).toEqual({ items: [{ id: 'tx-2' }, { id: 'tx-1' }], total: 2 });
+    });
+
+    it('applies a createdAt gte/lte range when fromDate/toDate are given', async () => {
+      const findMany = jest.fn().mockResolvedValue([]);
+      const count = jest.fn().mockResolvedValue(0);
+      const prisma = {
+        xpTransaction: { findMany, count },
+        $transaction: jest.fn((ops: unknown[]) => Promise.all(ops as Promise<unknown>[])),
+      };
+      const repository = new GamificationRepository(prisma as unknown as PrismaService, policy);
+      const fromDate = new Date('2026-01-01');
+      const toDate = new Date('2026-01-31');
+
+      await repository.listXpHistory('p1', { fromDate, toDate }, { skip: 0, take: 20 });
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { personId: 'p1', createdAt: { gte: fromDate, lte: toDate } },
+        }),
+      );
+    });
+  });
+
+  describe('listLeaderboard', () => {
+    it('orders by score desc with an id asc tie-breaker, preserves the optional tier filter, and returns items+total from one $transaction', async () => {
+      const findMany = jest.fn().mockResolvedValue([{ id: 'b1' }]);
+      const count = jest.fn().mockResolvedValue(1);
+      const prisma = {
+        buildingScore: { findMany, count },
+        $transaction: jest.fn((ops: unknown[]) => Promise.all(ops as Promise<unknown>[])),
+      };
+      const repository = new GamificationRepository(prisma as unknown as PrismaService, policy);
+
+      const result = await repository.listLeaderboard('GOLD', { skip: 20, take: 20 });
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { leagueTier: 'GOLD' },
+          orderBy: [{ score: 'desc' }, { id: 'asc' }],
+          skip: 20,
+          take: 20,
+        }),
+      );
+      expect(result).toEqual({ items: [{ id: 'b1' }], total: 1 });
+    });
+
+    it('omits the tier filter (queries every building) when tier is undefined', async () => {
+      const findMany = jest.fn().mockResolvedValue([]);
+      const count = jest.fn().mockResolvedValue(0);
+      const prisma = {
+        buildingScore: { findMany, count },
+        $transaction: jest.fn((ops: unknown[]) => Promise.all(ops as Promise<unknown>[])),
+      };
+      const repository = new GamificationRepository(prisma as unknown as PrismaService, policy);
+
+      await repository.listLeaderboard(undefined, { skip: 0, take: 20 });
+
+      expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {} }));
     });
   });
 

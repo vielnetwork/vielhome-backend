@@ -67,6 +67,17 @@ export const XP_CATALOG: Record<XpReason, XpCatalogEntry> = {
     amount: -CHARGE_PAID_AMOUNT,
     buildingScoreDelta: -CHARGE_PAID_BUILDING_SCORE_DELTA,
   },
+  // 21_ADRs > ADR-124 — a required-for-type-completeness placeholder, NOT
+  // a real catalog entry: `Record<XpReason, XpCatalogEntry>` demands one
+  // row per `XpReason` value, but `ADMIN_CORRECTION` awards are never
+  // looked up here. `GamificationService.adjustXp` calls the repository's
+  // `awardXp` directly with the staff-specified signed amount from
+  // `AdjustXpDto`, bypassing `XP_CATALOG` entirely — a Backoffice
+  // correction has no fixed "gameplay" amount to look up, unlike every
+  // other reason in this table. `amount: 0`/no `achievementCode` keep this
+  // row inert against every other invariant this file's own spec checks
+  // (e.g. "every award stays non-negative except CHARGE_PAID_REVERSED").
+  ADMIN_CORRECTION: { amount: 0, buildingScoreDelta: 0 },
 };
 
 export const ACHIEVEMENT_SEED_DATA: Array<{

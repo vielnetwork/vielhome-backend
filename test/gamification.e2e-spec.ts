@@ -624,20 +624,24 @@ describe('Gamification (e2e) — My Progress & XP History (own-scoped, ADR-028)'
 });
 
 describe('Gamification (e2e) — Building Score & Cross-Building Leaderboard (ADR-028)', () => {
-  // Budget: 2 calls to POST /auth/otp/request (founder + outsider).
+  // Budget: 3 calls to POST /auth/otp/request (founder + founder2 + outsider).
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const createdBuildingIds: string[] = [];
 
   let founder: RegisteredPerson;
+  let founder2: RegisteredPerson;
   let outsider: RegisteredPerson;
   let buildingId: string;
+  let buildingId2: string;
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
     founder = await registerPerson(app);
     createdPhones.push(founder.phone);
+    founder2 = await registerPerson(app);
+    createdPhones.push(founder2.phone);
     outsider = await registerPerson(app);
     createdPhones.push(outsider.phone);
 
@@ -645,6 +649,15 @@ describe('Gamification (e2e) — Building Score & Cross-Building Leaderboard (AD
     createdBuildingIds.push(buildingId);
     await waitForBuildingFounderXp(prisma, founder.personId);
     await waitForBuildingScore(prisma, buildingId);
+
+    // 21_ADRs > ADR-124 — a SECOND building, same setup path, so this
+    // describe block has >1 leaderboard row to page over — both land at
+    // the exact same score (10, BRONZE), exercising the `id asc`
+    // deterministic tie-breaker for real, not just a shape check.
+    buildingId2 = await createBuilding(app, founder2.accessToken, { role: 'MANAGER' });
+    createdBuildingIds.push(buildingId2);
+    await waitForBuildingFounderXp(prisma, founder2.personId);
+    await waitForBuildingScore(prisma, buildingId2);
   });
 
   afterAll(async () => {
@@ -710,6 +723,55 @@ describe('Gamification (e2e) — Building Score & Cross-Building Leaderboard (AD
       .expect(400);
 
     expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  /** 21_ADRs > ADR-124 — pagination + the `score desc, id asc` deterministic
+   * tie-breaker. Both fixture buildings above share the exact same score
+   * (10) and tier (BRONZE) — real proof this suite's page 1 and page 2 are
+   * disjoint and, together, cover both, not a shape-only check. */
+  it('paginates the leaderboard: limit=1 splits the two same-score BRONZE buildings across two disjoint pages', async () => {
+    const page1 = await request(app.getHttpServer())
+      .get('/api/v1/gamification/leaderboard')
+      .query({ tier: 'BRONZE', page: 1, limit: 1 })
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(200);
+    expect(page1.body.data).toHaveLength(1);
+    expect(page1.body.metadata.pagination).toEqual(
+      expect.objectContaining({ page: 1, limit: 1, total: expect.any(Number) }),
+    );
+
+    const page2 = await request(app.getHttpServer())
+      .get('/api/v1/gamification/leaderboard')
+      .query({ tier: 'BRONZE', page: 2, limit: 1 })
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(200);
+    expect(page2.body.data).toHaveLength(1);
+
+    // The two pages are disjoint, and together contain both fixture buildings.
+    expect(page1.body.data[0].buildingId).not.toBe(page2.body.data[0].buildingId);
+    const combinedIds = [page1.body.data[0].buildingId, page2.body.data[0].buildingId];
+    expect(combinedIds).toEqual(expect.arrayContaining([buildingId, buildingId2]));
+  });
+
+  /** 21_ADRs > ADR-124 — the `id asc` tie-breaker makes repeated identical
+   * requests return rows in the SAME relative order — the concrete
+   * "a building doesn't shift/duplicate/vanish between page requests"
+   * guarantee pagination depends on. */
+  it('returns a stable, repeatable order for same-score rows across repeated requests', async () => {
+    const first = await request(app.getHttpServer())
+      .get('/api/v1/gamification/leaderboard')
+      .query({ tier: 'BRONZE', page: 1, limit: 50 })
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(200);
+    const second = await request(app.getHttpServer())
+      .get('/api/v1/gamification/leaderboard')
+      .query({ tier: 'BRONZE', page: 1, limit: 50 })
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(200);
+
+    expect(first.body.data.map((row: { buildingId: string }) => row.buildingId)).toEqual(
+      second.body.data.map((row: { buildingId: string }) => row.buildingId),
+    );
   });
 });
 
@@ -778,6 +840,61 @@ describe('Gamification (e2e) — Cross-Domain XP via Case Resolution (read-side 
 
     const reasons = res.body.data.map((tx: { reason: string }) => tx.reason);
     expect(reasons).toEqual(['CASE_RESOLVED', 'BUILDING_SETUP_COMPLETED', 'PROFILE_CREATED']);
+  });
+
+  /** 21_ADRs > ADR-124 — pagination. `manager` has exactly 3 XpTransaction
+   * rows at this point (CASE_RESOLVED, BUILDING_SETUP_COMPLETED,
+   * PROFILE_CREATED, most-recent-first) — real, precise pages, not just a
+   * shape check. */
+  it('paginates xp-history: limit=2 returns page 1 (2 newest) and page 2 (1 remaining), with correct pagination meta', async () => {
+    const page1 = await request(app.getHttpServer())
+      .get('/api/v1/gamification/me/xp-history')
+      .query({ page: 1, limit: 2 })
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    expect(page1.body.data.map((tx: { reason: string }) => tx.reason)).toEqual([
+      'CASE_RESOLVED',
+      'BUILDING_SETUP_COMPLETED',
+    ]);
+    expect(page1.body.metadata.pagination).toEqual(
+      expect.objectContaining({ page: 1, limit: 2, total: 3, totalPages: 2 }),
+    );
+
+    const page2 = await request(app.getHttpServer())
+      .get('/api/v1/gamification/me/xp-history')
+      .query({ page: 2, limit: 2 })
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    expect(page2.body.data.map((tx: { reason: string }) => tx.reason)).toEqual(['PROFILE_CREATED']);
+    expect(page2.body.metadata.pagination).toEqual(
+      expect.objectContaining({ page: 2, limit: 2, total: 3 }),
+    );
+  });
+
+  /** 21_ADRs > ADR-124 — `reason` filter, validated via `ParseEnumPipe`. */
+  it('filters xp-history by reason', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/gamification/me/xp-history')
+      .query({ reason: 'PROFILE_CREATED' })
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].reason).toBe('PROFILE_CREATED');
+    expect(res.body.metadata.pagination.total).toBe(1);
+  });
+
+  /** 21_ADRs > ADR-124 — an invalid `reason` is a clean 400, not a silent empty list (ParseEnumPipe). */
+  it('rejects an invalid xp-history reason with a clean 400 VALIDATION_ERROR', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/gamification/me/xp-history')
+      .query({ reason: 'NOT_A_REAL_REASON' })
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
   });
 
   it('reflects the combined Building Score from setup + case resolution (14 = 10+4)', async () => {

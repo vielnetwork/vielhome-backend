@@ -209,6 +209,19 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     label: 'View Gamification Analytics',
     description: 'View platform-wide Gamification analytics.',
   },
+  // 21_ADRs > ADR-124 — Gamification Hardening Phase 2 (Scale +
+  // Operations). The MANAGE counterpart to the pre-existing
+  // GAMIFICATION_ANALYTICS_VIEW above — same domain, same VIEW/MANAGE
+  // pairing convention as MAINTENANCE_MODE_VIEW/MANAGE and
+  // FEATURE_FLAGS_VIEW/MANAGE further below. Gates the four Backoffice
+  // Gamification correction routes (manual XP correction, manual
+  // Building Score correction, achievement grant, achievement revoke).
+  {
+    key: 'GAMIFICATION_CORRECTION_MANAGE',
+    label: 'Manage Gamification Corrections',
+    description:
+      "Manually correct a person's XP balance or a building's score, or grant/revoke an achievement, with a mandatory audited reason.",
+  },
   {
     key: 'MONITORING_VIEW',
     label: 'View System Monitoring',
@@ -327,6 +340,10 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
     'NOTIFICATION_DELIVERY_VIEW',
     'NOTIFICATION_DELIVERY_MANAGE',
     'GAMIFICATION_ANALYTICS_VIEW',
+    // 21_ADRs > ADR-124 — granted alongside this role's pre-existing
+    // GAMIFICATION_ANALYTICS_VIEW, same "never grant MANAGE without its
+    // own VIEW counterpart" convention this file already follows.
+    'GAMIFICATION_CORRECTION_MANAGE',
     'MONITORING_VIEW',
     // 21_ADRs > ADR-109 — natural home alongside this role's other
     // platform-wide operational/system keys. Both VIEW and MANAGE granted

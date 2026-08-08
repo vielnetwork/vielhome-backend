@@ -119,6 +119,10 @@ model Person {
   xpBalance      Int                 @default(0)
   xpTransactions XpTransaction[]     @relation("XpTransactionPerson")
   achievements   PersonAchievement[] @relation("PersonAchievementOwner")
+  // 21_ADRs > ADR-124 — nullable, same "only ever populated for a real,
+  // API-driven action" shape as `rbacRoleGrantsRevoked` above; a
+  // gameplay-unlocked achievement (never revoked) has no entry here.
+  achievementRevocations PersonAchievement[] @relation("PersonAchievementRevokedBy")
 
   // BackOffice (ADR-029) — a Person can simultaneously be a building
   // Member AND platform staff (`PlatformStaff`); the two are independent,
@@ -2206,6 +2210,14 @@ model NotificationTemplate {
 // guarantee on `XpTransaction` rather than an in-memory/read-before-write
 // check — see that model's own `@@unique` comment below for the full
 // reasoning, including why this is safe for every other XpReason.
+//
+// 21_ADRs > ADR-124 (Gamification Hardening Phase 2 — Scale + Operations)
+// added `ADMIN_CORRECTION` (a Backoffice staff correction to a person's
+// XP, distinct from every gameplay reason above) and made
+// `PersonAchievement` revocable — see each's own comment below for why
+// neither reuses the Phase 1 `@@unique([referenceType, referenceId,
+// reason])` guarantee (deliberately — admin corrections are legitimate
+// repeated actions over time, not a single one-shot gameplay award).
 // ---------------------------------------------------------------------------
 
 enum XpReason {
@@ -2219,6 +2231,19 @@ enum XpReason {
   // earned XP is later reversed or fully refunded. Never overwrites/
   // deletes the original CHARGE_PAID row (append-only ledger convention).
   CHARGE_PAID_REVERSED
+  // 21_ADRs > ADR-124 — a Backoffice staff correction to a person's XP
+  // (`GamificationAdministrationService.adjustXp`), distinct from every
+  // reason above this line: none of those are ever staff-initiated.
+  // Deliberately its own reason rather than reusing/faking one of the
+  // gameplay reasons above — "the correction came from resolving a case"
+  // would be a false ledger entry. `amount` may be positive or negative
+  // (same signed-`Int` shape `CHARGE_PAID_REVERSED` already uses).
+  // `referenceType`/`referenceId` are always left null for this reason
+  // (see `XpTransaction`'s own field comment below) — a correction is a
+  // legitimate, repeatable staff action, not a one-shot gameplay award,
+  // so it must never be constrained by the Phase 1 uniqueness guarantee
+  // built for the opposite case.
+  ADMIN_CORRECTION
 }
 
 enum AchievementCode {
@@ -2288,7 +2313,13 @@ model XpTransaction {
   // one-award-per-case — this is what closes the confirmed Cases
   // resolve -> reopen -> resolve duplicate-XP gap, without inventing an
   // unrequested "resolution episode" concept the source docs never
-  // named.
+  // named. 21_ADRs > ADR-124 — ADMIN_CORRECTION never populates
+  // referenceType/referenceId either (same NULL-is-distinct-from-NULL
+  // reasoning as PROFILE_CREATED/BUILDING_SETUP_COMPLETED/
+  // VOTE_PARTICIPATED above): a Backoffice correction is a legitimate
+  // action staff may repeat over time for the same person, and must not
+  // be silently suppressed by this constraint the way a genuine
+  // duplicate gameplay award should be.
   @@unique([referenceType, referenceId, reason])
   @@map("xp_transactions")
 }
@@ -2311,10 +2342,29 @@ model AchievementDefinition {
   @@map("achievement_definitions")
 }
 
-// Achievements are permanent (15_Gamification's own wording) — unlocked
-// once via the `@@unique([personId, definitionId])` constraint, never
-// revoked. `buildingId` is optional context (which building triggered
-// the unlock), not a scoping key — achievements belong to the person.
+// Achievements are permanent for gameplay (15_Gamification's own wording)
+// — a gameplay unlock is never revoked. 21_ADRs > ADR-124 (Phase 2) added
+// one narrow exception: `GamificationAdministrationService.
+// revokeAchievement` lets Backoffice staff correct a wrongly-granted
+// achievement. Never hard-deleted (this schema's own "History Never
+// Changes" rule, header comment) — `revokedAt`/`revokedBy` close the row
+// out in place, same "closed via a nullable revokedAt, never deleted"
+// shape `StaffRole`/`RolePermission` already established (ADR-099).
+// `buildingId` is optional context (which building triggered the
+// unlock), not a scoping key — achievements belong to the person.
+//
+// 21_ADRs > ADR-124 — the old plain `@@unique([personId, definitionId])`
+// is gone: it would make a row permanently un-re-grantable the moment it
+// was revoked once (a second row for the same pair would collide with
+// the first, closed, one forever). Replaced by a partial unique index,
+// `WHERE "revokedAt" IS NULL` (same technique, same reason,
+// hand-written in this feature's migration — Prisma's schema DSL still
+// has no way to express a partial index, see `PermissionKey`'s own
+// header comment above for the identical StaffRole/RolePermission
+// precedent): at most one ACTIVE achievement per (personId,
+// definitionId) at a time, but a revoked-then-re-granted pair gets a
+// fresh row and its full history — original grant, revoke, and any later
+// re-grant — stays queryable forever.
 model PersonAchievement {
   id           String                @id @default(cuid())
   personId     String
@@ -2324,8 +2374,16 @@ model PersonAchievement {
   buildingId   String?
   building     Building?             @relation(fields: [buildingId], references: [id])
   unlockedAt   DateTime              @default(now())
+  // 21_ADRs > ADR-124 — nullable; a gameplay-unlocked row (the only kind
+  // that existed before Phase 2) is never revoked and keeps both null
+  // forever. Only `GamificationAdministrationService.revokeAchievement`
+  // ever sets these, mirroring `StaffRole.revokedById`/`revokedAt`'s own
+  // nullable-actor-FK shape exactly.
+  revokedById String?
+  revokedBy   Person?   @relation("PersonAchievementRevokedBy", fields: [revokedById], references: [id])
+  revokedAt   DateTime?
 
-  @@unique([personId, definitionId])
+  @@index([personId, definitionId])
   @@index([personId])
   @@map("person_achievements")
 }
@@ -2711,6 +2769,18 @@ enum PermissionKey {
   // MONITORING_VIEW/DASHBOARD_VIEW/GAMIFICATION_ANALYTICS_VIEW precedent
   // for a small, uniform, pure-read domain.
   ANALYTICS_VIEW
+  // 21_ADRs > ADR-124 — Gamification Hardening Phase 2 (Scale +
+  // Operations). The MANAGE counterpart to the pre-existing
+  // GAMIFICATION_ANALYTICS_VIEW (a real VIEW/MANAGE split, per the
+  // ADR-101/ADR-109/ADR-114/ADR-116 convention for a domain with a
+  // genuine mutating action distinct from its own reads) — gates every
+  // Backoffice Gamification correction route (manual XP/Building Score
+  // adjustment, achievement grant/revoke). One key for all four
+  // correction actions, not one per action: same "single, small, uniform
+  // domain" precedent as LEGAL_HOLD_MANAGE/SCHEDULER_TRIGGER above — a
+  // narrowly-scoped correction-tooling surface, not a general
+  // Gamification CMS with independently-gated sub-actions.
+  GAMIFICATION_CORRECTION_MANAGE
 }
 
 model Role {

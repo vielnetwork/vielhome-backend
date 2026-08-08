@@ -137,8 +137,17 @@ export class GamificationRepository {
       return null;
     }
 
-    const existing = await this.prisma.personAchievement.findUnique({
-      where: { personId_definitionId: { personId, definitionId: definition.id } },
+    // 21_ADRs > ADR-124 — `findFirst` + explicit `revokedAt: null`, not
+    // `findUnique` on the old `personId_definitionId` compound key: that
+    // key no longer exists (the plain `@@unique` it depended on was
+    // replaced by a partial unique index scoped to active rows only, see
+    // `PersonAchievement`'s own schema comment). This also gives a
+    // revoked achievement its correct, intended behavior for free — a
+    // person whose grant was revoked no longer counts as "already has
+    // it," so a later gameplay trigger (or another manual grant) can
+    // unlock it again as a fresh row, exactly like a first-time unlock.
+    const existing = await this.prisma.personAchievement.findFirst({
+      where: { personId, definitionId: definition.id, revokedAt: null },
     });
     if (existing) return null;
 
@@ -171,6 +180,66 @@ export class GamificationRepository {
 
       return { title: definition.title };
     });
+  }
+
+  /**
+   * 21_ADRs > ADR-124 — Backoffice-only counterpart to `unlockAchievement`.
+   * Closes out the person's currently-active `PersonAchievement` row (if
+   * any) by setting `revokedById`/`revokedAt` — never deletes it (this
+   * schema's "History Never Changes" rule). Returns `null` (not an error)
+   * when the person does not currently hold this achievement, exactly
+   * like `unlockAchievement`'s own "already has it" no-op returns `null`
+   * — the caller (`GamificationService.revokeAchievement`) is what turns
+   * a `null` into a 404, since "nothing to revoke" is a real, expected
+   * outcome here, not a repository-layer error.
+   *
+   * Deliberately does NOT reverse a nonzero `xpBonus` this achievement
+   * may have granted at unlock time — every seeded achievement's
+   * `xpBonus` is 0 today (same fact ADR-123's own atomicity fix already
+   * relied on), and clawing back a bonus on revoke would be a second,
+   * separate correction decision this narrowly-scoped capability doesn't
+   * make on staff's behalf; a bonus reversal, if ever needed, is exactly
+   * what the sibling `adjustXp` correction is for.
+   */
+  async revokeAchievement(
+    personId: string,
+    code: AchievementCode,
+    actorPersonId: string,
+  ): Promise<{ title: string } | null> {
+    const definition = await this.prisma.achievementDefinition.findUnique({ where: { code } });
+    if (!definition) return null;
+
+    const active = await this.prisma.personAchievement.findFirst({
+      where: { personId, definitionId: definition.id, revokedAt: null },
+    });
+    if (!active) return null;
+
+    await this.prisma.personAchievement.update({
+      where: { id: active.id },
+      data: { revokedById: actorPersonId, revokedAt: new Date() },
+    });
+    return { title: definition.title };
+  }
+
+  /** 21_ADRs > ADR-124 — existence checks for the Backoffice correction
+   * routes, so an unknown `personId`/`buildingId` fails with a clean 404
+   * (`GamificationAdministrationService`) instead of either a raw Prisma
+   * FK-violation (P2003, for `buildingId` via `applyBuildingScoreDelta`'s
+   * own `buildingScore.upsert`) or, worse, silently succeeding (for
+   * `personId` via `awardXp`'s `person.update`, which itself throws P2025
+   * for an unknown id — clean, but this check gives a more specific,
+   * earlier failure before any transaction is opened). */
+  async personExists(personId: string): Promise<boolean> {
+    const found = await this.prisma.person.findUnique({ where: { id: personId }, select: { id: true } });
+    return found !== null;
+  }
+
+  async buildingExists(buildingId: string): Promise<boolean> {
+    const found = await this.prisma.building.findUnique({
+      where: { id: buildingId },
+      select: { id: true },
+    });
+    return found !== null;
   }
 
   /**
@@ -305,29 +374,84 @@ export class GamificationRepository {
       where: { id: personId },
       select: {
         xpBalance: true,
-        achievements: { include: { definition: true }, orderBy: { unlockedAt: 'desc' } },
+        // 21_ADRs > ADR-124 — `revokedAt: null` so a Backoffice-revoked
+        // achievement stops appearing as currently held. Without this,
+        // `revokeAchievement` would be a database-only, invisible-to-the-
+        // member action — the whole point of revoking a wrongly-granted
+        // achievement is that the member's own progress view reflects it.
+        achievements: {
+          where: { revokedAt: null },
+          include: { definition: true },
+          orderBy: { unlockedAt: 'desc' },
+        },
       },
     });
   }
 
-  listXpHistory(personId: string) {
-    return this.prisma.xpTransaction.findMany({
-      where: { personId },
-      orderBy: { createdAt: 'desc' },
-    });
+  /**
+   * 21_ADRs > ADR-124 — paginated (was unbounded). `reason`/date-range are
+   * optional filters; `reason` is served by the pre-existing `@@index([
+   * personId, reason])` (ADR-123), so filtering by it is cheap. Ordering
+   * is `createdAt desc` with an `id desc` tie-breaker for the same
+   * "deterministic order across identical-timestamp rows, stable
+   * pagination" reason `CaseRepository.listCases` already established —
+   * two XpTransaction rows can share a `createdAt` millisecond under real
+   * load (e.g. a bulk correction pass), and without the tie-breaker two
+   * such rows could swap pages between requests.
+   */
+  async listXpHistory(
+    personId: string,
+    filter: { reason?: XpReason; fromDate?: Date; toDate?: Date } | undefined,
+    pagination: { skip: number; take: number },
+  ) {
+    const where: Prisma.XpTransactionWhereInput = {
+      personId,
+      ...(filter?.reason ? { reason: filter.reason } : {}),
+      ...(filter?.fromDate || filter?.toDate
+        ? { createdAt: { gte: filter.fromDate, lte: filter.toDate } }
+        : {}),
+    };
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.xpTransaction.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        ...pagination,
+      }),
+      this.prisma.xpTransaction.count({ where }),
+    ]);
+    return { items, total };
   }
 
   getBuildingScore(buildingId: string) {
     return this.prisma.buildingScore.findUnique({ where: { buildingId } });
   }
 
-  listLeaderboard(tier?: LeagueTier) {
-    return this.prisma.buildingScore.findMany({
-      where: tier ? { leagueTier: tier } : undefined,
-      include: { building: { select: { id: true, name: true, city: true } } },
-      orderBy: { score: 'desc' },
-      take: 50,
-    });
+  /**
+   * 21_ADRs > ADR-124 — paginated (was a hardcoded `.take(50)`, silently
+   * dropping every building past the top 50 with no way to reach them).
+   * `tier` filter preserved unchanged. Ordering is `score desc` with an
+   * `id asc` tie-breaker — two `BuildingScore` rows can genuinely share a
+   * score (most obviously at the shared starting value of 0, or after
+   * matching correction amounts), and without a deterministic secondary
+   * sort key, Postgres does not guarantee the same relative order across
+   * two paginated queries for equal-score rows, which could shift a
+   * building between pages (or duplicate/skip it) between requests. Same
+   * "cross-building visibility is deliberate, unchanged from ADR-028"
+   * behavior as before — every authenticated caller still sees every
+   * building, this only bounds and pages the response shape.
+   */
+  async listLeaderboard(tier: LeagueTier | undefined, pagination: { skip: number; take: number }) {
+    const where: Prisma.BuildingScoreWhereInput = tier ? { leagueTier: tier } : {};
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.buildingScore.findMany({
+        where,
+        include: { building: { select: { id: true, name: true, city: true } } },
+        orderBy: [{ score: 'desc' }, { id: 'asc' }],
+        ...pagination,
+      }),
+      this.prisma.buildingScore.count({ where }),
+    ]);
+    return { items, total };
   }
 
   /**

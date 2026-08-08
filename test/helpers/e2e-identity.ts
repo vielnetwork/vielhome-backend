@@ -94,6 +94,9 @@ export const E2E_SUITE_ID = {
   ANALYTICS: 30,
   // 21_ADRs > ADR-118 — Initial Backoffice Bootstrap.
   BOOTSTRAP_BACKOFFICE_ADMIN: 31,
+  // 21_ADRs > ADR-124 — Gamification Hardening Phase 2 (Scale +
+  // Operations), Backoffice correction tooling.
+  GAMIFICATION_ADMINISTRATION: 32,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;

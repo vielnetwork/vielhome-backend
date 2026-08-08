@@ -204,7 +204,32 @@ this section is a map, not a replacement for those.
   observability, `tier`/date-range query validation (clean `400`s instead of
   a silent empty list or `Invalid Date`), and dedicated unit coverage for
   `GamificationService`/`GamificationRepository`/`GamificationEventListener`/
-  `XP_CATALOG`.
+  `XP_CATALOG`. Scaled and given operational correction tooling by `ADR-124`
+  (Gamification Hardening Phase 2 — Scale & Operations): `me/xp-history` is
+  now `page`/`limit`-paginated (deterministic `createdAt desc, id desc`
+  order) with optional `reason`/`fromDate`/`toDate` filters, and
+  `leaderboard` is now `page`/`limit`-paginated (deterministic `score desc,
+  id asc` order, replacing a hardcoded top-50 cutoff that silently dropped
+  every lower-ranked building) while keeping its `tier` filter and
+  cross-building visibility unchanged. A new Backoffice correction surface,
+  `POST /backoffice/gamification/persons/:personId/xp` (manual signed XP
+  correction), `.../buildings/:buildingId/score` (manual signed Building
+  Score correction, reusing the real league-recalculation/event pipeline),
+  `.../persons/:personId/achievements/grant`, and `.../persons/:personId/
+  achievements/revoke` gives staff a mandatory-reason, fully audited way to
+  fix a person's XP balance, a building's score, or an achievement without
+  ever editing the append-only ledger/history directly — every correction
+  is its own new, immutable row (a revoked `PersonAchievement` is closed out
+  via `revokedAt`/`revokedById`, never deleted, so a later re-grant is a
+  fresh row and full history stays queryable). Gated by a new
+  `GAMIFICATION_CORRECTION_MANAGE` permission (paired with the pre-existing
+  `GAMIFICATION_ANALYTICS_VIEW`, both granted to Technical Admin) plus the
+  existing `SENIOR_REVIEWER`+ platform-staff rank. Admin corrections use the
+  dedicated `ADMIN_CORRECTION` `XpReason` and deliberately never set
+  `referenceType`/`referenceId` — they are legitimate, independently
+  repeatable staff actions, never suppressed by the gameplay idempotency
+  guarantee `ADR-123` added. See `ADR-124` for the full design record,
+  including why no additional leaderboard search filter was added.
 - **BackOffice** (`src/modules/backoffice`) — all six named sub-domains
   shipped: Manager Verification (approve/reject/suspend/restore — `ADR-029`/
   `ADR-040`), Building Verification + appeals, Fraud & Abuse Center (case
@@ -516,7 +541,12 @@ rules live in `domain/`, orchestration in `application/`, persistence in
   serves live to `docs/openapi/<tag>.json` for git history to track. Needs
   a live `DATABASE_URL`/`REDIS_HOST` to run (same as `npm run test:e2e`) —
   run it once against the `v1.0-api-contract` tag and commit the result to
-  actually close `24_Release_Readiness_Audit_v1.0` §3.5.
+  actually close `24_Release_Readiness_Audit_v1.0` §3.5. `ADR-124`
+  (Gamification Hardening Phase 2) changed `GET /gamification/me/xp-history`
+  and `GET /gamification/leaderboard`'s response shape (both now paginated
+  envelopes) and added four new `POST /backoffice/gamification/...`
+  correction routes — the committed `docs/openapi/v1.0-api-contract.json`
+  does not yet reflect either change; re-run the export before publishing.
 - **Test coverage is policy-layer + Auth/Building/Finance/Governance/Cases/
   Documents/Notifications/Gamification e2e only**: 23 unit spec files cover
   the `domain/` policy layer across every module, plus

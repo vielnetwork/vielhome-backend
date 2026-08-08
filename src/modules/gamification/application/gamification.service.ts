@@ -1,11 +1,21 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { LeagueTier } from '@prisma/client';
-import type { XpReason } from '@prisma/client';
+import type { AchievementCode, XpReason } from '@prisma/client';
 import { GamificationRepository } from '../infrastructure/repositories/gamification.repository';
 import { GamificationPolicy } from '../domain/policies/gamification.policy';
 import { AuditService } from '../../../common/audit/audit.service';
-import { ValidationError } from '../../../common/errors/app-error';
+import {
+  DuplicateError,
+  NotFoundAppError,
+  UnexpectedAppError,
+  ValidationError,
+} from '../../../common/errors/app-error';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 import { XP_CATALOG } from '../domain/xp-catalog';
 import {
   AchievementUnlockedEvent,
@@ -221,6 +231,194 @@ export class GamificationService implements OnModuleInit {
     });
   }
 
+  /**
+   * 21_ADRs > ADR-124 — Backoffice manual XP correction (item 4A). Adds
+   * or subtracts an arbitrary, staff-specified `amount` — deliberately
+   * bypasses `XP_CATALOG` entirely (unlike `awardXp`, whose whole point
+   * is looking a *fixed* amount up for a *gameplay* reason) and calls the
+   * repository's `awardXp` directly with the dedicated `ADMIN_CORRECTION`
+   * reason. `referenceType`/`referenceId` are left unset on purpose — see
+   * `XpTransaction`'s own schema comment on why ADMIN_CORRECTION must
+   * never be reference-constrained the way gameplay awards are: staff may
+   * legitimately issue more than one correction for the same person over
+   * time, and each one is its own, independent, always-successful ledger
+   * row (the repository's `{awarded: false}` duplicate-suppression path
+   * is structurally unreachable here, since NULL references never
+   * collide with each other under the Phase 1 unique index — this is not
+   * a race that "shouldn't happen in practice," it is a race that cannot
+   * happen by construction).
+   *
+   * Deliberately does NOT unlock achievements, apply a Building Score
+   * delta, or emit the gameplay `XpAwarded` event (which drives the
+   * "you earned XP" notification) — an admin correction is a ledger/
+   * balance fix, not a simulated gameplay moment, and firing that
+   * notification for what might be a *negative* correction would be
+   * actively misleading. The correction's own audit record (`reason:
+   * dto.reason`, on `AuditLog`'s first-class `reason` column, not buried
+   * in `metadata`) is this action's auditability, per ADR-124's own
+   * Decision section.
+   */
+  async adjustXp(params: {
+    personId: string;
+    buildingId?: string;
+    amount: number;
+    reason: string;
+    actorPersonId: string;
+    requestId?: string;
+  }): Promise<{ newBalance: number }> {
+    const result = await this.gamification.awardXp({
+      personId: params.personId,
+      buildingId: params.buildingId,
+      reason: 'ADMIN_CORRECTION',
+      amount: params.amount,
+      sourceEvent: 'GamificationAdministrationService.adjustXp',
+    });
+    // Structurally unreachable (see doc comment above) — ADMIN_CORRECTION
+    // never sets referenceType/referenceId, so the unique index this
+    // could only fail against never applies to it. Guarded anyway rather
+    // than asserted, so a future schema change that narrows this
+    // assumption fails loudly instead of silently returning a stale
+    // balance.
+    if (!result.awarded) {
+      throw new UnexpectedAppError(
+        'ADMIN_CORRECTION award unexpectedly suppressed as a duplicate — this should be ' +
+          'structurally impossible (ADMIN_CORRECTION never sets referenceType/referenceId).',
+      );
+    }
+
+    await this.audit.record({
+      actorId: params.actorPersonId,
+      buildingId: params.buildingId,
+      action: 'XpAdjustedByAdmin',
+      entityType: 'Person',
+      entityId: params.personId,
+      reason: params.reason,
+      metadata: { amount: params.amount, newBalance: result.newBalance },
+      requestId: params.requestId,
+    });
+
+    return { newBalance: result.newBalance };
+  }
+
+  /**
+   * 21_ADRs > ADR-124 — Backoffice manual Building Score correction (item
+   * 4B). Reuses the private `applyBuildingScoreDelta` below end-to-end —
+   * the exact same league-recalculation + `BuildingScoreEvent` history
+   * row + `BuildingScoreChanged`/`LeagueTierChanged` event emission and
+   * tier-change audit record a gameplay-driven delta already gets, so a
+   * correction that crosses a league boundary is indistinguishable
+   * downstream from a gameplay one (Notifications, in particular, should
+   * treat "the building was promoted" the same way regardless of why).
+   * Adds one more audit record on top — the correction itself (`reason:
+   * dto.reason`, `metadata: { delta }`), which the shared helper has no
+   * reason to know about (a gameplay delta has no human actor or
+   * free-text reason).
+   */
+  async adjustBuildingScore(params: {
+    buildingId: string;
+    delta: number;
+    reason: string;
+    actorPersonId: string;
+    requestId?: string;
+  }): Promise<void> {
+    await this.audit.record({
+      actorId: params.actorPersonId,
+      buildingId: params.buildingId,
+      action: 'BuildingScoreAdjustedByAdmin',
+      entityType: 'Building',
+      entityId: params.buildingId,
+      reason: params.reason,
+      metadata: { delta: params.delta },
+      requestId: params.requestId,
+    });
+    await this.applyBuildingScoreDelta(
+      params.buildingId,
+      params.delta,
+      'ADMIN_CORRECTION',
+      'GamificationAdministrationService.adjustBuildingScore',
+    );
+  }
+
+  /**
+   * 21_ADRs > ADR-124 — Backoffice manual achievement grant (item 4C).
+   * Reuses `unlockAchievement` directly (now revoke-aware — see its own
+   * doc comment) rather than duplicating its definition-lookup/atomicity
+   * logic. Throws `DuplicateError` (409) if the person already actively
+   * holds this achievement, matching this codebase's existing "already
+   * happened" convention (`VotingService`'s "already voted",
+   * `FinanceService`'s "late fee already applied") rather than silently
+   * no-op-ing the way the gameplay path does — a staff-initiated grant
+   * that does nothing should tell the staff member that, not look
+   * successful.
+   */
+  async grantAchievement(params: {
+    personId: string;
+    code: AchievementCode;
+    buildingId?: string;
+    reason: string;
+    actorPersonId: string;
+    requestId?: string;
+  }): Promise<{ title: string }> {
+    const unlocked = await this.gamification.unlockAchievement(
+      params.personId,
+      params.code,
+      params.buildingId,
+    );
+    if (!unlocked) {
+      throw new DuplicateError('This person already holds this achievement.');
+    }
+
+    await this.audit.record({
+      actorId: params.actorPersonId,
+      buildingId: params.buildingId,
+      action: 'AchievementGrantedByAdmin',
+      entityType: 'Person',
+      entityId: params.personId,
+      reason: params.reason,
+      metadata: { code: params.code },
+      requestId: params.requestId,
+    });
+    return unlocked;
+  }
+
+  /**
+   * 21_ADRs > ADR-124 — Backoffice manual achievement revoke (item 4C).
+   * Throws `NotFoundAppError` (404) when the person does not currently
+   * hold this achievement — same "nothing active to act on" shape
+   * `RbacManagementService.revokeRole`'s own "Active role grant not
+   * found" already established for this codebase's other revocable-row
+   * domain. Never deletes the `PersonAchievement` row (see its own schema
+   * comment) — this only closes it out via `revokedAt`/`revokedById`,
+   * fully explicit in both the row itself and this audit record.
+   */
+  async revokeAchievement(params: {
+    personId: string;
+    code: AchievementCode;
+    reason: string;
+    actorPersonId: string;
+    requestId?: string;
+  }): Promise<{ title: string }> {
+    const revoked = await this.gamification.revokeAchievement(
+      params.personId,
+      params.code,
+      params.actorPersonId,
+    );
+    if (!revoked) {
+      throw new NotFoundAppError('This person does not currently hold this achievement.');
+    }
+
+    await this.audit.record({
+      actorId: params.actorPersonId,
+      action: 'AchievementRevokedByAdmin',
+      entityType: 'Person',
+      entityId: params.personId,
+      reason: params.reason,
+      metadata: { code: params.code },
+      requestId: params.requestId,
+    });
+    return revoked;
+  }
+
   private async applyBuildingScoreDelta(
     buildingId: string,
     delta: number,
@@ -271,8 +469,46 @@ export class GamificationService implements OnModuleInit {
     return this.gamification.getPersonProgress(personId);
   }
 
-  getMyXpHistory(personId: string) {
-    return this.gamification.listXpHistory(personId);
+  /**
+   * 21_ADRs > ADR-124 — paginated (was unbounded — see
+   * `GamificationRepository.listXpHistory`'s own doc comment). `reason`
+   * is validated at the controller via `ParseEnumPipe(XpReason, {
+   * optional: true })` (the same per-param enum-pipe convention
+   * `CasesController.listCases` already uses for `type`/`status`/
+   * `priority`), so it always arrives here as either `undefined` or a
+   * real `XpReason` — no re-validation needed. `fromDate`/`toDate` are
+   * validated here, mirroring `getAnalytics`'s own identically-shaped
+   * check immediately below (the closest existing precedent for this
+   * exact validation, not a new pattern). Strictly own-scoped: `personId`
+   * always comes from the caller's own JWT (`GamificationController.
+   * getMyXpHistory`), never a path/query param — there is no way to
+   * request another person's XP history through this method.
+   */
+  async getMyXpHistory(
+    personId: string,
+    filter: { reason?: XpReason; fromDate?: Date; toDate?: Date },
+    pagination: PaginationParams,
+  ) {
+    if (filter.fromDate && Number.isNaN(filter.fromDate.getTime())) {
+      throw new ValidationError('Invalid fromDate.');
+    }
+    if (filter.toDate && Number.isNaN(filter.toDate.getTime())) {
+      throw new ValidationError('Invalid toDate.');
+    }
+    if (
+      filter.fromDate &&
+      filter.toDate &&
+      filter.fromDate.getTime() > filter.toDate.getTime()
+    ) {
+      throw new ValidationError('fromDate must not be after toDate.');
+    }
+
+    const { items, total } = await this.gamification.listXpHistory(
+      personId,
+      filter,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async getBuildingScore(buildingId: string) {
@@ -288,14 +524,24 @@ export class GamificationService implements OnModuleInit {
    * value. An invalid value is now a clean `ValidationError` (400)
    * instead of silently reaching Prisma's `where` clause, which would
    * just never match any row and return an empty (but 200 OK) list.
+   *
+   * 21_ADRs > ADR-124 — paginated (was a hardcoded top-50 — see
+   * `GamificationRepository.listLeaderboard`'s own doc comment for the
+   * tie-breaker rationale). `tier` validation unchanged from ADR-123. No
+   * building-name/search filter — deliberately not added; see ADR-124's
+   * own Decision section for why (no indexed text-search column, and no
+   * clear product need beyond `tier`, which this MVP's own "buildings
+   * compete in leagues" framing already centers on).
    */
-  getLeaderboard(tier?: string) {
+  getLeaderboard(tier: string | undefined, pagination: PaginationParams) {
     if (tier !== undefined && !VALID_LEAGUE_TIERS.has(tier)) {
       throw new ValidationError(
         `Invalid tier: "${tier}". Must be one of: ${Object.values(LeagueTier).join(', ')}.`,
       );
     }
-    return this.gamification.listLeaderboard(tier as LeagueTier | undefined);
+    return this.gamification
+      .listLeaderboard(tier as LeagueTier | undefined, toSkipTake(pagination))
+      .then(({ items, total }) => ({ items, meta: buildPaginationMeta(pagination, total) }));
   }
 
   /**

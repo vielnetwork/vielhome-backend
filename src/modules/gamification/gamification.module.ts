@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
 import { GamificationController } from './controller/gamification.controller';
 import { BuildingGamificationController } from './controller/building-gamification.controller';
+import { GamificationAdministrationController } from './controller/gamification-administration.controller';
 import { GamificationService } from './application/gamification.service';
+import { GamificationAdministrationService } from './application/gamification-administration.service';
 import { GamificationEventListener } from './application/gamification-event-listener.service';
 import { GamificationRepository } from './infrastructure/repositories/gamification.repository';
 import { GamificationPolicy } from './domain/policies/gamification.policy';
@@ -23,10 +25,20 @@ import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
   // analytics` route alongside the pre-existing `PlatformRolesGuard`. No
   // cycle risk: this module is never imported back into `BackOfficeModule`/
   // `BackofficeRbacModule`.
+  // 21_ADRs > ADR-124 — `GamificationAdministrationController`/`...Service`
+  // (the four Backoffice correction routes) also live here rather than in
+  // `BackOfficeModule`, precisely to preserve that same "never imported
+  // back" one-way graph — see `GamificationAdministrationService`'s own doc
+  // comment.
   imports: [BuildingModule, BackOfficeModule, BackofficeRbacModule],
-  controllers: [GamificationController, BuildingGamificationController],
+  controllers: [
+    GamificationController,
+    BuildingGamificationController,
+    GamificationAdministrationController,
+  ],
   providers: [
     GamificationService,
+    GamificationAdministrationService,
     GamificationEventListener,
     GamificationRepository,
     GamificationPolicy,

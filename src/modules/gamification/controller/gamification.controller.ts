@@ -1,5 +1,6 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, ParseEnumPipe, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { XpReason } from '@prisma/client';
 import { GamificationService } from '../application/gamification.service';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
@@ -8,6 +9,8 @@ import { PermissionsGuard } from '../../../common/guards/permissions.guard';
 import { RequiresPermission } from '../../../common/decorators/requires-permission.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
+import { parsePagination } from '../../../common/pagination/pagination.util';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
 
 /**
  * Gamification MVP — personal progress + cross-building leaderboard
@@ -44,9 +47,38 @@ export class GamificationController {
     return this.gamification.getMyProgress(user.sub);
   }
 
+  /**
+   * 21_ADRs > ADR-124 — paginated, with optional `reason`/`fromDate`/
+   * `toDate` filters. `reason` is validated here via
+   * `ParseEnumPipe(XpReason, { optional: true })` — the same per-param
+   * enum-pipe convention `CasesController.listCases` already uses for
+   * `type`/`status`/`priority` — so it always reaches the service as
+   * either `undefined` or a real `XpReason`, a clean 400 otherwise.
+   * `fromDate`/`toDate` are passed through as raw strings and validated
+   * in the service (mirroring `getAnalytics` below). `page`/`limit` use
+   * the same tolerant `parsePagination` every other paginated list
+   * endpoint in this codebase uses. Strictly own-scoped — `personId`
+   * always comes from the caller's own JWT, never a query/path param.
+   */
   @Get('me/xp-history')
-  getMyXpHistory(@CurrentUser() user: JwtPayload) {
-    return this.gamification.getMyXpHistory(user.sub);
+  async getMyXpHistory(
+    @CurrentUser() user: JwtPayload,
+    @Query('reason', new ParseEnumPipe(XpReason, { optional: true })) reason?: XpReason,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.gamification.getMyXpHistory(
+      user.sub,
+      {
+        reason,
+        fromDate: fromDate ? new Date(fromDate) : undefined,
+        toDate: toDate ? new Date(toDate) : undefined,
+      },
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   /**
@@ -58,10 +90,21 @@ export class GamificationController {
    * own doc comment for why validation lives there rather than in a bound
    * `@Query()` DTO (matching `AnalyticsService.resolveRange`'s existing
    * precedent for this same kind of check, not a new pattern).
+   *
+   * 21_ADRs > ADR-124 — now also paginated via the same `page`/`limit`
+   * convention as `me/xp-history` above.
    */
   @Get('leaderboard')
-  getLeaderboard(@Query('tier') tier?: string) {
-    return this.gamification.getLeaderboard(tier);
+  async getLeaderboard(
+    @Query('tier') tier?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.gamification.getLeaderboard(
+      tier,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   /**
