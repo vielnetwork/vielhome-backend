@@ -9,6 +9,7 @@ import { ResponseInterceptor } from '../src/common/interceptors/response.interce
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
 import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
+import { DEFAULT_PAGE_LIMIT } from '../src/common/pagination/pagination.util';
 
 // 21_ADRs > ADR-079 — Testing Phase 3e: Gamification domain e2e coverage.
 //
@@ -556,6 +557,45 @@ function waitForBuildingScore(prisma: PrismaService, buildingId: string) {
   return waitFor(() => prisma.buildingScore.findUnique({ where: { buildingId } }));
 }
 
+/**
+ * 21_ADRs > ADR-124 round-1 fix — real local verification surfaced that
+ * this suite runs against a shared, PERSISTENT dev/test Postgres database
+ * (never reset between runs), which can already contain an arbitrary
+ * number of `BuildingScore` rows left by other e2e suites/prior runs. Once
+ * the leaderboard became genuinely paginated, three tests here started
+ * assuming a freshly-created fixture building must land on page 1 (or
+ * split cleanly across "page 1" and "page 2") — an assumption that only
+ * ever held by coincidence on a clean/empty database, not a real
+ * guarantee, and broke the moment stale rows accumulated.
+ *
+ * Rather than weakening the API (no fixture-only filter was added — see
+ * `GamificationService.getLeaderboard`'s own doc comment for why) or
+ * guessing a "big enough" limit and hoping the fixtures land inside it,
+ * this computes each fixture's REAL, live rank directly from Postgres —
+ * the exact same ordering (`leagueTier` filter, then `score desc, id asc`)
+ * `GamificationRepository.listLeaderboard` itself uses — so every
+ * assertion below is derived from the actual current state of the shared
+ * database, never an assumption about it. This is what makes these tests
+ * deterministic and independent of stale rows left by earlier runs,
+ * without ever touching data that isn't this suite's own fixture.
+ */
+async function leaderboardRank(
+  prisma: PrismaService,
+  buildingId: string,
+  tier?: 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM' | 'DIAMOND',
+): Promise<number> {
+  const target = await prisma.buildingScore.findUniqueOrThrow({ where: { buildingId } });
+  return prisma.buildingScore.count({
+    where: {
+      ...(tier ? { leagueTier: tier } : {}),
+      OR: [
+        { score: { gt: target.score } },
+        { score: target.score, id: { lt: target.id } },
+      ],
+    },
+  });
+}
+
 describe('Gamification (e2e) — My Progress & XP History (own-scoped, ADR-028)', () => {
   // Budget: 2 calls to POST /auth/otp/request (personA + personB).
   let app: INestApplication;
@@ -686,9 +726,18 @@ describe('Gamification (e2e) — Building Score & Cross-Building Leaderboard (AD
     expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
 
+  /** 21_ADRs > ADR-124 round-1 fix — requests the exact page this
+   * building's OWN, live-computed rank says it must be on (see
+   * `leaderboardRank`'s own doc comment), rather than assuming page 1 —
+   * deterministic regardless of how many stale rows this shared dev
+   * database already has. */
   it('exposes the building on the leaderboard to ANY authenticated user', async () => {
+    const rank = await leaderboardRank(prisma, buildingId);
+    const page = Math.floor(rank / DEFAULT_PAGE_LIMIT) + 1;
+
     const res = await request(app.getHttpServer())
       .get('/api/v1/gamification/leaderboard')
+      .query({ page })
       .set('Authorization', `Bearer ${outsider.accessToken}`)
       .expect(200);
 
@@ -696,10 +745,18 @@ describe('Gamification (e2e) — Building Score & Cross-Building Leaderboard (AD
     expect(ids).toContain(buildingId);
   });
 
+  /** Same rank-computed-page technique, scoped to the BRONZE filter this
+   * fixture actually belongs to. The GOLD half needs no such computation —
+   * a building that is BRONZE can never appear on ANY page of a
+   * `tier: 'GOLD'` query, so a plain absence check is already
+   * pollution-proof. */
   it('filters the leaderboard by tier: matches its own BRONZE, excludes GOLD', async () => {
+    const bronzeRank = await leaderboardRank(prisma, buildingId, 'BRONZE');
+    const bronzePage = Math.floor(bronzeRank / DEFAULT_PAGE_LIMIT) + 1;
+
     const bronze = await request(app.getHttpServer())
       .get('/api/v1/gamification/leaderboard')
-      .query({ tier: 'BRONZE' })
+      .query({ tier: 'BRONZE', page: bronzePage })
       .set('Authorization', `Bearer ${outsider.accessToken}`)
       .expect(200);
     const bronzeIds = bronze.body.data.map((row: { buildingId: string }) => row.buildingId);
@@ -725,32 +782,44 @@ describe('Gamification (e2e) — Building Score & Cross-Building Leaderboard (AD
     expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
   });
 
-  /** 21_ADRs > ADR-124 — pagination + the `score desc, id asc` deterministic
-   * tie-breaker. Both fixture buildings above share the exact same score
-   * (10) and tier (BRONZE) — real proof this suite's page 1 and page 2 are
-   * disjoint and, together, cover both, not a shape-only check. */
-  it('paginates the leaderboard: limit=1 splits the two same-score BRONZE buildings across two disjoint pages', async () => {
-    const page1 = await request(app.getHttpServer())
+  /** 21_ADRs > ADR-124 round-1 fix — the two fixture buildings share the
+   * exact same real score (10, both from the same `BuildingCreated` ->
+   * `BUILDING_SETUP_COMPLETED` award path) and tier (BRONZE), so their
+   * relative order is decided ENTIRELY by the `id asc` tie-breaker — this
+   * test doesn't need to force a score difference to exercise it. Each
+   * fixture's rank is computed live from Postgres (see `leaderboardRank`),
+   * then requested at `limit=1` on its own exact computed page — with
+   * `limit=1`, rank and 0-indexed page position are the same number, so
+   * this proves BOTH real pagination math (skip/take) AND the deterministic
+   * tie-breaker at once, regardless of how many stale BRONZE rows this
+   * shared dev database already has. */
+  it('paginates the leaderboard: limit=1 places each same-score fixture on its own exact deterministic rank/page', async () => {
+    const rank1 = await leaderboardRank(prisma, buildingId, 'BRONZE');
+    const rank2 = await leaderboardRank(prisma, buildingId2, 'BRONZE');
+    // A real, distinct rank for each — the concrete proof the `id asc`
+    // tie-breaker is actually being applied to these two equal-score rows
+    // (if it weren't, Postgres would give no deterministic order between
+    // them and this count-based rank could tie or flap between runs).
+    expect(rank1).not.toBe(rank2);
+
+    const res1 = await request(app.getHttpServer())
       .get('/api/v1/gamification/leaderboard')
-      .query({ tier: 'BRONZE', page: 1, limit: 1 })
+      .query({ tier: 'BRONZE', page: rank1 + 1, limit: 1 })
       .set('Authorization', `Bearer ${outsider.accessToken}`)
       .expect(200);
-    expect(page1.body.data).toHaveLength(1);
-    expect(page1.body.metadata.pagination).toEqual(
-      expect.objectContaining({ page: 1, limit: 1, total: expect.any(Number) }),
+    expect(res1.body.data).toHaveLength(1);
+    expect(res1.body.data[0].buildingId).toBe(buildingId);
+    expect(res1.body.metadata.pagination).toEqual(
+      expect.objectContaining({ page: rank1 + 1, limit: 1, total: expect.any(Number) }),
     );
 
-    const page2 = await request(app.getHttpServer())
+    const res2 = await request(app.getHttpServer())
       .get('/api/v1/gamification/leaderboard')
-      .query({ tier: 'BRONZE', page: 2, limit: 1 })
+      .query({ tier: 'BRONZE', page: rank2 + 1, limit: 1 })
       .set('Authorization', `Bearer ${outsider.accessToken}`)
       .expect(200);
-    expect(page2.body.data).toHaveLength(1);
-
-    // The two pages are disjoint, and together contain both fixture buildings.
-    expect(page1.body.data[0].buildingId).not.toBe(page2.body.data[0].buildingId);
-    const combinedIds = [page1.body.data[0].buildingId, page2.body.data[0].buildingId];
-    expect(combinedIds).toEqual(expect.arrayContaining([buildingId, buildingId2]));
+    expect(res2.body.data).toHaveLength(1);
+    expect(res2.body.data[0].buildingId).toBe(buildingId2);
   });
 
   /** 21_ADRs > ADR-124 — the `id asc` tie-breaker makes repeated identical
