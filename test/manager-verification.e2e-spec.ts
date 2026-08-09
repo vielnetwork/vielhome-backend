@@ -668,18 +668,34 @@ describe('Manager Verification (e2e) — Owner Approval: blocks & threshold (06.
     expect(res.body.errors[0].code).toBe('DUPLICATE');
   });
 
-  it('casts approval 2/4 (50%) — crosses the threshold, verifies the manager', async () => {
-    const res = await request(app.getHttpServer())
-      .post(`/api/v1/buildings/${buildingId}/manager-verification/approve`)
-      .set('Authorization', `Bearer ${owners[1].accessToken}`)
-      .expect(201);
+  it('serializes concurrent threshold votes — one finalizes and one conflicts', async () => {
+    const [first, second] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/manager-verification/approve`)
+        .set('Authorization', `Bearer ${owners[1].accessToken}`),
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/manager-verification/approve`)
+        .set('Authorization', `Bearer ${owners[2].accessToken}`),
+    ]);
+    const success = [first, second].find((response) => response.status === 201)!;
+    const conflict = [first, second].find((response) => response.status === 409)!;
 
-    expect(res.body.data.resolved).toBe(true);
-    expect(res.body.data.approverCount).toBe(2);
-    expect(res.body.data.totalOwners).toBe(4);
-    expect(res.body.data.case.status).toBe('VERIFIED');
-    expect(res.body.data.case.decision).toBe('APPROVE');
-    expect(res.body.data.case.verificationSource).toBe('OWNER_APPROVAL');
+    expect(success.body.data.resolved).toBe(true);
+    expect(success.body.data.approverCount).toBe(2);
+    expect(success.body.data.totalOwners).toBe(4);
+    expect(success.body.data.case.status).toBe('VERIFIED');
+    expect(success.body.data.case.decision).toBe('APPROVE');
+    expect(success.body.data.case.verificationSource).toBe('OWNER_APPROVAL');
+    expect(conflict.body.errors[0].code).toBe('CONFLICT');
+
+    const decisions = await prisma.auditLog.count({
+      where: {
+        entityType: 'ManagerVerificationCase',
+        entityId: success.body.data.case.id,
+        action: 'ManagerVerificationDecided',
+      },
+    });
+    expect(decisions).toBe(1);
   });
 
   it('reflects the now-verified manager on the real Membership row (direct read)', async () => {
@@ -691,21 +707,16 @@ describe('Manager Verification (e2e) — Owner Approval: blocks & threshold (06.
     expect(membership?.managerState).toBe('VERIFIED');
   });
 
-  it('blocks approving once no open case remains — the case is already decided', async () => {
-    // `getOpenManagerVerificationCaseForBuilding` only ever finds a case
-    // with `status: 'PENDING'` (see that repository method's own doc
-    // comment) — once this building's case resolved to VERIFIED above,
-    // there is no PENDING case left to find at all, so `approveByOwner`
-    // 404s from that lookup itself rather than reaching
-    // `ManagerVerificationPolicy.assertCaseOpen`'s own 422 — that guard is
-    // real defensive code, but for THIS call path it can never actually
-    // fire, since the lookup that feeds it is already filtered to PENDING.
+  it('returns a stable conflict once no open case remains — the case is already decided', async () => {
+    // Once the open case has been resolved, the service consults the latest
+    // case and returns the stable mutation contract: this is a conflict,
+    // not a missing resource.
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/manager-verification/approve`)
       .set('Authorization', `Bearer ${owners[2].accessToken}`)
-      .expect(404);
+      .expect(409);
 
-    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+    expect(res.body.errors[0].code).toBe('CONFLICT');
   });
 });
 
@@ -867,14 +878,14 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
     expect(building?.recoveryModeEnteredAt).not.toBeNull();
   });
 
-  it('blocks re-deciding an already-decided case (assertCaseOpen)', async () => {
+  it('blocks re-deciding an already-decided case with a stable conflict', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/backoffice/manager-verifications/${case1Id}/decide`)
       .set('Authorization', `Bearer ${admin.accessToken}`)
       .send({ decision: 'REJECT', reason: 'attempted a second decision' })
-      .expect(422);
+      .expect(409);
 
-    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+    expect(res.body.errors[0].code).toBe('CONFLICT');
   });
 
   it('blocks appealing when the caller has no case at all for that building', async () => {
@@ -909,6 +920,24 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
     expect(res.body.data.isReverification).toBe(true);
     expect(res.body.data.status).toBe('PENDING');
     appealCaseId = res.body.data.id;
+  });
+
+  it('rejects a repeated appeal without creating another pending reverification', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${building2}/manager-verification/appeal`)
+      .set('Authorization', `Bearer ${founder2.accessToken}`)
+      .expect(409);
+    expect(res.body.errors[0].code).toBe('CONFLICT');
+
+    const pending = await prisma.managerVerificationCase.count({
+      where: {
+        buildingId: building2,
+        candidateId: founder2.personId,
+        isReverification: true,
+        status: 'PENDING',
+      },
+    });
+    expect(pending).toBe(1);
   });
 
   it('blocks restoring a case that is not SUSPENDED (the REJECTED case)', async () => {
@@ -949,6 +978,25 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
     expect(building?.recoveryModeEnteredAt).toBeNull();
   });
 
+  it('rejects a repeated restore and retains exactly one verified restore child', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/manager-verifications/${case3Id}/restore`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ reason: 'duplicate restore attempt' })
+      .expect(409);
+    expect(res.body.errors[0].code).toBe('CONFLICT');
+
+    const restores = await prisma.managerVerificationCase.count({
+      where: {
+        buildingId: building3,
+        candidateId: founder3.personId,
+        decision: 'RESTORE',
+        isReverification: true,
+      },
+    });
+    expect(restores).toBe(1);
+  });
+
   it('lets REVIEWER list PENDING cases, paginated (ADR-072), includes the appeal', async () => {
     const res = await request(app.getHttpServer())
       .get('/api/v1/backoffice/manager-verifications')
@@ -975,6 +1023,45 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
     expect(res.body.data.id).toBe(case1Id);
     expect(res.body.data.status).toBe('VERIFIED');
     expect(res.body.data.candidate.id).toBe(founder1.personId);
+  });
+
+  it('serializes competing staff decisions with one winner and one side-effect-free conflict', async () => {
+    const [approve, suspend] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/api/v1/backoffice/manager-verifications/${appealCaseId}/decide`)
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .send({ decision: 'APPROVE', reason: 'concurrent approve' }),
+      request(app.getHttpServer())
+        .post(`/api/v1/backoffice/manager-verifications/${appealCaseId}/decide`)
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .send({ decision: 'SUSPEND', reason: 'concurrent suspend' }),
+    ]);
+    const success = [approve, suspend].find((response) => response.status === 201)!;
+    const conflict = [approve, suspend].find((response) => response.status === 409)!;
+    expect(['VERIFIED', 'SUSPENDED']).toContain(success.body.data.status);
+    expect(conflict.body.errors[0].code).toBe('CONFLICT');
+
+    const finalCase = await prisma.managerVerificationCase.findUnique({
+      where: { id: appealCaseId },
+    });
+    expect(finalCase?.status).toBe(success.body.data.status);
+    const membership = await prisma.membership.findUnique({
+      where: { id: finalCase!.membershipId },
+    });
+    expect(membership?.isCurrent).toBe(true);
+    expect(membership?.managerState).toBe(
+      success.body.data.status === 'VERIFIED' ? 'VERIFIED' : 'SUSPENDED',
+    );
+    const building = await prisma.building.findUnique({ where: { id: building2 } });
+    expect(building?.recoveryModeEnteredAt === null).toBe(success.body.data.status === 'VERIFIED');
+    const decisions = await prisma.auditLog.count({
+      where: {
+        entityType: 'ManagerVerificationCase',
+        entityId: appealCaseId,
+        action: 'ManagerVerificationDecided',
+      },
+    });
+    expect(decisions).toBe(1);
   });
 });
 

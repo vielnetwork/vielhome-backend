@@ -24,7 +24,11 @@ import type {
   VerificationPriority,
 } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
-import { ConflictError, ValidationError } from '../../../../common/errors/app-error';
+import {
+  ConflictError,
+  DuplicateError,
+  ValidationError,
+} from '../../../../common/errors/app-error';
 
 @Injectable()
 export class BackOfficeRepository {
@@ -198,6 +202,13 @@ export class BackOfficeRepository {
     });
   }
 
+  findLatestManagerVerificationCaseForBuilding(buildingId: string) {
+    return this.prisma.managerVerificationCase.findFirst({
+      where: { buildingId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   /** Unpaginated — kept as-is for `ManagerVerificationService.appealCase`'s internal full-scan lookup. The controller-facing staff queue uses `listManagerVerificationCasesPaged` below instead (21_ADRs > ADR-072). */
   listManagerVerificationCases(filters: {
     status?: ManagerVerificationStatus;
@@ -253,6 +264,343 @@ export class BackOfficeRepository {
         reason: params.reason,
         decidedAt: new Date(),
       },
+    });
+  }
+
+  async decideManagerVerificationCaseAtomically(params: {
+    id: string;
+    buildingId: string;
+    membershipId: string;
+    candidateId: string;
+    status: ManagerVerificationStatus;
+    decision: ManagerVerificationDecision;
+    verificationSource?: ManagerVerificationSource;
+    reviewedById: string;
+    reason?: string;
+    requestId: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw(
+        Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${'manager-verification-case:' + params.id}))`,
+      );
+      const changed = await tx.managerVerificationCase.updateMany({
+        where: { id: params.id, status: 'PENDING' },
+        data: {
+          status: params.status,
+          decision: params.decision,
+          verificationSource: params.verificationSource,
+          reviewedById: params.reviewedById,
+          reason: params.reason,
+          decidedAt: new Date(),
+        },
+      });
+      if (changed.count !== 1) {
+        throw new ConflictError('Manager verification case status changed; reload and retry.');
+      }
+
+      if (params.decision !== 'REJECT') {
+        const competingManager = await tx.membership.findFirst({
+          where: {
+            buildingId: params.buildingId,
+            role: 'MANAGER',
+            isCurrent: true,
+            id: { not: params.membershipId },
+          },
+          select: { id: true },
+        });
+        if (competingManager) {
+          throw new ConflictError('Another current manager exists for this building.');
+        }
+      }
+      const membershipData =
+        params.decision === 'APPROVE'
+          ? { managerState: 'VERIFIED' as const, isCurrent: true, endedAt: null }
+          : params.decision === 'REJECT'
+            ? { managerState: 'FORMER' as const, isCurrent: false, endedAt: new Date() }
+            : { managerState: 'SUSPENDED' as const, isCurrent: true, endedAt: null };
+      const membership = await tx.membership.updateMany({
+        where: {
+          id: params.membershipId,
+          buildingId: params.buildingId,
+          personId: params.candidateId,
+        },
+        data: membershipData,
+      });
+      if (membership.count !== 1) {
+        throw new ConflictError('Manager membership changed; reload and retry.');
+      }
+      const building = await tx.building.updateMany({
+        where: { id: params.buildingId },
+        data: { recoveryModeEnteredAt: params.decision === 'APPROVE' ? null : new Date() },
+      });
+      if (building.count !== 1) throw new ConflictError('Building changed; reload and retry.');
+
+      await tx.auditLog.create({
+        data: {
+          actorId: params.reviewedById,
+          buildingId: params.buildingId,
+          action: 'ManagerVerificationDecided',
+          entityType: 'ManagerVerificationCase',
+          entityId: params.id,
+          requestId: params.requestId,
+          reason: params.reason,
+          metadata: { decision: params.decision },
+        },
+      });
+      return tx.managerVerificationCase.findUniqueOrThrow({ where: { id: params.id } });
+    });
+  }
+
+  async restoreManagerVerificationCaseAtomically(params: {
+    suspendedCaseId: string;
+    reviewerPersonId: string;
+    reason?: string;
+    requestId: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw(
+        Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${'manager-verification-restore:' + params.suspendedCaseId}))`,
+      );
+      const suspended = await tx.managerVerificationCase.findUnique({
+        where: { id: params.suspendedCaseId },
+      });
+      if (!suspended)
+        throw new ConflictError('Manager verification case changed; reload and retry.');
+      if (suspended.status !== 'SUSPENDED') {
+        throw new ConflictError('Manager verification case is no longer restorable.');
+      }
+      const existing = await tx.managerVerificationCase.findFirst({
+        where: {
+          buildingId: suspended.buildingId,
+          membershipId: suspended.membershipId,
+          candidateId: suspended.candidateId,
+          isReverification: true,
+          decision: 'RESTORE',
+        },
+      });
+      if (existing) throw new ConflictError('Manager verification case was already restored.');
+
+      const restored = await tx.managerVerificationCase.create({
+        data: {
+          buildingId: suspended.buildingId,
+          membershipId: suspended.membershipId,
+          candidateId: suspended.candidateId,
+          priority: 'NORMAL',
+          isReverification: true,
+          status: 'VERIFIED',
+          decision: 'RESTORE',
+          verificationSource: 'ADMIN_REVIEW',
+          reviewedById: params.reviewerPersonId,
+          reason: params.reason,
+          decidedAt: new Date(),
+        },
+      });
+      const competingManager = await tx.membership.findFirst({
+        where: {
+          buildingId: suspended.buildingId,
+          role: 'MANAGER',
+          isCurrent: true,
+          id: { not: suspended.membershipId },
+        },
+        select: { id: true },
+      });
+      if (competingManager) {
+        throw new ConflictError('Another current manager exists for this building.');
+      }
+      const membership = await tx.membership.updateMany({
+        where: {
+          id: suspended.membershipId,
+          buildingId: suspended.buildingId,
+          personId: suspended.candidateId,
+          managerState: 'SUSPENDED',
+        },
+        data: { managerState: 'VERIFIED', isCurrent: true, endedAt: null },
+      });
+      if (membership.count !== 1) {
+        throw new ConflictError('Suspended manager membership changed; reload and retry.');
+      }
+      const building = await tx.building.updateMany({
+        where: { id: suspended.buildingId },
+        data: { recoveryModeEnteredAt: null },
+      });
+      if (building.count !== 1) throw new ConflictError('Building changed; reload and retry.');
+      await tx.auditLog.create({
+        data: {
+          actorId: params.reviewerPersonId,
+          buildingId: suspended.buildingId,
+          action: 'ManagerVerificationRestored',
+          entityType: 'ManagerVerificationCase',
+          entityId: restored.id,
+          requestId: params.requestId,
+          reason: params.reason,
+          metadata: { suspendedCaseId: suspended.id },
+        },
+      });
+      return restored;
+    });
+  }
+
+  async castManagerVerificationApprovalAtomically(params: {
+    caseId: string;
+    ownerPersonId: string;
+    requestId: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw(
+        Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${'manager-verification-case:' + params.caseId}))`,
+      );
+      const kase = await tx.managerVerificationCase.findUnique({ where: { id: params.caseId } });
+      if (!kase || kase.status !== 'PENDING') {
+        throw new ConflictError('Manager verification case status changed; reload and retry.');
+      }
+      const duplicate = await tx.managerVerificationApproval.findUnique({
+        where: {
+          caseId_ownerPersonId: { caseId: params.caseId, ownerPersonId: params.ownerPersonId },
+        },
+      });
+      if (duplicate) throw new DuplicateError('Owner approval was already recorded.');
+      try {
+        await tx.managerVerificationApproval.create({
+          data: { caseId: params.caseId, ownerPersonId: params.ownerPersonId },
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          throw new DuplicateError('Owner approval was already recorded.');
+        }
+        throw error;
+      }
+      const [approverCount, owners] = await Promise.all([
+        tx.managerVerificationApproval.count({ where: { caseId: params.caseId } }),
+        tx.membership.findMany({
+          where: { buildingId: kase.buildingId, role: 'OWNER', isCurrent: true },
+          select: { personId: true },
+          distinct: ['personId'],
+        }),
+      ]);
+      const totalOwners = owners.length;
+      await tx.auditLog.create({
+        data: {
+          actorId: params.ownerPersonId,
+          buildingId: kase.buildingId,
+          action: 'ManagerVerificationApprovalCast',
+          entityType: 'ManagerVerificationCase',
+          entityId: kase.id,
+          requestId: params.requestId,
+          metadata: { approverCount, totalOwners },
+        },
+      });
+      const resolved =
+        totalOwners > 0 && approverCount * 100 >= totalOwners * kase.requiredApprovalPercent;
+      if (!resolved) return { case: kase, resolved, approverCount, totalOwners };
+
+      const changed = await tx.managerVerificationCase.updateMany({
+        where: { id: kase.id, status: 'PENDING' },
+        data: {
+          status: 'VERIFIED',
+          decision: 'APPROVE',
+          verificationSource: 'OWNER_APPROVAL',
+          reason: `Approved by ${approverCount}/${totalOwners} current owners (>= ${kase.requiredApprovalPercent}% required).`,
+          decidedAt: new Date(),
+        },
+      });
+      if (changed.count !== 1) {
+        throw new ConflictError('Manager verification case status changed; reload and retry.');
+      }
+      const competingManager = await tx.membership.findFirst({
+        where: {
+          buildingId: kase.buildingId,
+          role: 'MANAGER',
+          isCurrent: true,
+          id: { not: kase.membershipId },
+        },
+        select: { id: true },
+      });
+      if (competingManager) {
+        throw new ConflictError('Another current manager exists for this building.');
+      }
+      const membership = await tx.membership.updateMany({
+        where: {
+          id: kase.membershipId,
+          buildingId: kase.buildingId,
+          personId: kase.candidateId,
+        },
+        data: { managerState: 'VERIFIED', isCurrent: true, endedAt: null },
+      });
+      if (membership.count !== 1) throw new ConflictError('Manager membership changed.');
+      const building = await tx.building.updateMany({
+        where: { id: kase.buildingId },
+        data: { recoveryModeEnteredAt: null },
+      });
+      if (building.count !== 1) throw new ConflictError('Building changed; reload and retry.');
+      await tx.auditLog.create({
+        data: {
+          buildingId: kase.buildingId,
+          action: 'ManagerVerificationDecided',
+          entityType: 'ManagerVerificationCase',
+          entityId: kase.id,
+          requestId: params.requestId,
+          metadata: { verificationSource: 'OWNER_APPROVAL', approverCount, totalOwners },
+        },
+      });
+      const updated = await tx.managerVerificationCase.findUniqueOrThrow({
+        where: { id: kase.id },
+      });
+      return { case: updated, resolved, approverCount, totalOwners };
+    });
+  }
+
+  findActiveManagerVerificationReverification(buildingId: string, candidateId: string) {
+    return this.prisma.managerVerificationCase.findFirst({
+      where: { buildingId, candidateId, isReverification: true, status: 'PENDING' },
+    });
+  }
+
+  async createManagerVerificationAppealAtomically(params: {
+    sourceCaseId: string;
+    callerPersonId: string;
+    requestId: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw(
+        Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${'manager-verification-appeal:' + params.sourceCaseId}))`,
+      );
+      const source = await tx.managerVerificationCase.findUnique({
+        where: { id: params.sourceCaseId },
+      });
+      if (!source || source.status !== 'REJECTED' || source.candidateId !== params.callerPersonId) {
+        throw new ConflictError('Manager verification appeal source changed; reload and retry.');
+      }
+      const existing = await tx.managerVerificationCase.findFirst({
+        where: {
+          buildingId: source.buildingId,
+          membershipId: source.membershipId,
+          candidateId: source.candidateId,
+          isReverification: true,
+          status: 'PENDING',
+        },
+      });
+      if (existing) throw new ConflictError('A manager verification appeal is already pending.');
+      const appeal = await tx.managerVerificationCase.create({
+        data: {
+          buildingId: source.buildingId,
+          membershipId: source.membershipId,
+          candidateId: source.candidateId,
+          priority: 'HIGH',
+          isReverification: true,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: params.callerPersonId,
+          buildingId: source.buildingId,
+          action: 'ManagerVerificationAppealed',
+          entityType: 'ManagerVerificationCase',
+          entityId: appeal.id,
+          requestId: params.requestId,
+          metadata: { previousCaseId: source.id },
+        },
+      });
+      return appeal;
     });
   }
 

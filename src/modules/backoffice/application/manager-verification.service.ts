@@ -3,17 +3,14 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import type { ManagerVerificationDecision, VerificationPriority } from '@prisma/client';
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import { ManagerVerificationPolicy } from '../domain/policies/manager-verification.policy';
-import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { AuditService } from '../../../common/audit/audit.service';
-import { DuplicateError, NotFoundAppError } from '../../../common/errors/app-error';
+import { ConflictError, DuplicateError, NotFoundAppError } from '../../../common/errors/app-error';
 import {
   buildPaginationMeta,
   toSkipTake,
   type PaginationParams,
 } from '../../../common/pagination/pagination.util';
 import { ManagerVerificationDecidedEvent } from '../events/backoffice.events';
-
-const REQUIRED_APPROVAL_PERCENT = 30; // 06.03 Rule 002
 
 /**
  * Manager Verification Queue (07.02 / 06.03_Manager_Verification_Flow —
@@ -35,7 +32,6 @@ export class ManagerVerificationService {
   constructor(
     private readonly backOffice: BackOfficeRepository,
     private readonly policy: ManagerVerificationPolicy,
-    private readonly buildings: BuildingRepository,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
   ) {}
@@ -101,7 +97,11 @@ export class ManagerVerificationService {
    */
   async approveByOwner(buildingId: string, callerPersonId: string, requestId: string) {
     const kase = await this.backOffice.getOpenManagerVerificationCaseForBuilding(buildingId);
-    if (!kase) throw new NotFoundAppError('No open manager verification case for this building.');
+    if (!kase) {
+      const latest = await this.backOffice.findLatestManagerVerificationCaseForBuilding(buildingId);
+      if (latest) throw new ConflictError('Manager verification case is no longer pending.');
+      throw new NotFoundAppError('No manager verification case for this building.');
+    }
 
     this.policy.assertCaseOpen(kase.status);
     this.policy.assertNotSelfApproving(kase.candidateId, callerPersonId);
@@ -109,59 +109,20 @@ export class ManagerVerificationService {
     const existing = await this.backOffice.findManagerVerificationApproval(kase.id, callerPersonId);
     if (existing) throw new DuplicateError('You have already approved this manager verification.');
 
-    await this.backOffice.createManagerVerificationApproval(kase.id, callerPersonId);
-
-    const [approverCount, totalOwners] = await Promise.all([
-      this.backOffice.countManagerVerificationApprovals(kase.id),
-      this.buildings.countCurrentOwners(buildingId),
-    ]);
-
-    await this.audit.record({
-      actorId: callerPersonId,
-      buildingId,
-      action: 'ManagerVerificationApprovalCast',
-      entityType: 'ManagerVerificationCase',
-      entityId: kase.id,
+    const result = await this.backOffice.castManagerVerificationApprovalAtomically({
+      caseId: kase.id,
+      ownerPersonId: callerPersonId,
       requestId,
-      metadata: { approverCount, totalOwners },
     });
 
-    if (
-      !this.policy.meetsApprovalThreshold(
-        approverCount,
-        totalOwners,
-        kase.requiredApprovalPercent ?? REQUIRED_APPROVAL_PERCENT,
-      )
-    ) {
-      return { case: kase, resolved: false, approverCount, totalOwners };
+    if (result.resolved) {
+      this.events.emit(
+        'ManagerVerificationDecided',
+        new ManagerVerificationDecidedEvent(buildingId, kase.id, 'VERIFIED', kase.candidateId),
+      );
     }
 
-    const updated = await this.backOffice.decideManagerVerificationCase({
-      id: kase.id,
-      status: 'VERIFIED',
-      decision: 'APPROVE',
-      verificationSource: 'OWNER_APPROVAL',
-      reason: `Approved by ${approverCount}/${totalOwners} current owners (>= ${kase.requiredApprovalPercent ?? REQUIRED_APPROVAL_PERCENT}% required).`,
-    });
-
-    await this.buildings.verifyManagerMembership(kase.membershipId);
-    await this.buildings.setRecoveryMode(buildingId, false);
-
-    await this.audit.record({
-      buildingId,
-      action: 'ManagerVerificationDecided',
-      entityType: 'ManagerVerificationCase',
-      entityId: kase.id,
-      requestId,
-      metadata: { verificationSource: 'OWNER_APPROVAL', approverCount, totalOwners },
-    });
-
-    this.events.emit(
-      'ManagerVerificationDecided',
-      new ManagerVerificationDecidedEvent(buildingId, kase.id, 'VERIFIED', kase.candidateId),
-    );
-
-    return { case: updated, resolved: true, approverCount, totalOwners };
+    return result;
   }
 
   /**
@@ -178,41 +139,26 @@ export class ManagerVerificationService {
     reason: string | undefined,
     requestId: string,
   ) {
+    const normalizedReason = reason?.trim() || undefined;
     const kase = await this.getCase(caseId);
-    this.policy.assertCaseOpen(kase.status);
+    if (kase.status !== 'PENDING') {
+      throw new ConflictError('Manager verification case is no longer pending.');
+    }
 
     const status =
       decision === 'APPROVE' ? 'VERIFIED' : decision === 'REJECT' ? 'REJECTED' : 'SUSPENDED';
 
-    const updated = await this.backOffice.decideManagerVerificationCase({
+    const updated = await this.backOffice.decideManagerVerificationCaseAtomically({
       id: caseId,
+      buildingId: kase.buildingId,
+      membershipId: kase.membershipId,
+      candidateId: kase.candidateId,
       status,
       decision,
       verificationSource: decision === 'APPROVE' ? 'ADMIN_REVIEW' : undefined,
       reviewedById: reviewerPersonId,
-      reason,
-    });
-
-    if (decision === 'APPROVE') {
-      await this.buildings.verifyManagerMembership(kase.membershipId);
-      await this.buildings.setRecoveryMode(kase.buildingId, false);
-    } else if (decision === 'REJECT') {
-      await this.buildings.endManagement(kase.membershipId);
-      await this.buildings.setRecoveryMode(kase.buildingId, true);
-    } else {
-      await this.buildings.suspendManagement(kase.membershipId);
-      await this.buildings.setRecoveryMode(kase.buildingId, true);
-    }
-
-    await this.audit.record({
-      actorId: reviewerPersonId,
-      buildingId: kase.buildingId,
-      action: 'ManagerVerificationDecided',
-      entityType: 'ManagerVerificationCase',
-      entityId: caseId,
+      reason: normalizedReason,
       requestId,
-      reason,
-      metadata: { decision },
     });
 
     this.events.emit(
@@ -249,45 +195,22 @@ export class ManagerVerificationService {
     reason: string | undefined,
     requestId: string,
   ) {
+    const normalizedReason = reason?.trim() || undefined;
     const suspended = await this.getCase(caseId);
     this.policy.assertCanRestore(suspended.status);
 
-    const restoreCase = await this.backOffice.createManagerVerificationCase({
-      buildingId: suspended.buildingId,
-      membershipId: suspended.membershipId,
-      candidateId: suspended.candidateId,
-      priority: 'NORMAL',
-      isReverification: true,
-    });
-
-    const decided = await this.backOffice.decideManagerVerificationCase({
-      id: restoreCase.id,
-      status: 'VERIFIED',
-      decision: 'RESTORE',
-      verificationSource: 'ADMIN_REVIEW',
-      reviewedById: reviewerPersonId,
-      reason,
-    });
-
-    await this.buildings.verifyManagerMembership(suspended.membershipId);
-    await this.buildings.setRecoveryMode(suspended.buildingId, false);
-
-    await this.audit.record({
-      actorId: reviewerPersonId,
-      buildingId: suspended.buildingId,
-      action: 'ManagerVerificationRestored',
-      entityType: 'ManagerVerificationCase',
-      entityId: restoreCase.id,
+    const decided = await this.backOffice.restoreManagerVerificationCaseAtomically({
+      suspendedCaseId: suspended.id,
+      reviewerPersonId,
+      reason: normalizedReason,
       requestId,
-      reason,
-      metadata: { suspendedCaseId: suspended.id },
     });
 
     this.events.emit(
       'ManagerVerificationDecided',
       new ManagerVerificationDecidedEvent(
         suspended.buildingId,
-        restoreCase.id,
+        decided.id,
         'VERIFIED',
         suspended.candidateId,
       ),
@@ -304,26 +227,18 @@ export class ManagerVerificationService {
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
     if (!latest) throw new NotFoundAppError('No verification case found for this candidate.');
 
+    const activeAppeal = await this.backOffice.findActiveManagerVerificationReverification(
+      buildingId,
+      callerPersonId,
+    );
+    if (activeAppeal) throw new ConflictError('A manager verification appeal is already pending.');
+
     this.policy.assertCanAppeal(latest.status, callerPersonId, latest.candidateId);
 
-    const appeal = await this.backOffice.createManagerVerificationCase({
-      buildingId,
-      membershipId: latest.membershipId,
-      candidateId: callerPersonId,
-      priority: 'HIGH',
-      isReverification: true,
-    });
-
-    await this.audit.record({
-      actorId: callerPersonId,
-      buildingId,
-      action: 'ManagerVerificationAppealed',
-      entityType: 'ManagerVerificationCase',
-      entityId: appeal.id,
+    return this.backOffice.createManagerVerificationAppealAtomically({
+      sourceCaseId: latest.id,
+      callerPersonId,
       requestId,
-      metadata: { previousCaseId: latest.id },
     });
-
-    return appeal;
   }
 }
