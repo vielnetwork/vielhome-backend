@@ -812,6 +812,42 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     await app.close();
   });
 
+  it('protects eligible assignees with authentication and the assignment role floor', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/building-verifications/eligible-assignees')
+      .expect(401);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/building-verifications/eligible-assignees')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+  });
+
+  it('returns only the minimal safe eligible-assignee shape to an authorized admin', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/backoffice/building-verifications/eligible-assignees')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(200);
+
+    const reviewerOption = res.body.data.find(
+      (candidate: { id: string }) => candidate.id === reviewer.personId,
+    );
+    expect(reviewerOption).toBeDefined();
+    expect(Object.keys(reviewerOption).sort()).toEqual(['displayName', 'id']);
+  });
+
+  it('rejects an arbitrary non-staff Person ID before assignment persistence', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/building-verifications/${case3Id}/assign`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ assigneeId: founder1.personId })
+      .expect(404);
+
+    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+    const kase = await prisma.buildingVerificationCase.findUnique({ where: { id: case3Id } });
+    expect(kase?.assignedToId).toBeNull();
+  });
+
   it('blocks REVIEWER (rank 1, below required SENIOR_REVIEWER) from assigning a case', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/backoffice/building-verifications/${case3Id}/assign`)

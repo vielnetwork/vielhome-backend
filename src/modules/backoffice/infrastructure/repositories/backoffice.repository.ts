@@ -111,8 +111,34 @@ export class BackOfficeRepository {
     return { items, total };
   }
 
-  assignBuildingVerificationCase(id: string, assignedToId: string) {
-    return this.prisma.buildingVerificationCase.update({ where: { id }, data: { assignedToId } });
+  async assignBuildingVerificationCase(id: string, assignedToId: string) {
+    const updated = await this.prisma.buildingVerificationCase.updateMany({
+      where: { id, status: { in: ['PENDING', 'UNDER_REVIEW', 'PENDING_INFORMATION'] } },
+      data: { assignedToId },
+    });
+    if (updated.count !== 1) {
+      throw new ConflictError('Building verification case status changed; reload and retry.');
+    }
+    return this.prisma.buildingVerificationCase.findUniqueOrThrow({ where: { id } });
+  }
+
+  listBuildingVerificationAssigneeCandidateIds() {
+    return this.prisma.platformStaff.findMany({
+      select: { personId: true },
+      orderBy: { personId: 'asc' },
+    });
+  }
+
+  findBuildingVerificationAssigneeCandidate(personId: string) {
+    return this.prisma.platformStaff.findUnique({
+      where: { personId },
+      select: {
+        personId: true,
+        role: true,
+        isActive: true,
+        person: { select: { fullName: true, isSuspended: true } },
+      },
+    });
   }
 
   decideBuildingVerificationCase(params: {

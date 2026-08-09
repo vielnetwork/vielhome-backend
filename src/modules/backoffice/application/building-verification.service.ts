@@ -1,11 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import type { BuildingVerificationDecision, VerificationPriority } from '@prisma/client';
+import type {
+  BuildingVerificationDecision,
+  PlatformStaffRole,
+  VerificationPriority,
+} from '@prisma/client';
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import { BuildingVerificationPolicy } from '../domain/policies/building-verification.policy';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { AuditService } from '../../../common/audit/audit.service';
-import { NotFoundAppError } from '../../../common/errors/app-error';
+import { BusinessRuleViolationError, NotFoundAppError } from '../../../common/errors/app-error';
+import { PermissionResolverService } from '../../backoffice-rbac/application/permission-resolver.service';
+import type { EligibleBuildingVerificationAssigneeDto } from './dto/eligible-building-verification-assignee.dto';
 import {
   buildPaginationMeta,
   toSkipTake,
@@ -22,6 +28,12 @@ const DECISION_TO_STATUS: Record<
   REQUEST_INFORMATION: 'PENDING_INFORMATION',
 };
 
+const ELIGIBLE_ASSIGNEE_ROLES = new Set<PlatformStaffRole>([
+  'REVIEWER',
+  'SENIOR_REVIEWER',
+  'PLATFORM_ADMIN',
+]);
+
 /**
  * Building Verification Queue (07.01 — see 21_ADRs > ADR-029). The single
  * entry point `BackOfficeEventListener` calls on every new building, and
@@ -36,6 +48,7 @@ export class BuildingVerificationService {
     private readonly buildings: BuildingRepository,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
+    private readonly permissions: PermissionResolverService,
   ) {}
 
   /**
@@ -123,6 +136,7 @@ export class BuildingVerificationService {
   async assignCase(caseId: string, assigneeId: string, actorPersonId: string, requestId: string) {
     const kase = await this.getCase(caseId);
     this.policy.assertDecidable(kase.status);
+    await this.requireEligibleAssignee(assigneeId);
 
     const updated = await this.backOffice.assignBuildingVerificationCase(caseId, assigneeId);
 
@@ -137,6 +151,60 @@ export class BuildingVerificationService {
     });
 
     return updated;
+  }
+
+  async listEligibleAssignees(): Promise<EligibleBuildingVerificationAssigneeDto[]> {
+    const candidates = await this.backOffice.listBuildingVerificationAssigneeCandidateIds();
+    const resolved = await Promise.all(
+      candidates.map(({ personId }) => this.resolveEligibleAssignee(personId)),
+    );
+    return resolved
+      .filter(
+        (candidate): candidate is EligibleBuildingVerificationAssigneeDto => candidate !== null,
+      )
+      .sort((left, right) =>
+        (left.displayName ?? left.id).localeCompare(right.displayName ?? right.id),
+      );
+  }
+
+  private async requireEligibleAssignee(
+    personId: string,
+  ): Promise<EligibleBuildingVerificationAssigneeDto> {
+    const staff = await this.backOffice.findBuildingVerificationAssigneeCandidate(personId);
+    if (!staff) throw new NotFoundAppError('Building verification assignee not found.');
+
+    const eligible = await this.resolveEligibleAssignee(personId, staff);
+    if (!eligible) {
+      throw new BusinessRuleViolationError(
+        'Assignee is not eligible for Building Verification assignment.',
+      );
+    }
+    return eligible;
+  }
+
+  private async resolveEligibleAssignee(
+    personId: string,
+    candidate?: Awaited<
+      ReturnType<BackOfficeRepository['findBuildingVerificationAssigneeCandidate']>
+    >,
+  ): Promise<EligibleBuildingVerificationAssigneeDto | null> {
+    const staff =
+      candidate ??
+      (await this.backOffice.findBuildingVerificationAssigneeCandidate(personId));
+    if (
+      !staff ||
+      !staff.isActive ||
+      staff.person.isSuspended ||
+      !ELIGIBLE_ASSIGNEE_ROLES.has(staff.role)
+    ) {
+      return null;
+    }
+
+    const granted = await this.permissions.resolve(personId);
+    if (!granted.has('BUILDING_VERIFICATION_MANAGE')) return null;
+
+    const normalizedName = staff.person.fullName?.trim();
+    return { id: staff.personId, displayName: normalizedName || null };
   }
 
   async decideCase(

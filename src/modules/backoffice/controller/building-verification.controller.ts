@@ -1,8 +1,9 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { BuildingVerificationService } from '../application/building-verification.service';
 import { DecideBuildingVerificationDto } from '../application/dto/decide-building-verification.dto';
 import { AssignVerificationCaseDto } from '../application/dto/assign-verification-case.dto';
+import { EligibleBuildingVerificationAssigneeDto } from '../application/dto/eligible-building-verification-assignee.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
@@ -45,6 +46,15 @@ export class BuildingVerificationController {
       parsePagination(page, limit),
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
+  }
+
+  /** Mutation-support lookup, intentionally manage-gated and declared before `:caseId`. */
+  @Get('eligible-assignees')
+  @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('BUILDING_VERIFICATION_MANAGE')
+  @ApiOkResponse({ type: EligibleBuildingVerificationAssigneeDto, isArray: true })
+  listEligibleAssignees(): Promise<EligibleBuildingVerificationAssigneeDto[]> {
+    return this.service.listEligibleAssignees();
   }
 
   @Get(':caseId')
