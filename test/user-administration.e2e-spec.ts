@@ -479,6 +479,22 @@ describe('User Administration (e2e) — Backoffice User List/Detail/Suspend/Rein
       await verifyOtp(app, { phone: targetPerson.phone, code }).expect(403);
     });
 
+    it('returns stable conflicts for self-suspend and a repeated suspend', async () => {
+      const self = await request(app.getHttpServer())
+        .post(`/api/v1/backoffice/users/${admin.personId}/suspend`)
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .send({ reason: 'self target' })
+        .expect(409);
+      expect(self.body.errors[0].code).toBe('CONFLICT');
+
+      const repeated = await request(app.getHttpServer())
+        .post(`/api/v1/backoffice/users/${targetPerson.personId}/suspend`)
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .send({ reason: 'duplicate' })
+        .expect(409);
+      expect(repeated.body.errors[0].code).toBe('CONFLICT');
+    });
+
     it('reinstates the target — a fresh login succeeds again', async () => {
       const res = await request(app.getHttpServer())
         .post(`/api/v1/backoffice/users/${targetPerson.personId}/reinstate`)
@@ -490,6 +506,15 @@ describe('User Administration (e2e) — Backoffice User List/Detail/Suspend/Rein
 
       const code = await requestOtpAndCaptureCode(app, targetPerson.phone);
       await verifyOtp(app, { phone: targetPerson.phone, code }).expect(200);
+    });
+
+    it('returns a stable conflict for repeated reinstate', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/backoffice/users/${targetPerson.personId}/reinstate`)
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .send({ reason: 'duplicate' })
+        .expect(409);
+      expect(res.body.errors[0].code).toBe('CONFLICT');
     });
 
     it('revoking USER_EDIT takes effect immediately — the route closes again, live and uncached', async () => {

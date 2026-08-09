@@ -537,6 +537,22 @@ describe('Person Backoffice-Approval Grant/Revoke (e2e) — Marketplace Access-G
     expect(audit?.metadata).toMatchObject({ previousValue: false, newValue: true });
   });
 
+  it('rejects same-state approval and self-targeting with stable conflict', async () => {
+    const repeated = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
+      .set('Authorization', `Bearer ${seniorReviewer.accessToken}`)
+      .send({ approved: true })
+      .expect(409);
+    expect(repeated.body.errors[0].code).toBe('CONFLICT');
+
+    const self = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/persons/${seniorReviewer.personId}/backoffice-approval`)
+      .set('Authorization', `Bearer ${seniorReviewer.accessToken}`)
+      .send({ approved: true })
+      .expect(409);
+    expect(self.body.errors[0].code).toBe('CONFLICT');
+  });
+
   it('REVIEWER cannot revoke approval either (403)', async () => {
     await request(app.getHttpServer())
       .post(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)

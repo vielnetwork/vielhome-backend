@@ -20,6 +20,7 @@ describe('UserAdministrationService', () => {
     findPersonForSuspensionState: jest.Mock;
     suspendPerson: jest.Mock;
     reinstatePerson: jest.Mock;
+    changePersonSuspensionAtomically: jest.Mock;
   };
   let audit: { record: jest.Mock };
   let service: UserAdministrationService;
@@ -31,6 +32,7 @@ describe('UserAdministrationService', () => {
       findPersonForSuspensionState: jest.fn(),
       suspendPerson: jest.fn(),
       reinstatePerson: jest.fn(),
+      changePersonSuspensionAtomically: jest.fn(),
     };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
     service = new UserAdministrationService(
@@ -76,72 +78,47 @@ describe('UserAdministrationService', () => {
   });
 
   describe('suspend', () => {
-    it('throws NotFoundAppError for an unknown target and never calls suspendPerson or audit', async () => {
-      backOffice.findPersonForSuspensionState.mockResolvedValue(null);
-
-      await expect(
-        service.suspend('missing', 'actor-1', 'fraud risk', 'req-1'),
-      ).rejects.toBeInstanceOf(NotFoundAppError);
-      expect(backOffice.suspendPerson).not.toHaveBeenCalled();
-      expect(audit.record).not.toHaveBeenCalled();
-    });
-
-    it('suspends the target, records PersonSuspendedByAdmin with previous/new values, and returns the updated state', async () => {
-      backOffice.findPersonForSuspensionState.mockResolvedValue({ id: 'p1', isSuspended: false });
-      backOffice.suspendPerson.mockResolvedValue({ id: 'p1', isSuspended: true });
-
-      const result = await service.suspend('p1', 'actor-1', 'Confirmed fraud case.', 'req-1');
-
-      expect(backOffice.suspendPerson).toHaveBeenCalledWith('p1');
-      expect(audit.record).toHaveBeenCalledWith({
-        actorId: 'actor-1',
-        action: 'PersonSuspendedByAdmin',
-        entityType: 'Person',
-        entityId: 'p1',
-        reason: 'Confirmed fraud case.',
-        metadata: { previousValue: false, newValue: true },
+    it('delegates one normalized atomic transition', async () => {
+      backOffice.changePersonSuspensionAtomically.mockResolvedValue({
+        personId: 'p1',
+        isSuspended: true,
+      });
+      await expect(service.suspend('p1', 'actor-1', '  fraud risk  ', 'req-1')).resolves.toEqual({
+        personId: 'p1',
+        isSuspended: true,
+      });
+      expect(backOffice.changePersonSuspensionAtomically).toHaveBeenCalledWith({
+        targetPersonId: 'p1',
+        actorPersonId: 'actor-1',
+        suspend: true,
+        reason: 'fraud risk',
         requestId: 'req-1',
       });
-      expect(result).toEqual({ personId: 'p1', isSuspended: true });
     });
-
-    it('is idempotent — re-suspending an already-suspended Person still writes a fresh audit entry, not a no-op skip', async () => {
-      backOffice.findPersonForSuspensionState.mockResolvedValue({ id: 'p1', isSuspended: true });
-      backOffice.suspendPerson.mockResolvedValue({ id: 'p1', isSuspended: true });
-
-      await service.suspend('p1', 'actor-1', 'Still under investigation.', 'req-2');
-
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: { previousValue: true, newValue: true } }),
-      );
+    it('rejects an effectively empty reason before the repository', async () => {
+      await expect(service.suspend('p1', 'actor-1', '   ', 'req-1')).rejects.toMatchObject({
+        code: 'VALIDATION_ERROR',
+      });
+      expect(backOffice.changePersonSuspensionAtomically).not.toHaveBeenCalled();
     });
   });
 
   describe('reinstate', () => {
-    it('throws NotFoundAppError for an unknown target and never calls reinstatePerson or audit', async () => {
-      backOffice.findPersonForSuspensionState.mockResolvedValue(null);
-
+    it('delegates one normalized atomic transition', async () => {
+      backOffice.changePersonSuspensionAtomically.mockResolvedValue({
+        personId: 'p1',
+        isSuspended: false,
+      });
       await expect(
-        service.reinstate('missing', 'actor-1', 'appeal upheld', 'req-1'),
-      ).rejects.toBeInstanceOf(NotFoundAppError);
-      expect(backOffice.reinstatePerson).not.toHaveBeenCalled();
-      expect(audit.record).not.toHaveBeenCalled();
-    });
-
-    it('reinstates the target and records PersonReinstatedByAdmin, distinct from the Fraud Case enforcement trail', async () => {
-      backOffice.findPersonForSuspensionState.mockResolvedValue({ id: 'p1', isSuspended: true });
-      backOffice.reinstatePerson.mockResolvedValue({ id: 'p1', isSuspended: false });
-
-      const result = await service.reinstate('p1', 'actor-1', 'Appeal upheld.', 'req-3');
-
-      expect(backOffice.reinstatePerson).toHaveBeenCalledWith('p1');
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({
-          action: 'PersonReinstatedByAdmin',
-          metadata: { previousValue: true, newValue: false },
-        }),
-      );
-      expect(result).toEqual({ personId: 'p1', isSuspended: false });
+        service.reinstate('p1', 'actor-1', '  appeal upheld  ', 'req-3'),
+      ).resolves.toEqual({ personId: 'p1', isSuspended: false });
+      expect(backOffice.changePersonSuspensionAtomically).toHaveBeenCalledWith({
+        targetPersonId: 'p1',
+        actorPersonId: 'actor-1',
+        suspend: false,
+        reason: 'appeal upheld',
+        requestId: 'req-3',
+      });
     });
   });
 

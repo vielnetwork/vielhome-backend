@@ -1,7 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
-import { AuditService } from '../../../common/audit/audit.service';
-import { NotFoundAppError } from '../../../common/errors/app-error';
 
 /**
  * Marketplace Access-Gate Implementation Phase. Grants/revokes the single
@@ -18,18 +16,13 @@ import { NotFoundAppError } from '../../../common/errors/app-error';
  */
 @Injectable()
 export class PersonAccessService {
-  constructor(
-    private readonly backOffice: BackOfficeRepository,
-    private readonly audit: AuditService,
-  ) {}
+  constructor(private readonly backOffice: BackOfficeRepository) {}
 
   /**
    * Single entry point for both directions (`false -> true` and
    * `true -> false` — requirement 1: "do not create a grant-only
-   * workflow"). Idempotent: setting the same value twice still records an
-   * audit entry (a deliberate choice — an explicit no-op re-confirmation
-   * by staff is still a real, auditable action) but never throws for
-   * "already in that state."
+   * workflow"). The repository accepts only a real false↔true transition;
+   * same-state repeats and concurrent losers return a stable conflict.
    */
   async setBackofficeApproval(
     targetPersonId: string,
@@ -38,27 +31,13 @@ export class PersonAccessService {
     reason: string | undefined,
     requestId: string,
   ): Promise<{ personId: string; isBackofficeApproved: boolean }> {
-    const target = await this.backOffice.findPersonForBackofficeApproval(targetPersonId);
-    if (!target) {
-      throw new NotFoundAppError('Person not found.');
-    }
-
-    const previousValue = target.isBackofficeApproved;
-    const updated = await this.backOffice.setPersonBackofficeApproval(targetPersonId, approved);
-
-    await this.audit.record({
-      actorId: actorPersonId,
-      action: 'PersonBackofficeApprovalChanged',
-      entityType: 'Person',
-      entityId: targetPersonId,
-      reason,
-      metadata: {
-        previousValue,
-        newValue: updated.isBackofficeApproved,
-      },
+    const normalizedReason = reason?.trim() || undefined;
+    return this.backOffice.changePersonBackofficeApprovalAtomically({
+      targetPersonId,
+      actorPersonId,
+      approved,
+      reason: normalizedReason,
       requestId,
     });
-
-    return { personId: updated.id, isBackofficeApproved: updated.isBackofficeApproved };
   }
 }

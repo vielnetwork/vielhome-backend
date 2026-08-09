@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import { AuditService } from '../../../common/audit/audit.service';
-import { NotFoundAppError } from '../../../common/errors/app-error';
+import { NotFoundAppError, ValidationError } from '../../../common/errors/app-error';
 import type { PaginationParams } from '../../../common/pagination/pagination.util';
 import { buildPaginationMeta, toSkipTake } from '../../../common/pagination/pagination.util';
 import { toCsv, DEFAULT_EXPORT_ROW_CAP } from '../../../common/csv/csv.util';
@@ -9,8 +9,8 @@ import { toCsv, DEFAULT_EXPORT_ROW_CAP } from '../../../common/csv/csv.util';
 /**
  * 21_ADRs > ADR-111 — User Administration (Stage 4). List/search/detail
  * are pure reads over `Person`; `suspend`/`reinstate` are the two direct
- * staff actions, each wrapping the pre-existing `BackOfficeRepository.
- * suspendPerson`/`reinstatePerson` methods (previously reachable only via
+ * staff actions, each delegating to an atomic `BackOfficeRepository`
+ * transition (the underlying Person flag was previously reachable only via
  * `FraudCaseService`'s ACCOUNT_SUSPENSION enforcement effect — this gives
  * staff a direct path for a suspension that never originated from a
  * Fraud Case, e.g. a Support-initiated one) with a mandatory `reason` and
@@ -81,33 +81,17 @@ export class UserAdministrationService {
     return person;
   }
 
-  /**
-   * Idempotent, same discipline as `PersonAccessService.setBackofficeApproval`
-   * — re-suspending an already-suspended Person is a safe no-op with
-   * respect to the underlying flag, but is still written and audited: a
-   * staff member re-affirming "still suspended, still for this reason" is
-   * real operational history, not noise to suppress.
-   */
+  /** Only an active Person may be suspended; repository CAS returns 409 for repeats/races. */
   async suspend(targetPersonId: string, actorPersonId: string, reason: string, requestId: string) {
-    const target = await this.backOffice.findPersonForSuspensionState(targetPersonId);
-    if (!target) {
-      throw new NotFoundAppError('Person not found.');
-    }
-
-    const previousValue = target.isSuspended;
-    const updated = await this.backOffice.suspendPerson(targetPersonId);
-
-    await this.audit.record({
-      actorId: actorPersonId,
-      action: 'PersonSuspendedByAdmin',
-      entityType: 'Person',
-      entityId: targetPersonId,
-      reason,
-      metadata: { previousValue, newValue: updated.isSuspended },
+    const normalizedReason = reason.trim();
+    if (!normalizedReason) throw new ValidationError('A non-empty reason is required.');
+    return this.backOffice.changePersonSuspensionAtomically({
+      targetPersonId,
+      actorPersonId,
+      suspend: true,
+      reason: normalizedReason,
       requestId,
     });
-
-    return { personId: updated.id, isSuspended: updated.isSuspended };
   }
 
   async reinstate(
@@ -116,24 +100,14 @@ export class UserAdministrationService {
     reason: string,
     requestId: string,
   ) {
-    const target = await this.backOffice.findPersonForSuspensionState(targetPersonId);
-    if (!target) {
-      throw new NotFoundAppError('Person not found.');
-    }
-
-    const previousValue = target.isSuspended;
-    const updated = await this.backOffice.reinstatePerson(targetPersonId);
-
-    await this.audit.record({
-      actorId: actorPersonId,
-      action: 'PersonReinstatedByAdmin',
-      entityType: 'Person',
-      entityId: targetPersonId,
-      reason,
-      metadata: { previousValue, newValue: updated.isSuspended },
+    const normalizedReason = reason.trim();
+    if (!normalizedReason) throw new ValidationError('A non-empty reason is required.');
+    return this.backOffice.changePersonSuspensionAtomically({
+      targetPersonId,
+      actorPersonId,
+      suspend: false,
+      reason: normalizedReason,
       requestId,
     });
-
-    return { personId: updated.id, isSuspended: updated.isSuspended };
   }
 }

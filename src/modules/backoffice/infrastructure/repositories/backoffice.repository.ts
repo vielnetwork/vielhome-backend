@@ -15,6 +15,7 @@ import type {
   ManagerVerificationDecision,
   ManagerVerificationSource,
   ManagerVerificationStatus,
+  PlatformStaffRole,
   PaymentStatus,
   SubscriptionFeatureKey,
   SubscriptionPlan,
@@ -27,8 +28,15 @@ import { PrismaService } from '../../../../common/prisma/prisma.service';
 import {
   ConflictError,
   DuplicateError,
+  NotFoundAppError,
   ValidationError,
 } from '../../../../common/errors/app-error';
+
+const PLATFORM_STAFF_RANK: Record<PlatformStaffRole, number> = {
+  REVIEWER: 1,
+  SENIOR_REVIEWER: 2,
+  PLATFORM_ADMIN: 3,
+};
 
 @Injectable()
 export class BackOfficeRepository {
@@ -985,6 +993,93 @@ export class BackOfficeRepository {
     return this.prisma.person.update({ where: { id: personId }, data: { isSuspended: false } });
   }
 
+  async changePersonSuspensionAtomically(params: {
+    targetPersonId: string;
+    actorPersonId: string;
+    suspend: boolean;
+    reason: string;
+    requestId: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'user-admin:' + params.targetPersonId}))`;
+      if (params.targetPersonId === params.actorPersonId) {
+        throw new ConflictError('Staff cannot change their own suspension state.');
+      }
+      const [actor, target] = await Promise.all([
+        tx.platformStaff.findFirst({ where: { personId: params.actorPersonId, isActive: true } }),
+        tx.person.findUnique({
+          where: { id: params.targetPersonId },
+          select: { id: true, isSuspended: true, platformStaff: true },
+        }),
+      ]);
+      if (!target) throw new NotFoundAppError('Person not found.');
+      if (!actor) throw new ConflictError('Active staff identity is required.');
+      if (
+        target.platformStaff?.isActive &&
+        actor.role !== 'PLATFORM_ADMIN' &&
+        PLATFORM_STAFF_RANK[actor.role] <= PLATFORM_STAFF_RANK[target.platformStaff.role]
+      ) {
+        throw new ConflictError('Staff cannot target equal or higher-ranked staff.');
+      }
+      if (
+        params.suspend &&
+        target.platformStaff?.isActive &&
+        target.platformStaff.role === 'PLATFORM_ADMIN'
+      ) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'platform-admin-usability'}))`;
+        const otherUsableAdmins = await tx.platformStaff.count({
+          where: {
+            id: { not: target.platformStaff.id },
+            role: 'PLATFORM_ADMIN',
+            isActive: true,
+            person: { isSuspended: false },
+          },
+        });
+        if (otherUsableAdmins === 0) {
+          throw new ConflictError('The last active usable platform admin cannot be suspended.');
+        }
+      }
+      if (!params.suspend) {
+        const activeEnforcement = await tx.enforcementAction.findFirst({
+          where: {
+            type: 'ACCOUNT_SUSPENSION',
+            targetPersonId: params.targetPersonId,
+            effectApplied: true,
+            effectReversedAt: null,
+          },
+          select: { id: true },
+        });
+        if (activeEnforcement) {
+          throw new ConflictError('Active account-suspension enforcement blocks reinstatement.');
+        }
+      }
+      const expected = !params.suspend;
+      const changed = await tx.person.updateMany({
+        where: { id: params.targetPersonId, isSuspended: expected },
+        data: { isSuspended: params.suspend },
+      });
+      if (changed.count !== 1) throw new ConflictError('Person suspension state changed.');
+      if (params.suspend) {
+        await tx.refreshToken.updateMany({
+          where: { personId: params.targetPersonId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+      }
+      await tx.auditLog.create({
+        data: {
+          actorId: params.actorPersonId,
+          action: params.suspend ? 'PersonSuspendedByAdmin' : 'PersonReinstatedByAdmin',
+          entityType: 'Person',
+          entityId: params.targetPersonId,
+          reason: params.reason,
+          metadata: { previousValue: expected, newValue: params.suspend },
+          requestId: params.requestId,
+        },
+      });
+      return { personId: params.targetPersonId, isSuspended: params.suspend };
+    });
+  }
+
   // --- User Administration (21_ADRs > ADR-111, Stage 4) -------------------
   // Reuses `suspendPerson`/`reinstatePerson` above (previously only ever
   // called from `FraudCaseService`'s ACCOUNT_SUSPENSION enforcement
@@ -1351,6 +1446,55 @@ export class BackOfficeRepository {
     return this.prisma.person.update({
       where: { id: personId },
       data: { isBackofficeApproved: approved },
+    });
+  }
+
+  async changePersonBackofficeApprovalAtomically(params: {
+    targetPersonId: string;
+    actorPersonId: string;
+    approved: boolean;
+    reason?: string;
+    requestId: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'user-admin:' + params.targetPersonId}))`;
+      if (params.targetPersonId === params.actorPersonId) {
+        throw new ConflictError('Staff cannot change their own backoffice approval.');
+      }
+      const [actor, target] = await Promise.all([
+        tx.platformStaff.findFirst({ where: { personId: params.actorPersonId, isActive: true } }),
+        tx.person.findUnique({
+          where: { id: params.targetPersonId },
+          select: { id: true, isBackofficeApproved: true, platformStaff: true },
+        }),
+      ]);
+      if (!target) throw new NotFoundAppError('Person not found.');
+      if (!actor) throw new ConflictError('Active staff identity is required.');
+      if (
+        target.platformStaff?.isActive &&
+        actor.role !== 'PLATFORM_ADMIN' &&
+        PLATFORM_STAFF_RANK[actor.role] <= PLATFORM_STAFF_RANK[target.platformStaff.role]
+      ) {
+        throw new ConflictError('Staff cannot target equal or higher-ranked staff.');
+      }
+      const previousValue = !params.approved;
+      const changed = await tx.person.updateMany({
+        where: { id: params.targetPersonId, isBackofficeApproved: previousValue },
+        data: { isBackofficeApproved: params.approved },
+      });
+      if (changed.count !== 1) throw new ConflictError('Person backoffice approval state changed.');
+      await tx.auditLog.create({
+        data: {
+          actorId: params.actorPersonId,
+          action: 'PersonBackofficeApprovalChanged',
+          entityType: 'Person',
+          entityId: params.targetPersonId,
+          reason: params.reason,
+          metadata: { previousValue, newValue: params.approved },
+          requestId: params.requestId,
+        },
+      });
+      return { personId: params.targetPersonId, isBackofficeApproved: params.approved };
     });
   }
 
