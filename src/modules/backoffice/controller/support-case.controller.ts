@@ -6,6 +6,7 @@ import { AssignVerificationCaseDto } from '../application/dto/assign-verificatio
 import { AddSupportCaseMessageDto } from '../application/dto/add-support-case-message.dto';
 import { ResolveSupportCaseDto } from '../application/dto/resolve-support-case.dto';
 import { MergeSupportCaseDto } from '../application/dto/merge-support-case.dto';
+import { ListSupportCasesQueryDto } from '../application/dto/list-support-cases-query.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
@@ -14,7 +15,7 @@ import { RequiresPermission } from '../../../common/decorators/requires-permissi
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
-import { assertCaseFilter, parseCaseDateRange, parseCasePagination } from '../application/case-query.util';
+import { parseCaseDateRange, parseCasePagination } from '../application/case-query.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
 /**
@@ -56,20 +57,15 @@ export class SupportCaseController {
   @Get()
   @PlatformRoles('REVIEWER')
   @RequiresPermission('SUPPORT_VIEW')
-  async list(
-    @Query('status') status?: string,
-    @Query('priority') priority?: string,
-    @Query('category') category?: string,
-    @Query('assignedToId') assignedToId?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    assertCaseFilter(status, ['OPEN', 'IN_PROGRESS', 'WAITING_USER', 'RESOLVED', 'CLOSED'], 'status');
-    assertCaseFilter(priority, ['LOW', 'NORMAL', 'HIGH', 'URGENT'], 'priority');
-    assertCaseFilter(category, ['TECHNICAL', 'BILLING', 'ACCOUNT', 'BUILDING', 'OTHER'], 'category');
+  async list(@Query() query: ListSupportCasesQueryDto) {
     const { items, meta } = await this.service.listCases(
-      { status, priority, category, assignedToId },
-      parseCasePagination(page, limit),
+      {
+        status: query.status,
+        priority: query.priority,
+        category: query.category,
+        assignedToId: query.assignedToId,
+      },
+      parseCasePagination(query.page, query.limit),
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
   }

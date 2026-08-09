@@ -818,6 +818,39 @@ describe('Support & Operations Center (e2e) — Staff Queue, Escalation & Merge 
     );
   });
 
+  it.each([
+    ['priority', 'CRITICAL', 'priority', 'CRITICAL'],
+    ['category', 'BILLING', 'category', 'BILLING'],
+    ['status', 'CLOSED', 'status', 'CLOSED'],
+  ])('filters the staff queue by valid %s=%s', async (queryKey, queryValue, rowKey, rowValue) => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/backoffice/support-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .query({ [queryKey]: queryValue })
+      .expect(200);
+
+    expect(res.body.data).toEqual(
+      expect.arrayContaining([expect.objectContaining({ [rowKey]: rowValue })]),
+    );
+    expect(res.body.data.every((row: Record<string, unknown>) => row[rowKey] === rowValue)).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['priority', 'URGENT'],
+    ['category', 'ACCOUNT'],
+    ['status', 'PENDING'],
+  ])('rejects invalid %s before repository execution', async (queryKey, queryValue) => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/backoffice/support-cases')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .query({ [queryKey]: queryValue })
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
   it('REVIEWER cannot view metrics — SENIOR_REVIEWER+ required (403)', async () => {
     await request(app.getHttpServer())
       .get('/api/v1/backoffice/support-cases/metrics')

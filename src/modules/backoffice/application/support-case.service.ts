@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import type {
+  CaseStatus,
   SupportCaseCategory,
   SupportCaseResolutionCode,
   VerificationPriority,
@@ -89,14 +90,19 @@ export class SupportCaseService {
 
   /** 21_ADRs > ADR-072 */
   async listCases(
-    filters: { status?: string; priority?: string; category?: string; assignedToId?: string },
+    filters: {
+      status?: CaseStatus;
+      priority?: VerificationPriority;
+      category?: SupportCaseCategory;
+      assignedToId?: string;
+    },
     pagination: PaginationParams,
   ) {
     const { items, total } = await this.backOffice.listSupportCases(
       {
-        status: filters.status as never,
-        priority: filters.priority as never,
-        category: filters.category as never,
+        status: filters.status,
+        priority: filters.priority,
+        category: filters.category,
         assignedToId: filters.assignedToId,
       },
       toSkipTake(pagination),
