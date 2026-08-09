@@ -853,6 +853,44 @@ describe('Fraud & Abuse Center (e2e) — Report, Case Lifecycle & Metrics (07.03
     expect(typeof res.body.metadata.pagination.total).toBe('number');
   });
 
+  it.each(['OPEN', 'UNDER_INVESTIGATION', 'CONFIRMED', 'DISMISSED'])(
+    'accepts canonical status filter %s',
+    async (status) => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/backoffice/fraud-cases')
+        .query({ status })
+        .set('Authorization', `Bearer ${reviewer.accessToken}`)
+        .expect(200);
+      expect(res.body.data.every((item: { status: string }) => item.status === status)).toBe(true);
+    },
+  );
+
+  it.each(['LOW', 'NORMAL', 'HIGH', 'CRITICAL'])(
+    'accepts canonical priority filter %s',
+    async (priority) => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/backoffice/fraud-cases')
+        .query({ priority })
+        .set('Authorization', `Bearer ${reviewer.accessToken}`)
+        .expect(200);
+      expect(res.body.data.every((item: { priority: string }) => item.priority === priority)).toBe(
+        true,
+      );
+    },
+  );
+
+  it.each([
+    ['status', 'PENDING'],
+    ['priority', 'URGENT'],
+  ])('rejects invalid %s filter %s before Prisma', async (field, value) => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/backoffice/fraud-cases')
+      .query({ [field]: value })
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(400);
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
   it('rejects REVIEWER fetching metrics — SENIOR_REVIEWER+ required (403, ADR-050)', async () => {
     const res = await request(app.getHttpServer())
       .get('/api/v1/backoffice/fraud-cases/metrics')

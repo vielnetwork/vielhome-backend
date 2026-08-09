@@ -3,6 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import type {
   EnforcementActionType,
   EnforcementTargetType,
+  FraudCaseStatus,
   FraudSignalType,
   VerificationPriority,
 } from '@prisma/client';
@@ -122,13 +123,13 @@ export class FraudCaseService {
 
   /** 21_ADRs > ADR-072 */
   async listCases(
-    filters: { status?: string; priority?: string; assignedToId?: string },
+    filters: { status?: FraudCaseStatus; priority?: VerificationPriority; assignedToId?: string },
     pagination: PaginationParams,
   ) {
     const { items, total } = await this.backOffice.listFraudCases(
       {
-        status: filters.status as never,
-        priority: filters.priority as never,
+        status: filters.status,
+        priority: filters.priority,
         assignedToId: filters.assignedToId,
       },
       toSkipTake(pagination),

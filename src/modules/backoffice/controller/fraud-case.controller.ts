@@ -8,6 +8,7 @@ import { DecideFraudCaseDto } from '../application/dto/decide-fraud-case.dto';
 import { ReopenFraudCaseDto } from '../application/dto/reopen-fraud-case.dto';
 import { EnforceFraudCaseDto } from '../application/dto/enforce-fraud-case.dto';
 import { DecideEnforcementAppealDto } from '../application/dto/decide-enforcement-appeal.dto';
+import { ListFraudCasesQueryDto } from '../application/dto/list-fraud-cases-query.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
@@ -16,7 +17,7 @@ import { RequiresPermission } from '../../../common/decorators/requires-permissi
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
-import { assertCaseFilter, parseCaseDateRange, parseCasePagination } from '../application/case-query.util';
+import { parseCaseDateRange, parseCasePagination } from '../application/case-query.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
 /**
@@ -60,18 +61,10 @@ export class FraudCaseController {
   @Get()
   @PlatformRoles('REVIEWER')
   @RequiresPermission('FRAUD_VIEW')
-  async list(
-    @Query('status') status?: string,
-    @Query('priority') priority?: string,
-    @Query('assignedToId') assignedToId?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    assertCaseFilter(status, ['OPEN', 'UNDER_INVESTIGATION', 'CONFIRMED', 'DISMISSED'], 'status');
-    assertCaseFilter(priority, ['LOW', 'NORMAL', 'HIGH', 'URGENT'], 'priority');
+  async list(@Query() query: ListFraudCasesQueryDto) {
     const { items, meta } = await this.service.listCases(
-      { status, priority, assignedToId },
-      parseCasePagination(page, limit),
+      { status: query.status, priority: query.priority, assignedToId: query.assignedToId },
+      parseCasePagination(query.page, query.limit),
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
   }
