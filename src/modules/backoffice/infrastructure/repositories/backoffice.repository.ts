@@ -1980,12 +1980,37 @@ export class BackOfficeRepository {
     return { items, total };
   }
 
-  async assignComplianceCase(id: string, assignedToId: string, expectedStatus: FraudCaseStatus) {
+  listComplianceAssigneeCandidateIds() {
+    return this.prisma.platformStaff.findMany({
+      select: { personId: true },
+      orderBy: { personId: 'asc' },
+    });
+  }
+
+  findComplianceAssigneeCandidate(personId: string) {
+    return this.prisma.platformStaff.findUnique({
+      where: { personId },
+      select: {
+        personId: true,
+        isActive: true,
+        person: { select: { fullName: true, isSuspended: true } },
+      },
+    });
+  }
+
+  async assignComplianceCase(
+    id: string,
+    assignedToId: string,
+    expectedStatus: FraudCaseStatus,
+    expectedAssignedToId: string | null,
+  ) {
     const result = await this.prisma.complianceCase.updateMany({
-      where: { id, status: expectedStatus },
+      where: { id, status: expectedStatus, assignedToId: expectedAssignedToId },
       data: { assignedToId, status: 'UNDER_INVESTIGATION' },
     });
-    if (result.count !== 1) throw new ConflictError('Compliance case status changed; reload and retry.');
+    if (result.count !== 1) {
+      throw new ConflictError('Compliance case status changed; reload and retry.');
+    }
     return this.prisma.complianceCase.findUniqueOrThrow({ where: { id } });
   }
 
@@ -1995,9 +2020,14 @@ export class BackOfficeRepository {
     decidedById: string;
     decisionReason?: string;
     expectedStatus: FraudCaseStatus;
+    expectedAssignedToId: string | null;
   }) {
     const result = await this.prisma.complianceCase.updateMany({
-      where: { id: params.id, status: params.expectedStatus },
+      where: {
+        id: params.id,
+        status: params.expectedStatus,
+        assignedToId: params.expectedAssignedToId,
+      },
       data: {
         status: params.status,
         decidedById: params.decidedById,
@@ -2006,7 +2036,9 @@ export class BackOfficeRepository {
         activeDetectionKey: null,
       },
     });
-    if (result.count !== 1) throw new ConflictError('Compliance case status changed; reload and retry.');
+    if (result.count !== 1) {
+      throw new ConflictError('Compliance case status changed; reload and retry.');
+    }
     return this.prisma.complianceCase.findUniqueOrThrow({ where: { id: params.id } });
   }
 

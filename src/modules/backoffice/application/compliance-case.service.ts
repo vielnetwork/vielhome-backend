@@ -3,9 +3,13 @@ import type { ComplianceCaseCategory, FraudCaseStatus, VerificationPriority } fr
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import { ComplianceCasePolicy } from '../domain/policies/compliance-case.policy';
 import { AuditService } from '../../../common/audit/audit.service';
-import { NotFoundAppError } from '../../../common/errors/app-error';
-import { ValidationError } from '../../../common/errors/app-error';
+import {
+  BusinessRuleViolationError,
+  ConflictError,
+  NotFoundAppError,
+} from '../../../common/errors/app-error';
 import { PermissionResolverService } from '../../backoffice-rbac/application/permission-resolver.service';
+import type { EligibleComplianceAssigneeDto } from './dto/eligible-compliance-assignee.dto';
 import {
   buildPaginationMeta,
   toSkipTake,
@@ -106,14 +110,17 @@ export class ComplianceCaseService {
   async assign(caseId: string, assignedToId: string, actorPersonId: string, requestId: string) {
     const kase = await this.getCase(caseId);
     this.policy.assertInvestigable(kase.status);
-    const granted = await this.permissions.resolve(assignedToId);
-    if (!granted.has('COMPLIANCE_MANAGE')) {
-      throw new ValidationError(
-        'The assignee must be active platform staff with COMPLIANCE_MANAGE.',
-      );
+    if (kase.status === 'UNDER_INVESTIGATION' && kase.assignedToId === assignedToId) {
+      throw new ConflictError('Compliance case is already assigned to this staff member.');
     }
+    await this.requireEligibleAssignee(assignedToId);
 
-    const updated = await this.backOffice.assignComplianceCase(caseId, assignedToId, kase.status);
+    const updated = await this.backOffice.assignComplianceCase(
+      caseId,
+      assignedToId,
+      kase.status,
+      kase.assignedToId,
+    );
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -125,6 +132,43 @@ export class ComplianceCaseService {
     });
 
     return updated;
+  }
+
+  async listEligibleAssignees(): Promise<EligibleComplianceAssigneeDto[]> {
+    const candidates = await this.backOffice.listComplianceAssigneeCandidateIds();
+    const resolved = await Promise.all(
+      candidates.map(({ personId }) => this.resolveEligibleAssignee(personId)),
+    );
+    return resolved
+      .filter((candidate): candidate is EligibleComplianceAssigneeDto => candidate !== null)
+      .sort((left, right) =>
+        (left.displayName ?? left.id).localeCompare(right.displayName ?? right.id),
+      );
+  }
+
+  private async requireEligibleAssignee(personId: string): Promise<EligibleComplianceAssigneeDto> {
+    const staff = await this.backOffice.findComplianceAssigneeCandidate(personId);
+    if (!staff) throw new NotFoundAppError('Compliance assignee not found.');
+
+    const eligible = await this.resolveEligibleAssignee(personId, staff);
+    if (!eligible) {
+      throw new BusinessRuleViolationError('Assignee is not eligible for Compliance assignment.');
+    }
+    return eligible;
+  }
+
+  private async resolveEligibleAssignee(
+    personId: string,
+    candidate?: Awaited<ReturnType<BackOfficeRepository['findComplianceAssigneeCandidate']>>,
+  ): Promise<EligibleComplianceAssigneeDto | null> {
+    const staff = candidate ?? (await this.backOffice.findComplianceAssigneeCandidate(personId));
+    if (!staff || !staff.isActive || staff.person.isSuspended) return null;
+
+    const granted = await this.permissions.resolve(personId);
+    if (!granted.has('COMPLIANCE_MANAGE')) return null;
+
+    const normalizedName = staff.person.fullName?.trim();
+    return { id: staff.personId, displayName: normalizedName || null };
   }
 
   async decide(
@@ -144,6 +188,7 @@ export class ComplianceCaseService {
       decidedById: deciderPersonId,
       decisionReason: reason,
       expectedStatus: kase.status,
+      expectedAssignedToId: kase.assignedToId,
     });
 
     await this.audit.record({

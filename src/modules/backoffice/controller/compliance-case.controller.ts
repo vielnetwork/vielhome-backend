@@ -1,10 +1,11 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { ComplianceCaseService } from '../application/compliance-case.service';
 import { OpenComplianceCaseDto } from '../application/dto/open-compliance-case.dto';
 import { AssignComplianceCaseDto } from '../application/dto/assign-compliance-case.dto';
 import { DecideComplianceCaseDto } from '../application/dto/decide-compliance-case.dto';
 import { ListComplianceCasesQueryDto } from '../application/dto/list-compliance-cases-query.dto';
+import { EligibleComplianceAssigneeDto } from '../application/dto/eligible-compliance-assignee.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
@@ -60,6 +61,15 @@ export class ComplianceCaseController {
       parseCasePagination(query.page, query.limit),
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
+  }
+
+  /** Mutation-support lookup, manage-gated and declared before `:caseId`. */
+  @Get('eligible-assignees')
+  @PlatformRoles('SENIOR_REVIEWER')
+  @RequiresPermission('COMPLIANCE_MANAGE')
+  @ApiOkResponse({ type: EligibleComplianceAssigneeDto, isArray: true })
+  listEligibleAssignees(): Promise<EligibleComplianceAssigneeDto[]> {
+    return this.service.listEligibleAssignees();
   }
 
   @Get(':caseId')

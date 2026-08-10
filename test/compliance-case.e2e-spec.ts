@@ -642,6 +642,41 @@ describe('Audit & Compliance Center (e2e) — Compliance Cases: Manual Lifecycle
     await app.close();
   });
 
+  it('eligible-assignees is COMPLIANCE_MANAGE + SENIOR_REVIEWER gated and returns canonical Person ids', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/compliance-cases/eligible-assignees')
+      .expect(401);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/backoffice/compliance-cases/eligible-assignees')
+      .set('Authorization', `Bearer ${reviewer.accessToken}`)
+      .expect(403);
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/backoffice/compliance-cases/eligible-assignees')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: admin.personId }),
+        expect.objectContaining({ id: reviewer.personId }),
+      ]),
+    );
+    expect(
+      res.body.data.every(
+        (candidate: Record<string, unknown>) =>
+          Object.keys(candidate).sort().join(',') === 'displayName,id' &&
+          (candidate.displayName === null || typeof candidate.displayName === 'string'),
+      ),
+    ).toBe(true);
+    const sortKeys = res.body.data.map(
+      (candidate: { id: string; displayName: string | null }) =>
+        candidate.displayName ?? candidate.id,
+    );
+    expect(sortKeys).toEqual([...sortKeys].sort((left, right) => left.localeCompare(right)));
+  });
+
   it('REVIEWER cannot open a compliance case — SENIOR_REVIEWER+ required (403)', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/backoffice/compliance-cases')
@@ -769,6 +804,30 @@ describe('Audit & Compliance Center (e2e) — Compliance Cases: Manual Lifecycle
     expect(res.body.data.assignedToId).toBe(admin.personId);
   });
 
+  it('reassigns while UNDER_INVESTIGATION and rejects a same-assignee repeat without another audit', async () => {
+    const reassigned = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/compliance-cases/${caseId}/assign`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ assignedToId: reviewer.personId })
+      .expect(201);
+    expect(reassigned.body.data.assignedToId).toBe(reviewer.personId);
+
+    const auditCountBefore = await prisma.auditLog.count({
+      where: { entityType: 'ComplianceCase', entityId: caseId, action: 'ComplianceCaseAssigned' },
+    });
+    const duplicate = await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/compliance-cases/${caseId}/assign`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ assignedToId: reviewer.personId })
+      .expect(409);
+    expect(duplicate.body.errors[0].code).toBe('CONFLICT');
+    await expect(
+      prisma.auditLog.count({
+        where: { entityType: 'ComplianceCase', entityId: caseId, action: 'ComplianceCaseAssigned' },
+      }),
+    ).resolves.toBe(auditCountBefore);
+  });
+
   it('REVIEWER cannot decide (403); PLATFORM_ADMIN confirms it (Rule 012)', async () => {
     await request(app.getHttpServer())
       .post(`/api/v1/backoffice/compliance-cases/${caseId}/decide`)
@@ -840,6 +899,7 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
   let reviewerFraudGrantId: string;
   let adminFraudGrantId: string;
   let adminComplianceGrantId: string;
+  let repeatedFraudComplianceCaseId: string;
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
@@ -974,6 +1034,7 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
       .expect(201);
 
     const created = res.body.data as Array<{
+      id: string;
       category: string;
       subjectActorId: string;
       isAutoDetected: boolean;
@@ -990,6 +1051,7 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
     );
 
     expect(fraudCase).toBeDefined();
+    repeatedFraudComplianceCaseId = fraudCase!.id;
     expect(fraudCase?.isAutoDetected).toBe(true);
     expect(suspensionCase).toBeDefined();
     expect(financialCase).toBeDefined();
@@ -1006,6 +1068,30 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
       (c) => c.subjectActorId === targetPerson.personId || c.subjectActorId === founder.personId,
     );
     expect(mine.length).toBe(0);
+  });
+
+  it('a terminal decision clears the active key and permits one later re-detection', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/backoffice/compliance-cases/${repeatedFraudComplianceCaseId}/decide`)
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ decision: 'DISMISS', reason: 'Detection cycle reviewed.' })
+      .expect(201);
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/backoffice/compliance-cases/detect')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(201);
+    const replacements = (
+      res.body.data as Array<{
+        id: string;
+        category: string;
+        subjectActorId: string;
+      }>
+    ).filter(
+      (item) => item.category === 'REPEATED_FRAUD' && item.subjectActorId === targetPerson.personId,
+    );
+    expect(replacements).toHaveLength(1);
+    expect(replacements[0].id).not.toBe(repeatedFraudComplianceCaseId);
   });
 });
 
