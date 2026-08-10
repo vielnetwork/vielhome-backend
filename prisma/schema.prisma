@@ -714,8 +714,8 @@ model MembershipRequest {
 //   Transfer only for MVP, matching the v1.0 package's own payment method
 //   list).
 //
-// All monetary amounts are `Int` (whole Toman/Rial — no fractional
-// subunits), never `Float`/`Decimal`, specifically to avoid floating-point
+// ADR-125: All monetary amounts are `Int` representing whole Iranian Rial
+// (IRR; no fractional subunits), never `Float`/`Decimal`, to avoid floating-point
 // rounding bugs in running balances and allocation math.
 //
 // The Ledger is the financial source of truth (12_Finance_Architecture:
@@ -817,7 +817,7 @@ enum ChargePayerType {
   TENANT
 }
 
-// ADR-095 — FIXED: lateFeeValue is a flat Toman amount. PERCENTAGE:
+// ADR-095/ADR-125 — FIXED: lateFeeValue is a flat Rial amount. PERCENTAGE:
 // lateFeeValue is an integer percent of the ChargeItem's ORIGINAL
 // `amount` (never the current remaining balance) — frozen semantics, see
 // ADR-095 Decision point 3.

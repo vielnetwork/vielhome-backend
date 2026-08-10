@@ -5,7 +5,6 @@ import {
   IsDateString,
   IsIn,
   IsInt,
-  IsNumber,
   IsOptional,
   IsPositive,
   IsString,
@@ -25,8 +24,18 @@ export class ChargeBatchItemDto {
   @IsString()
   unitId!: string;
 
+  /**
+   * Finance Hardening Pass (post-audit) — `@IsInt()`, not `@IsNumber()`:
+   * this value is written verbatim to `ChargeItem.amount`, an `Int`
+   * Prisma column (ADR-125: Rial has no fractional unit in this schema — every
+   * other stored amount, `Payment.amount`/`Adjustment.amount`/etc., is
+   * already `Int`). A decimal value previously passed `class-validator`
+   * (which allows floats under `@IsNumber()`) and only failed once Prisma
+   * tried to write it, surfacing as an opaque 500 `UNEXPECTED_ERROR`
+   * instead of a clean 400 `VALIDATION_ERROR`.
+   */
   @ApiProperty()
-  @IsNumber()
+  @IsInt()
   @IsPositive()
   amount!: number;
 }
@@ -61,15 +70,28 @@ export class CreateChargeBatchDto {
   @IsIn(CALCULATION_METHODS)
   calculationMethod!: (typeof CALCULATION_METHODS)[number];
 
+  /** Finance Hardening Pass — `@IsInt()`, see `ChargeBatchItemDto.amount`'s own doc comment: this value is applied verbatim (no rounding) to every unit's `ChargeItem.amount`, an `Int` column. */
   @ApiProperty({ required: false })
   @IsOptional()
-  @IsNumber()
+  @IsInt()
   @IsPositive()
   amountPerUnit?: number;
 
+  /**
+   * Finance Hardening Pass — `@IsInt()`, not `@IsNumber()`. Unlike
+   * `amountPerUnit`, this value is a per-square-meter RATE, not a stored
+   * amount directly — `FinanceService.resolveChargeItems` computes
+   * `Math.round(ratePerSqm * unit.areaSqm)` before it ever reaches
+   * `ChargeItem.amount`, so a fractional rate wouldn't itself crash
+   * Prisma. It's constrained to an integer anyway because this schema's
+   * canonical currency unit (Rial) has no fractional unit anywhere else — every
+   * other amount/rate in Finance is a whole-Rial integer — so allowing a
+   * fractional rate here would be the one inconsistent exception, not a
+   * currency granularity this domain actually supports.
+   */
   @ApiProperty({ required: false })
   @IsOptional()
-  @IsNumber()
+  @IsInt()
   @IsPositive()
   ratePerSqm?: number;
 
@@ -134,7 +156,7 @@ export class CreateChargeBatchDto {
   @IsIn(LATE_FEE_TYPES)
   lateFeeType?: (typeof LATE_FEE_TYPES)[number];
 
-  /** Flat Toman amount for FIXED, integer percent (of the ORIGINAL ChargeItem.amount) for PERCENTAGE. */
+  /** Flat Rial amount for FIXED, integer percent (of the ORIGINAL ChargeItem.amount) for PERCENTAGE. */
   @ApiProperty({ required: false })
   @IsOptional()
   @IsInt()

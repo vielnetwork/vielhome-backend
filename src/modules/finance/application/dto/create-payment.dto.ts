@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsPositive, IsString } from 'class-validator';
 
 const PAYMENT_METHODS = ['CASH', 'BANK_TRANSFER'] as const;
 
@@ -18,8 +18,9 @@ export class CreatePaymentDto {
   @IsString()
   fundId?: string;
 
+  /** Finance Hardening Pass / ADR-125 — whole Iranian Rial (IRR), passed unchanged to `Payment.amount`; fractional values are invalid. */
   @ApiProperty()
-  @IsNumber()
+  @IsInt()
   @IsPositive()
   amount!: number;
 
