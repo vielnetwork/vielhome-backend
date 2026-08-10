@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { ComplianceCaseCategory, VerificationPriority } from '@prisma/client';
+import type { ComplianceCaseCategory, FraudCaseStatus, VerificationPriority } from '@prisma/client';
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import { ComplianceCasePolicy } from '../domain/policies/compliance-case.policy';
 import { AuditService } from '../../../common/audit/audit.service';
@@ -82,9 +82,9 @@ export class ComplianceCaseService {
   /** 21_ADRs > ADR-072 */
   async listCases(
     filters: {
-      status?: string;
-      category?: string;
-      priority?: string;
+      status?: FraudCaseStatus;
+      category?: ComplianceCaseCategory;
+      priority?: VerificationPriority;
       assignedToId?: string;
       subjectActorId?: string;
     },
@@ -92,9 +92,9 @@ export class ComplianceCaseService {
   ) {
     const { items, total } = await this.backOffice.listComplianceCases(
       {
-        status: filters.status as never,
-        category: filters.category as never,
-        priority: filters.priority as never,
+        status: filters.status,
+        category: filters.category,
+        priority: filters.priority,
         assignedToId: filters.assignedToId,
         subjectActorId: filters.subjectActorId,
       },
@@ -174,13 +174,13 @@ export class ComplianceCaseService {
     for (const g of fraudGroups) {
       if (!g.targetPersonId) continue;
       const opened = await this.autoOpen(
-          'REPEATED_FRAUD',
-          g.targetPersonId,
-          g._count.targetPersonId,
-          staffPersonId,
-          requestId,
-          'CONFIRMED fraud cases',
-        );
+        'REPEATED_FRAUD',
+        g.targetPersonId,
+        g._count.targetPersonId,
+        staffPersonId,
+        requestId,
+        'CONFIRMED fraud cases',
+      );
       if (opened) created.push(opened);
     }
 
@@ -190,13 +190,13 @@ export class ComplianceCaseService {
     for (const g of suspensionGroups) {
       if (!g.targetPersonId) continue;
       const opened = await this.autoOpen(
-          'REPEATED_SUSPENSION',
-          g.targetPersonId,
-          g._count.targetPersonId,
-          staffPersonId,
-          requestId,
-          'ACCOUNT_SUSPENSION enforcement actions',
-        );
+        'REPEATED_SUSPENSION',
+        g.targetPersonId,
+        g._count.targetPersonId,
+        staffPersonId,
+        requestId,
+        'ACCOUNT_SUSPENSION enforcement actions',
+      );
       if (opened) created.push(opened);
     }
 
@@ -206,13 +206,13 @@ export class ComplianceCaseService {
     for (const g of financialGroups) {
       if (!g.actorId) continue;
       const opened = await this.autoOpen(
-          'FINANCIAL_ANOMALY',
-          g.actorId,
-          g._count.actorId,
-          staffPersonId,
-          requestId,
-          'rejected-payment audit events',
-        );
+        'FINANCIAL_ANOMALY',
+        g.actorId,
+        g._count.actorId,
+        staffPersonId,
+        requestId,
+        'rejected-payment audit events',
+      );
       if (opened) created.push(opened);
     }
 

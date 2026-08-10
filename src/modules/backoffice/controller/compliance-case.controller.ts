@@ -4,6 +4,7 @@ import { ComplianceCaseService } from '../application/compliance-case.service';
 import { OpenComplianceCaseDto } from '../application/dto/open-compliance-case.dto';
 import { AssignComplianceCaseDto } from '../application/dto/assign-compliance-case.dto';
 import { DecideComplianceCaseDto } from '../application/dto/decide-compliance-case.dto';
+import { ListComplianceCasesQueryDto } from '../application/dto/list-compliance-cases-query.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
@@ -12,7 +13,7 @@ import { RequiresPermission } from '../../../common/decorators/requires-permissi
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
-import { assertCaseFilter, parseCasePagination } from '../application/case-query.util';
+import { parseCasePagination } from '../application/case-query.util';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
 /**
@@ -47,21 +48,16 @@ export class ComplianceCaseController {
   @Get()
   @PlatformRoles('SENIOR_REVIEWER')
   @RequiresPermission('COMPLIANCE_VIEW')
-  async list(
-    @Query('status') status?: string,
-    @Query('category') category?: string,
-    @Query('priority') priority?: string,
-    @Query('assignedToId') assignedToId?: string,
-    @Query('subjectActorId') subjectActorId?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    assertCaseFilter(status, ['OPEN', 'UNDER_INVESTIGATION', 'CONFIRMED', 'DISMISSED'], 'status');
-    assertCaseFilter(priority, ['LOW', 'NORMAL', 'HIGH', 'URGENT'], 'priority');
-    assertCaseFilter(category, ['REPEATED_FRAUD', 'REPEATED_SUSPENSION', 'FINANCIAL_ANOMALY', 'OTHER'], 'category');
+  async list(@Query() query: ListComplianceCasesQueryDto) {
     const { items, meta } = await this.service.listCases(
-      { status, category, priority, assignedToId, subjectActorId },
-      parseCasePagination(page, limit),
+      {
+        status: query.status,
+        category: query.category,
+        priority: query.priority,
+        assignedToId: query.assignedToId,
+        subjectActorId: query.subjectActorId,
+      },
+      parseCasePagination(query.page, query.limit),
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
   }

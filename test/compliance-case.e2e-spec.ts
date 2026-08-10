@@ -685,6 +685,59 @@ describe('Audit & Compliance Center (e2e) — Compliance Cases: Manual Lifecycle
     expect(res.body.data.map((c: { id: string }) => c.id)).toContain(caseId);
   });
 
+  it.each(['OPEN', 'UNDER_INVESTIGATION', 'CONFIRMED', 'DISMISSED'])(
+    'accepts canonical status filter %s',
+    async (status) => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/backoffice/compliance-cases')
+        .query({ status })
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .expect(200);
+      expect(res.body.data.every((item: { status: string }) => item.status === status)).toBe(true);
+    },
+  );
+
+  it.each(['REPEATED_FRAUD', 'REPEATED_SUSPENSION', 'FINANCIAL_ANOMALY', 'OTHER'])(
+    'accepts canonical category filter %s',
+    async (category) => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/backoffice/compliance-cases')
+        .query({ category })
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .expect(200);
+      expect(res.body.data.every((item: { category: string }) => item.category === category)).toBe(
+        true,
+      );
+    },
+  );
+
+  it.each(['LOW', 'NORMAL', 'HIGH', 'CRITICAL'])(
+    'accepts canonical priority filter %s',
+    async (priority) => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/backoffice/compliance-cases')
+        .query({ priority })
+        .set('Authorization', `Bearer ${admin.accessToken}`)
+        .expect(200);
+      expect(res.body.data.every((item: { priority: string }) => item.priority === priority)).toBe(
+        true,
+      );
+    },
+  );
+
+  it.each([
+    ['status', 'PENDING'],
+    ['category', 'SECURITY'],
+    ['priority', 'URGENT'],
+  ])('rejects invalid %s filter %s before Prisma', async (field, value) => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/backoffice/compliance-cases')
+      .query({ [field]: value })
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .expect(400);
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
   it('REVIEWER cannot fetch the case (403); PLATFORM_ADMIN can (200)', async () => {
     await request(app.getHttpServer())
       .get(`/api/v1/backoffice/compliance-cases/${caseId}`)
