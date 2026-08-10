@@ -1,8 +1,12 @@
 import { Controller, Get, Param, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { SubscriptionService } from '../application/subscription.service';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
+import {
+  EffectiveFeaturesEnvelopeDto,
+  SubscriptionDetailEnvelopeDto,
+} from '../application/dto/subscription-read.dto';
 
 /**
  * Member-facing, read-only view of a building's own subscription (07.04/
@@ -20,12 +24,14 @@ export class SubscriptionReportController {
 
   @Get(':id/subscription')
   @UseGuards(MembershipGuard)
+  @ApiOkResponse({ type: SubscriptionDetailEnvelopeDto })
   get(@Param('id') id: string) {
-    return this.service.getForBuilding(id);
+    return this.service.getReadDetail(id);
   }
 
   @Get(':id/subscription/effective-features')
   @UseGuards(MembershipGuard)
+  @ApiOkResponse({ type: EffectiveFeaturesEnvelopeDto })
   effectiveFeatures(@Param('id') id: string) {
     return this.service.resolveEffectiveFeatures(id);
   }

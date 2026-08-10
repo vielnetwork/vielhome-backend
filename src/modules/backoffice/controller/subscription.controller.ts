@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { SubscriptionService } from '../application/subscription.service';
 import { ChangeSubscriptionPlanDto } from '../application/dto/change-subscription-plan.dto';
 import { ChangeSubscriptionStatusDto } from '../application/dto/change-subscription-status.dto';
@@ -12,6 +12,11 @@ import { RequiresPermission } from '../../../common/decorators/requires-permissi
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
+import {
+  EffectiveFeaturesEnvelopeDto,
+  SubscriptionDetailEnvelopeDto,
+  SubscriptionHistoryEnvelopeDto,
+} from '../application/dto/subscription-read.dto';
 
 /**
  * Subscription Management staff routes (07.04/04.04 — see 21_ADRs >
@@ -38,13 +43,15 @@ export class SubscriptionController {
   @Get()
   @PlatformRoles('REVIEWER')
   @RequiresPermission('SUBSCRIPTION_VIEW')
+  @ApiOkResponse({ type: SubscriptionDetailEnvelopeDto })
   get(@Param('buildingId') buildingId: string) {
-    return this.service.getForBuilding(buildingId);
+    return this.service.getReadDetail(buildingId);
   }
 
   @Get('effective-features')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('SUBSCRIPTION_VIEW')
+  @ApiOkResponse({ type: EffectiveFeaturesEnvelopeDto })
   effectiveFeatures(@Param('buildingId') buildingId: string) {
     return this.service.resolveEffectiveFeatures(buildingId);
   }
@@ -52,6 +59,7 @@ export class SubscriptionController {
   @Get('history')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('SUBSCRIPTION_VIEW')
+  @ApiOkResponse({ type: SubscriptionHistoryEnvelopeDto })
   history(@Param('buildingId') buildingId: string) {
     return this.service.getHistory(buildingId);
   }

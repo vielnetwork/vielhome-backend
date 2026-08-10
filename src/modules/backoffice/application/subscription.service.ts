@@ -9,6 +9,11 @@ import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.
 import { SubscriptionPolicy } from '../domain/policies/subscription.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import { NotFoundAppError } from '../../../common/errors/app-error';
+import type {
+  EffectiveFeaturesDto,
+  SubscriptionDetailDto,
+  SubscriptionHistoryEntryDto,
+} from './dto/subscription-read.dto';
 
 /**
  * Subscription Management (07.04_Subscription_Management_v1.0 /
@@ -49,6 +54,39 @@ export class SubscriptionService {
     const subscription = await this.backOffice.findSubscriptionByBuildingId(buildingId);
     if (!subscription) throw new NotFoundAppError('This building has no subscription record.');
     return subscription;
+  }
+
+  /** Stable read projection shared by the staff and member detail routes.
+   * Keeping this explicit prevents future Prisma relation additions from
+   * silently expanding the public response contract. */
+  async getReadDetail(buildingId: string): Promise<SubscriptionDetailDto> {
+    const subscription = await this.getForBuilding(buildingId);
+    return {
+      id: subscription.id,
+      buildingId: subscription.buildingId,
+      plan: subscription.plan,
+      status: subscription.status,
+      trialEndsAt: subscription.trialEndsAt,
+      trialUsed: subscription.trialUsed,
+      gracePeriodDays: subscription.gracePeriodDays,
+      currentPeriodEndsAt: subscription.currentPeriodEndsAt,
+      gracePeriodEndsAt: subscription.gracePeriodEndsAt,
+      cancelledAt: subscription.cancelledAt,
+      createdAt: subscription.createdAt,
+      updatedAt: subscription.updatedAt,
+      featureGrants: subscription.featureGrants.map((grant) => ({
+        id: grant.id,
+        subscriptionId: grant.subscriptionId,
+        featureKey: grant.featureKey,
+        grantType: grant.grantType,
+        reason: grant.reason,
+        grantedById: grant.grantedById,
+        grantedAt: grant.grantedAt,
+        expiresAt: grant.expiresAt,
+        revokedById: grant.revokedById,
+        revokedAt: grant.revokedAt,
+      })),
+    };
   }
 
   /** 07.04 Rule 011/014 — authorized staff may change a building's plan at any time (upgrade or downgrade); Rule 015 — downgrading never deletes data. */
@@ -316,7 +354,7 @@ export class SubscriptionService {
   }
 
   /** 07.04 Rule 021/022 — Effective Features = Plan + active Feature Grants, resolved deterministically. */
-  async resolveEffectiveFeatures(buildingId: string) {
+  async resolveEffectiveFeatures(buildingId: string): Promise<EffectiveFeaturesDto> {
     const subscription = await this.getForBuilding(buildingId);
     const now = new Date();
     const activeGrantFeatureKeys = subscription.featureGrants
@@ -331,7 +369,7 @@ export class SubscriptionService {
   }
 
   /** 07.04 Rule 016 — subscription history (plans, trials, grants, expirations) must be preserved and queryable. */
-  async getHistory(buildingId: string) {
+  async getHistory(buildingId: string): Promise<SubscriptionHistoryEntryDto[]> {
     const subscription = await this.getForBuilding(buildingId);
     return this.backOffice.listSubscriptionHistory(subscription.id);
   }
