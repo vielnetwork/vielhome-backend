@@ -205,3 +205,85 @@ describe('BackOfficeRepository compliance mutation CAS', () => {
     expect(prisma.complianceCase.findUniqueOrThrow).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('BackOfficeRepository Finance read contract', () => {
+  it('applies exact status/building filters, all four search branches, pagination, payer select, and descending order', async () => {
+    const prisma = {
+      payment: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'pay-1', amount: 50_000_000 }]),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    };
+    const repository = new BackOfficeRepository(prisma as unknown as PrismaService);
+
+    const result = await repository.searchPayments(
+      { status: 'APPROVED', buildingId: 'building-1', search: 'Ali' },
+      { skip: 20, take: 20 },
+    );
+
+    const where = {
+      status: 'APPROVED',
+      buildingId: 'building-1',
+      OR: [
+        { reference: { contains: 'Ali', mode: 'insensitive' } },
+        { note: { contains: 'Ali', mode: 'insensitive' } },
+        {
+          payer: {
+            OR: [
+              { phone: { contains: 'Ali', mode: 'insensitive' } },
+              { fullName: { contains: 'Ali', mode: 'insensitive' } },
+            ],
+          },
+        },
+      ],
+    };
+    expect(prisma.payment.findMany).toHaveBeenCalledWith({
+      where,
+      select: {
+        id: true,
+        buildingId: true,
+        unitId: true,
+        fundId: true,
+        amount: true,
+        method: true,
+        status: true,
+        reference: true,
+        createdAt: true,
+        payer: { select: { id: true, fullName: true, phone: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: 20,
+      take: 20,
+    });
+    expect(prisma.payment.count).toHaveBeenCalledWith({ where });
+    expect(result).toEqual({ items: [{ id: 'pay-1', amount: 50_000_000 }], total: 1 });
+  });
+
+  it('freezes detail relations, deterministic refund ordering, and unchanged Rial amounts', async () => {
+    const row = {
+      id: 'pay-1',
+      amount: 50_000_000,
+      refunds: [{ id: 'refund-1', amount: 5_000_000 }],
+    };
+    const prisma = { payment: { findUnique: jest.fn().mockResolvedValue(row) } };
+    const repository = new BackOfficeRepository(prisma as unknown as PrismaService);
+
+    await expect(repository.getPaymentAdminDetail('pay-1')).resolves.toBe(row);
+    expect(prisma.payment.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay-1' },
+        select: expect.objectContaining({
+          building: { select: { id: true, name: true } },
+          payer: { select: { id: true, fullName: true, phone: true } },
+          amount: true,
+          refunds: {
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            select: { id: true, amount: true, reason: true, createdById: true, createdAt: true },
+          },
+        }),
+      }),
+    );
+    expect(row.amount).toBe(50_000_000);
+    expect(row.refunds[0].amount).toBe(5_000_000);
+  });
+});

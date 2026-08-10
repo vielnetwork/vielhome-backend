@@ -564,11 +564,62 @@ describe('Financial Administration (e2e) — Backoffice Payment List/Detail/Reve
       expect(Array.isArray(detailRes.body.data.refunds)).toBe(true);
     });
 
-    it('returns 404 for an unknown paymentId', async () => {
-      await request(app.getHttpServer())
+    it.each(['PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'REVERSED', 'REFUNDED'])(
+      'accepts canonical status filter %s',
+      async (status) => {
+        const res = await request(app.getHttpServer())
+          .get(`/api/v1/backoffice/payments?status=${status}`)
+          .set('Authorization', `Bearer ${reviewer.accessToken}`)
+          .expect(200);
+        expect(res.body.metadata.pagination).toEqual(
+          expect.objectContaining({ page: 1, limit: 20, total: expect.any(Number) }),
+        );
+        expect(
+          res.body.data.every((payment: { status: string }) => payment.status === status),
+        ).toBe(true);
+      },
+    );
+
+    it('rejects invalid status at the HTTP validation boundary before Prisma', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/backoffice/payments?status=PAID')
+        .set('Authorization', `Bearer ${reviewer.accessToken}`)
+        .expect(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('freezes building filter, tolerant pagination, nested payer, and unchanged Rial amount', async () => {
+      const matching = await request(app.getHttpServer())
+        .get(`/api/v1/backoffice/payments?buildingId=${buildingId}&page=bad&limit=999`)
+        .set('Authorization', `Bearer ${reviewer.accessToken}`)
+        .expect(200);
+      expect(matching.body.metadata.pagination).toEqual(
+        expect.objectContaining({ page: 1, limit: 100, totalPages: expect.any(Number) }),
+      );
+      const payment = matching.body.data.find((row: { id: string }) => row.id === paymentAId);
+      expect(payment).toEqual(
+        expect.objectContaining({
+          amount: 1_000_000,
+          method: 'CASH',
+          status: 'APPROVED',
+          payer: expect.objectContaining({ id: manager.personId, phone: manager.phone }),
+        }),
+      );
+
+      const missing = await request(app.getHttpServer())
+        .get('/api/v1/backoffice/payments?buildingId=does-not-exist')
+        .set('Authorization', `Bearer ${reviewer.accessToken}`)
+        .expect(200);
+      expect(missing.body.data).toEqual([]);
+      expect(missing.body.metadata.pagination.total).toBe(0);
+    });
+
+    it('returns the stable NOT_FOUND contract for an unknown paymentId', async () => {
+      const res = await request(app.getHttpServer())
         .get('/api/v1/backoffice/payments/does-not-exist')
         .set('Authorization', `Bearer ${reviewer.accessToken}`)
         .expect(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
     });
 
     it('21_ADRs > ADR-115 — /export rejects an unauthenticated caller (401)', async () => {

@@ -1,10 +1,17 @@
 import { Body, Controller, Get, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import type { PaymentStatus } from '@prisma/client';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { FinanceAdministrationService } from '../application/finance-administration.service';
 import { AdminReversePaymentDto } from '../application/dto/admin-reverse-payment.dto';
 import { RefundPaymentDto } from '../../finance/application/dto/refund-payment.dto';
+import {
+  AdminPaymentsFiltersDto,
+  ListAdminPaymentsQueryDto,
+} from '../application/dto/list-admin-payments-query.dto';
+import {
+  AdminPaymentDetailEnvelopeDto,
+  AdminPaymentsListEnvelopeDto,
+} from '../application/dto/admin-payment-read.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PlatformRoles } from '../../../common/decorators/platform-roles.decorator';
@@ -40,16 +47,11 @@ export class FinanceAdministrationController {
   @Get()
   @PlatformRoles('REVIEWER')
   @RequiresPermission('FINANCE_VIEW')
-  async list(
-    @Query('search') search?: string,
-    @Query('status') status?: PaymentStatus,
-    @Query('buildingId') buildingId?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
+  @ApiOkResponse({ type: AdminPaymentsListEnvelopeDto })
+  async list(@Query() query: ListAdminPaymentsQueryDto) {
     const { items, meta } = await this.service.list(
-      { search, status, buildingId },
-      parsePagination(page, limit),
+      { search: query.search, status: query.status, buildingId: query.buildingId },
+      parsePagination(query.page, query.limit),
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
   }
@@ -64,14 +66,16 @@ export class FinanceAdministrationController {
   @PlatformRoles('REVIEWER')
   @RequiresPermission('FINANCE_VIEW')
   async exportCsv(
-    @Query('search') search: string | undefined,
-    @Query('status') status: PaymentStatus | undefined,
-    @Query('buildingId') buildingId: string | undefined,
+    @Query() query: AdminPaymentsFiltersDto,
     @CurrentUser() user: JwtPayload,
     @RequestId() requestId: string,
     @Res() res: Response,
   ): Promise<void> {
-    const csv = await this.service.exportCsv({ search, status, buildingId }, user.sub, requestId);
+    const csv = await this.service.exportCsv(
+      { search: query.search, status: query.status, buildingId: query.buildingId },
+      user.sub,
+      requestId,
+    );
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="payments-export.csv"');
     res.send(csv);
@@ -80,6 +84,7 @@ export class FinanceAdministrationController {
   @Get(':paymentId')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('FINANCE_VIEW')
+  @ApiOkResponse({ type: AdminPaymentDetailEnvelopeDto })
   getDetail(@Param('paymentId') paymentId: string) {
     return this.service.getDetail(paymentId);
   }

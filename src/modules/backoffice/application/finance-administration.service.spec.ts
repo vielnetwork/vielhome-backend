@@ -66,14 +66,28 @@ describe('FinanceAdministrationService', () => {
       expect(result.items).toHaveLength(2);
       expect(result.meta).toEqual({ page: 2, limit: 10, total: 30, totalPages: 3 });
     });
+
+    it('returns a whole-Rial amount unchanged without a factor-of-ten conversion', async () => {
+      backOffice.searchPayments.mockResolvedValue({
+        items: [{ id: 'pay-rial', amount: 50_000_000 }],
+        total: 1,
+      });
+
+      const result = await service.list({}, { page: 1, limit: 20 });
+
+      expect(result.items[0].amount).toBe(50_000_000);
+      expect(backOffice.searchPayments).toHaveBeenCalledWith({}, { skip: 0, take: 20 });
+    });
   });
 
   describe('getDetail', () => {
     it('returns the repository row when found', async () => {
-      const row = { id: 'pay-1', amount: 1000 };
+      const row = { id: 'pay-1', amount: 50_000_000, refunds: [{ amount: 5_000_000 }] };
       backOffice.getPaymentAdminDetail.mockResolvedValue(row);
 
       await expect(service.getDetail('pay-1')).resolves.toBe(row);
+      expect((await service.getDetail('pay-1')).amount).toBe(50_000_000);
+      expect((await service.getDetail('pay-1')).refunds[0].amount).toBe(5_000_000);
     });
 
     it('throws NotFoundAppError when the payment does not exist', async () => {
@@ -150,8 +164,8 @@ describe('FinanceAdministrationService', () => {
             buildingId: 'b1',
             unitId: 'u1',
             fundId: 'f1',
-            amount: 5000,
-            method: 'CARD',
+            amount: 50_000_000,
+            method: 'BANK_TRANSFER',
             status: 'APPROVED',
             reference: 'ref-1',
             createdAt: new Date('2026-08-01T00:00:00.000Z'),
@@ -173,6 +187,7 @@ describe('FinanceAdministrationService', () => {
       expect(csv).toContain('pay-1');
       expect(csv).toContain('Alice');
       expect(csv).toContain('+989120000099');
+      expect(csv).toContain('50000000');
     });
 
     it('records a PaymentListExported audit event with the filters and row count, no reason', async () => {

@@ -1401,6 +1401,7 @@ export class BackOfficeRepository {
         createdAt: true,
         updatedAt: true,
         refunds: {
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           select: { id: true, amount: true, reason: true, createdById: true, createdAt: true },
         },
       },
