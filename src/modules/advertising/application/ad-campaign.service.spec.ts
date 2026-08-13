@@ -16,6 +16,8 @@ function makeRepository(overrides: Partial<Record<string, jest.Mock>> = {}) {
     buildingExists: jest.fn().mockResolvedValue(null),
     findBuildingGeography: jest.fn().mockResolvedValue(null),
     findEligibleForPlacement: jest.fn().mockResolvedValue([]),
+    listAdmin: jest.fn(),
+    update: jest.fn(),
     ...overrides,
   } as unknown as AdCampaignRepository;
 }
@@ -93,7 +95,10 @@ describe('AdCampaignService', () => {
 
       await expect(
         service.createCampaign(
-          baseInput({ startsAt: new Date('2026-08-31T00:00:00.000Z'), endsAt: new Date('2026-08-01T00:00:00.000Z') }),
+          baseInput({
+            startsAt: new Date('2026-08-31T00:00:00.000Z'),
+            endsAt: new Date('2026-08-01T00:00:00.000Z'),
+          }),
           'staff-1',
           'req-1',
         ),
@@ -196,6 +201,80 @@ describe('AdCampaignService', () => {
     });
   });
 
+  describe('admin reads and update', () => {
+    it('passes filters and pagination to the repository and returns campaign detail', async () => {
+      const page = {
+        items: [campaignFixture()],
+        meta: { page: 2, limit: 5, total: 6, totalPages: 2 },
+      };
+      const repository = makeRepository({
+        listAdmin: jest.fn().mockResolvedValue(page),
+        findById: jest.fn().mockResolvedValue(campaignFixture()),
+      });
+      const service = new AdCampaignService(repository, makeAudit());
+
+      await expect(
+        service.listCampaigns({ status: 'DRAFT', buildingId: 'bldg-1' }, { page: 2, limit: 5 }),
+      ).resolves.toBe(page);
+      await expect(service.getCampaign('camp-1')).resolves.toMatchObject({ id: 'camp-1' });
+      expect(repository.listAdmin).toHaveBeenCalledWith(
+        { status: 'DRAFT', buildingId: 'bldg-1' },
+        { page: 2, limit: 5 },
+      );
+    });
+
+    it('updates mutable fields through full domain validation and audits before/after', async () => {
+      const current = campaignFixture();
+      const updated = campaignFixture({ title: 'Updated', priority: 3, buildingId: 'bldg-2' });
+      const repository = makeRepository({
+        findById: jest.fn().mockResolvedValue(current),
+        buildingExists: jest.fn().mockResolvedValue({ id: 'bldg-2' }),
+        update: jest.fn().mockResolvedValue(updated),
+      });
+      const audit = makeAudit();
+      const service = new AdCampaignService(repository, audit);
+
+      await expect(
+        service.updateCampaign(
+          'camp-1',
+          { title: 'Updated', priority: 3, buildingId: 'bldg-2' },
+          'staff-1',
+          'req-2',
+        ),
+      ).resolves.toBe(updated);
+      expect(repository.update).toHaveBeenCalledWith(
+        'camp-1',
+        expect.objectContaining({
+          title: 'Updated',
+          priority: 3,
+          building: { connect: { id: 'bldg-2' } },
+        }),
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'AdCampaignUpdated',
+          actorId: 'staff-1',
+          requestId: 'req-2',
+        }),
+      );
+    });
+
+    it('rejects an update that makes the schedule invalid or targets a missing building', async () => {
+      const repository = makeRepository({
+        findById: jest.fn().mockResolvedValue(campaignFixture()),
+      });
+      const service = new AdCampaignService(repository, makeAudit());
+
+      await expect(
+        service.updateCampaign('camp-1', { endsAt: new Date('2026-07-01') }, 'staff-1', 'req'),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        service.updateCampaign('camp-1', { buildingId: 'missing' }, 'staff-1', 'req'),
+      ).rejects.toBeInstanceOf(NotFoundAppError);
+      expect(repository.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('isEligibleNow', () => {
     const service = new AdCampaignService(makeRepository(), makeAudit());
     const now = new Date('2026-08-15T00:00:00.000Z');
@@ -223,37 +302,65 @@ describe('AdCampaignService', () => {
     it('excludes a campaign before its startsAt', () => {
       const campaign = campaignFixture({ status: 'ACTIVE' });
       const before = new Date('2026-07-15T00:00:00.000Z');
-      expect(service.isEligibleNow(campaign, { now: before, placement: 'HOME_TODAY_OFFERS' })).toBe(false);
+      expect(service.isEligibleNow(campaign, { now: before, placement: 'HOME_TODAY_OFFERS' })).toBe(
+        false,
+      );
     });
 
     it('excludes a campaign after its endsAt', () => {
       const campaign = campaignFixture({ status: 'ACTIVE' });
       const after = new Date('2026-09-15T00:00:00.000Z');
-      expect(service.isEligibleNow(campaign, { now: after, placement: 'HOME_TODAY_OFFERS' })).toBe(false);
+      expect(service.isEligibleNow(campaign, { now: after, placement: 'HOME_TODAY_OFFERS' })).toBe(
+        false,
+      );
     });
 
     it('is not eligible for a mismatched placement', () => {
       const campaign = campaignFixture({ status: 'ACTIVE' });
-      expect(service.isEligibleNow(campaign, { now, placement: 'HOME_FEATURED_LARGE' })).toBe(false);
+      expect(service.isEligibleNow(campaign, { now, placement: 'HOME_FEATURED_LARGE' })).toBe(
+        false,
+      );
     });
 
     it('enforces country/city targeting when the campaign sets it (targeting isolation)', () => {
-      const campaign = campaignFixture({ status: 'ACTIVE', targetCountry: 'DE', targetCity: 'Berlin' });
+      const campaign = campaignFixture({
+        status: 'ACTIVE',
+        targetCountry: 'DE',
+        targetCity: 'Berlin',
+      });
       expect(
-        service.isEligibleNow(campaign, { now, placement: 'HOME_TODAY_OFFERS', country: 'DE', city: 'Berlin' }),
+        service.isEligibleNow(campaign, {
+          now,
+          placement: 'HOME_TODAY_OFFERS',
+          country: 'DE',
+          city: 'Berlin',
+        }),
       ).toBe(true);
       expect(
-        service.isEligibleNow(campaign, { now, placement: 'HOME_TODAY_OFFERS', country: 'FR', city: 'Paris' }),
+        service.isEligibleNow(campaign, {
+          now,
+          placement: 'HOME_TODAY_OFFERS',
+          country: 'FR',
+          city: 'Paris',
+        }),
       ).toBe(false);
     });
 
     it('enforces building-specific targeting when the campaign sets it (targeting isolation)', () => {
       const campaign = campaignFixture({ status: 'ACTIVE', buildingId: 'bldg-1' });
       expect(
-        service.isEligibleNow(campaign, { now, placement: 'HOME_TODAY_OFFERS', buildingId: 'bldg-1' }),
+        service.isEligibleNow(campaign, {
+          now,
+          placement: 'HOME_TODAY_OFFERS',
+          buildingId: 'bldg-1',
+        }),
       ).toBe(true);
       expect(
-        service.isEligibleNow(campaign, { now, placement: 'HOME_TODAY_OFFERS', buildingId: 'bldg-2' }),
+        service.isEligibleNow(campaign, {
+          now,
+          placement: 'HOME_TODAY_OFFERS',
+          buildingId: 'bldg-2',
+        }),
       ).toBe(false);
     });
   });
@@ -272,7 +379,9 @@ describe('AdCampaignService', () => {
     });
 
     it('throws NotFoundAppError when the building does not exist', async () => {
-      const repository = makeRepository({ findBuildingGeography: jest.fn().mockResolvedValue(null) });
+      const repository = makeRepository({
+        findBuildingGeography: jest.fn().mockResolvedValue(null),
+      });
       const service = new AdCampaignService(repository, makeAudit());
 
       await expect(
@@ -346,7 +455,11 @@ describe('AdCampaignService', () => {
       const repository = makeRepository({
         findBuildingGeography: jest.fn().mockResolvedValue({ country: 'DE', city: 'Berlin' }),
         findEligibleForPlacement: jest.fn().mockResolvedValue([
-          campaignFixture({ id: 'camp-wrong', status: 'ACTIVE', placement: 'HOME_FEATURED_LARGE' }),
+          campaignFixture({
+            id: 'camp-wrong',
+            status: 'ACTIVE',
+            placement: 'HOME_FEATURED_LARGE',
+          }),
         ]),
       });
       const service = new AdCampaignService(repository, makeAudit());
@@ -359,11 +472,13 @@ describe('AdCampaignService', () => {
     it('preserves the repository-provided ordering (priority DESC, then stable tie-breaker) without re-sorting', async () => {
       const repository = makeRepository({
         findBuildingGeography: jest.fn().mockResolvedValue({ country: 'DE', city: 'Berlin' }),
-        findEligibleForPlacement: jest.fn().mockResolvedValue([
-          campaignFixture({ id: 'camp-high', status: 'ACTIVE', priority: 10 }),
-          campaignFixture({ id: 'camp-mid', status: 'ACTIVE', priority: 5 }),
-          campaignFixture({ id: 'camp-low', status: 'ACTIVE', priority: 0 }),
-        ]),
+        findEligibleForPlacement: jest
+          .fn()
+          .mockResolvedValue([
+            campaignFixture({ id: 'camp-high', status: 'ACTIVE', priority: 10 }),
+            campaignFixture({ id: 'camp-mid', status: 'ACTIVE', priority: 5 }),
+            campaignFixture({ id: 'camp-low', status: 'ACTIVE', priority: 0 }),
+          ]),
       });
       const service = new AdCampaignService(repository, makeAudit());
 

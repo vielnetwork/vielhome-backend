@@ -4,6 +4,10 @@ import { MembershipGuard } from '../../common/guards/membership.guard';
 import { AdCampaignRepository } from './infrastructure/repositories/ad-campaign.repository';
 import { AdCampaignService } from './application/ad-campaign.service';
 import { AdvertisingDeliveryController } from './controller/advertising-delivery.controller';
+import { AdvertisingAdministrationController } from './controller/advertising-administration.controller';
+import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
+import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
+import { BackOfficeRepository } from '../backoffice/infrastructure/repositories/backoffice.repository';
 
 /**
  * Monetization & Advertising — Phase 3/4 (Backend/Domain Foundation +
@@ -27,9 +31,15 @@ import { AdvertisingDeliveryController } from './controller/advertising-delivery
  * be the actual duplication this fix must avoid.
  */
 @Module({
-  imports: [BuildingModule],
-  controllers: [AdvertisingDeliveryController],
-  providers: [AdCampaignRepository, AdCampaignService, MembershipGuard],
+  imports: [BuildingModule, BackofficeRbacModule],
+  controllers: [AdvertisingDeliveryController, AdvertisingAdministrationController],
+  providers: [
+    AdCampaignRepository,
+    AdCampaignService,
+    MembershipGuard,
+    PlatformRolesGuard,
+    BackOfficeRepository,
+  ],
   exports: [AdCampaignService, AdCampaignRepository],
 })
 export class AdvertisingModule {}

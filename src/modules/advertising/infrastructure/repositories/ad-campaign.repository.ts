@@ -1,6 +1,14 @@
 import { Injectable } from '@nestjs/common';
-import type { AdCampaign, AdCampaignStatus, AdPlacement, Prisma } from '@prisma/client';
+import type {
+  AdCampaign,
+  AdCampaignSource,
+  AdCampaignStatus,
+  AdPlacement,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
+import type { PaginationParams } from '../../../../common/pagination/pagination.util';
+import { buildPaginationMeta, toSkipTake } from '../../../../common/pagination/pagination.util';
 
 export interface EligibleCampaignQuery {
   placement: AdPlacement;
@@ -9,6 +17,13 @@ export interface EligibleCampaignQuery {
   country: string;
   city: string;
   limit: number;
+}
+
+export interface AdminCampaignFilters {
+  status?: AdCampaignStatus;
+  source?: AdCampaignSource;
+  placement?: AdPlacement;
+  buildingId?: string;
 }
 
 /**
@@ -29,6 +44,30 @@ export class AdCampaignRepository {
     return this.prisma.adCampaign.findUnique({ where: { id } });
   }
 
+  async listAdmin(filters: AdminCampaignFilters, pagination: PaginationParams) {
+    const where: Prisma.AdCampaignWhereInput = {
+      status: filters.status,
+      source: filters.source,
+      placement: filters.placement,
+      buildingId: filters.buildingId,
+    };
+    const { skip, take } = toSkipTake(pagination);
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.adCampaign.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        skip,
+        take,
+      }),
+      this.prisma.adCampaign.count({ where }),
+    ]);
+    return { items, meta: buildPaginationMeta(pagination, total) };
+  }
+
+  update(id: string, data: Prisma.AdCampaignUpdateInput): Promise<AdCampaign> {
+    return this.prisma.adCampaign.update({ where: { id }, data });
+  }
+
   updateStatus(id: string, status: AdCampaignStatus): Promise<AdCampaign> {
     return this.prisma.adCampaign.update({ where: { id }, data: { status } });
   }
@@ -42,9 +81,7 @@ export class AdCampaignRepository {
 
   /** Phase 4 — the building's own country/city, reused as-is for
    * targeting matching (no parallel geography system). */
-  findBuildingGeography(
-    buildingId: string,
-  ): Promise<{ country: string; city: string } | null> {
+  findBuildingGeography(buildingId: string): Promise<{ country: string; city: string } | null> {
     return this.prisma.building.findUnique({
       where: { id: buildingId },
       select: { country: true, city: true },

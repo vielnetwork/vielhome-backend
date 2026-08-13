@@ -99,6 +99,8 @@ export const E2E_SUITE_ID = {
   GAMIFICATION_ADMINISTRATION: 32,
   // Monetization & Advertising — Phase 4 (Advertising Delivery API).
   ADVERTISING: 33,
+  // Monetization & Advertising — Phase 5B (Administration API).
+  ADVERTISING_ADMINISTRATION: 34,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;

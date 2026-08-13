@@ -1,11 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import type {
-  AdCampaign,
-  AdCampaignSource,
-  AdCampaignStatus,
-  AdPlacement,
-} from '@prisma/client';
+import type { AdCampaign, AdCampaignSource, AdCampaignStatus, AdPlacement } from '@prisma/client';
 import { AdCampaignRepository } from '../infrastructure/repositories/ad-campaign.repository';
+import type { AdminCampaignFilters } from '../infrastructure/repositories/ad-campaign.repository';
+import type { PaginationParams } from '../../../common/pagination/pagination.util';
 import { AuditService } from '../../../common/audit/audit.service';
 import {
   BusinessRuleViolationError,
@@ -29,6 +26,8 @@ export interface CreateAdCampaignInput {
   targetCity?: string | null;
   buildingId?: string | null;
 }
+
+export type UpdateAdCampaignInput = Partial<CreateAdCampaignInput>;
 
 export interface EligibilityContext {
   now: Date;
@@ -95,6 +94,16 @@ export class AdCampaignService {
     private readonly audit: AuditService,
   ) {}
 
+  listCampaigns(filters: AdminCampaignFilters, pagination: PaginationParams) {
+    return this.repository.listAdmin(filters, pagination);
+  }
+
+  async getCampaign(id: string): Promise<AdCampaign> {
+    const campaign = await this.repository.findById(id);
+    if (!campaign) throw new NotFoundAppError('Campaign not found.');
+    return campaign;
+  }
+
   async createCampaign(
     input: CreateAdCampaignInput,
     actorId: string,
@@ -117,9 +126,7 @@ export class AdCampaignService {
       targetCountry: input.targetCountry ?? null,
       targetCity: input.targetCity ?? null,
       createdById: actorId,
-      ...(input.buildingId
-        ? { building: { connect: { id: input.buildingId } } }
-        : {}),
+      ...(input.buildingId ? { building: { connect: { id: input.buildingId } } } : {}),
     });
 
     await this.audit.record({
@@ -168,6 +175,59 @@ export class AdCampaignService {
       metadata: { before: { status: before }, after: { status: updated.status } },
     });
 
+    return updated;
+  }
+
+  async updateCampaign(
+    id: string,
+    input: UpdateAdCampaignInput,
+    actorId: string,
+    requestId: string,
+  ): Promise<AdCampaign> {
+    const current = await this.getCampaign(id);
+    const merged: CreateAdCampaignInput = {
+      name: input.name ?? current.name,
+      source: input.source ?? current.source,
+      placement: input.placement ?? current.placement,
+      priority: input.priority ?? current.priority,
+      startsAt: input.startsAt ?? current.startsAt,
+      endsAt: input.endsAt ?? current.endsAt,
+      title: input.title ?? current.title,
+      description: input.description === undefined ? current.description : input.description,
+      imageUrl: input.imageUrl ?? current.imageUrl,
+      ctaLabel: input.ctaLabel === undefined ? current.ctaLabel : input.ctaLabel,
+      ctaUrl: input.ctaUrl === undefined ? current.ctaUrl : input.ctaUrl,
+      targetCountry:
+        input.targetCountry === undefined ? current.targetCountry : input.targetCountry,
+      targetCity: input.targetCity === undefined ? current.targetCity : input.targetCity,
+      buildingId: input.buildingId === undefined ? current.buildingId : input.buildingId,
+    };
+    await this.assertValidCampaignInput(merged);
+    const updated = await this.repository.update(id, {
+      name: merged.name,
+      source: merged.source,
+      placement: merged.placement,
+      priority: merged.priority,
+      startsAt: merged.startsAt,
+      endsAt: merged.endsAt,
+      title: merged.title,
+      description: merged.description,
+      imageUrl: merged.imageUrl,
+      ctaLabel: merged.ctaLabel,
+      ctaUrl: merged.ctaUrl,
+      targetCountry: merged.targetCountry,
+      targetCity: merged.targetCity,
+      building: merged.buildingId ? { connect: { id: merged.buildingId } } : { disconnect: true },
+    });
+    await this.audit.record({
+      actorId,
+      buildingId: updated.buildingId,
+      action: 'AdCampaignUpdated',
+      entityType: 'AdCampaign',
+      entityId: updated.id,
+      requestId,
+      metadata: { before: current, after: updated },
+    });
     return updated;
   }
 
