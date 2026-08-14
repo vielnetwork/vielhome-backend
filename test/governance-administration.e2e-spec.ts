@@ -69,6 +69,21 @@ async function deleteBuildingsOnceBatch(
   await prisma.voteResult.deleteMany({ where: { vote: { buildingId: { in: buildingIds } } } });
   await prisma.voteOption.deleteMany({ where: { vote: { buildingId: { in: buildingIds } } } });
   await prisma.vote.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  // `BuildingCreated` -> `GamificationEventListener.onBuildingCreated` ->
+  // `awardXp({ buildingId, reason: 'BUILDING_SETUP_COMPLETED', ... })` ->
+  // `applyBuildingScoreDelta` (xp-catalog.ts: BUILDING_SETUP_COMPLETED has
+  // a non-zero buildingScoreDelta) unconditionally creates BOTH a
+  // BuildingScore row AND a BuildingScoreEvent row for every building
+  // this suite's own createBuilding() helper creates via the real
+  // /buildings/setup/submit flow -- same two-table FK chain
+  // building-administration.e2e-spec.ts's own cleanup already handles for
+  // exactly this reason. BuildingScoreEvent must go first (FK ->
+  // BuildingScore.id), then BuildingScore (FK -> Building.id), or
+  // Building.deleteMany below fails on building_scores_buildingId_fkey.
+  await prisma.buildingScoreEvent.deleteMany({
+    where: { buildingScore: { buildingId: { in: buildingIds } } },
+  });
+  await prisma.buildingScore.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.membership.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.ownership.deleteMany({ where: { unit: { buildingId: { in: buildingIds } } } });
   await prisma.unit.deleteMany({ where: { buildingId: { in: buildingIds } } });
