@@ -103,6 +103,27 @@ async function deleteBuildingsOnceBatch(
   await prisma.membership.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.ownership.deleteMany({ where: { unit: { buildingId: { in: buildingIds } } } });
   await prisma.unit.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  // `BuildingCreated` -> `BackOfficeEventListener.onBuildingCreated` also
+  // unconditionally auto-creates a TRIAL/FREE `Subscription` row for every
+  // building (schema.prisma: "auto-created TRIAL/FREE on
+  // `BuildingCreatedEvent`... by `BackOfficeEventListener`", 07.04 Rule 001 /
+  // 04.04 Rule 7) via `BackOfficeRepository.createSubscription`. Subscription
+  // has a required, unique FK to Building (`subscriptions_buildingId_fkey`),
+  // so it must be cleared before `Building.deleteMany` below.
+  // `FeatureGrant.subscriptionId` and `SubscriptionChangeLog.subscriptionId`
+  // are Subscription's only two child tables (schema.prisma has no other
+  // model referencing `Subscription`) -- this suite never grants a feature
+  // or logs a plan change, but both are cleared first anyway so
+  // `Subscription.deleteMany` can never fail on
+  // `feature_grants_subscriptionId_fkey` or
+  // `subscription_change_logs_subscriptionId_fkey` if that ever changes.
+  await prisma.featureGrant.deleteMany({
+    where: { subscription: { buildingId: { in: buildingIds } } },
+  });
+  await prisma.subscriptionChangeLog.deleteMany({
+    where: { subscription: { buildingId: { in: buildingIds } } },
+  });
+  await prisma.subscription.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.building.deleteMany({ where: { id: { in: buildingIds } } });
 }
 
