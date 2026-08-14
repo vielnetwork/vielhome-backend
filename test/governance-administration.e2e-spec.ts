@@ -58,6 +58,32 @@ async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: Pris
   return { app, prisma: app.get(PrismaService) };
 }
 
+/**
+ * Same `waitFor` shape `governance.e2e-spec.ts` already established: polls
+ * a Prisma read until it returns a truthy result or exhausts its attempts,
+ * instead of assuming an un-awaited `EventEmitter2.emit()`-triggered side
+ * effect has already landed (notifications.service.ts's own `notify()` doc
+ * comment confirms this emit is fire-and-forget). Used once below, after
+ * this suite's very last action (`cancel path`), to give the
+ * `VoteCancelled` -> `NotificationEventListener.onVoteCancelled` ->
+ * `Notification` write a chance to land before this describe block's
+ * `afterAll` starts deleting the same recipient's Person row.
+ */
+async function waitFor<T>(
+  fn: () => Promise<T | null | undefined>,
+  attempts = 10,
+  delayMs = 100,
+): Promise<T | null | undefined> {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const result = await fn();
+    if (result !== null && result !== undefined) return result;
+    if (attempt < attempts) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return undefined;
+}
+
 async function deleteBuildingsOnceBatch(
   prisma: PrismaService,
   buildingIds: string[],
@@ -171,6 +197,17 @@ async function deleteOncePerPhoneBatch(prisma: PrismaService, phones: string[]):
   });
   await prisma.personAchievement.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.xpTransaction.deleteMany({ where: { person: { phone: { in: phones } } } });
+  // This suite's own `beforeAll` directly creates a `PlatformStaff` row for
+  // `viewStaff`/`manageStaff` (`prisma.platformStaff.create(...)`, twice,
+  // above). `PlatformStaff.personId` is a required, unique FK to Person
+  // (`platform_staff_personId_fkey`) with no `onDelete`. Its only child,
+  // `StaffRole.staffId` (schema.prisma: "`staffId` references
+  // `PlatformStaff.id`"), is already deleted by explicit id in this describe
+  // block's own `afterAll` (`viewStaffRoleGrantId`/`manageStaffRoleGrantId`)
+  // before `cleanupPhones` runs below, so `PlatformStaff` itself is the only
+  // remaining blocker and is safe to clear here with no further ordering
+  // dependency.
+  await prisma.platformStaff.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
@@ -628,6 +665,20 @@ describe('Governance Staff Admin Backend Enablement (e2e) — Backoffice Vote ad
       });
       expect((audit?.metadata as { actorContext?: string } | null)?.actorContext).toBe(
         'PLATFORM_STAFF',
+      );
+
+      // This is the last request in the whole suite before `afterAll`
+      // cleans up `founder` (the sole current building member and
+      // therefore this `VoteCancelled` broadcast's only recipient -- see
+      // `deleteOncePerPhoneBatch`'s own comment above). Unlike this same
+      // action in `governance.e2e-spec.ts`, no further non-notification
+      // request follows it to give the fire-and-forget `notifyMany` write
+      // time to land, so wait for it explicitly here instead of leaving it
+      // entirely to `cleanupPhones`'s retry/backoff.
+      await waitFor(() =>
+        prisma.notification.findFirst({
+          where: { referenceType: 'VOTE', referenceId: cancelVoteId, sourceEvent: 'VoteCancelled' },
+        }),
       );
     });
   });
