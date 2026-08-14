@@ -2794,6 +2794,18 @@ enum PermissionKey {
   // `SubscriptionFeatureGuard` shipping unused by any endpoint.
   ADVERTISING_VIEW
   ADVERTISING_MANAGE
+  // Governance Staff Admin Backend Enablement — gives platform staff a
+  // safe, explicit administrative path over Governance Voting (see
+  // BO-C1E's own authorization audit: the existing VotingController is
+  // gated by VerifiedRolesGuard/MembershipGuard, both building-Membership
+  // concepts platform staff deliberately never hold). Real VIEW/MANAGE
+  // split per the ADR-101/ADR-109/ADR-114/ADR-116/ADR-124 convention.
+  // GOVERNANCE_VIEW: list/detail/results reads. GOVERNANCE_MANAGE:
+  // create/publish/close/cancel a Vote. Deliberately does NOT cover
+  // Ballot casting or Vote Proxy administration — both remain
+  // member-identity-driven only, no staff endpoint exists for either.
+  GOVERNANCE_VIEW
+  GOVERNANCE_MANAGE
 }
 
 model Role {

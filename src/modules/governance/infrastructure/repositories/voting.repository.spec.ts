@@ -1,5 +1,7 @@
 import { VotingRepository } from './voting.repository';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
+import { VotePolicy } from '../../domain/policies/vote.policy';
+import { BusinessRuleViolationError, ConflictError } from '../../../../common/errors/app-error';
 
 /**
  * Governance Hardening Phase 3 — `VotingRepository` unit tests.
@@ -41,9 +43,10 @@ describe('VotingRepository', () => {
         voteEligibilitySnapshot: { createMany: jest.fn() },
       };
       transactionMock = jest.fn((callback: (tx: unknown) => unknown) => callback(tx));
-      repository = new VotingRepository({
-        $transaction: transactionMock,
-      } as unknown as PrismaService);
+      repository = new VotingRepository(
+        { $transaction: transactionMock } as unknown as PrismaService,
+        new VotePolicy(),
+      );
     }
 
     it('ENTIRE_BUILDING (the default) applies no unit-scope filter beyond buildingId', async () => {
@@ -85,7 +88,9 @@ describe('VotingRepository', () => {
       ]);
       await repository.publishVote('vote-1', 'b1', false);
       expect(tx.voteEligibilitySnapshot.createMany).toHaveBeenCalledWith({
-        data: [{ voteId: 'vote-1', unitId: 'u1', eligiblePersonId: 'owner-1', eligibilityType: 'OWNER' }],
+        data: [
+          { voteId: 'vote-1', unitId: 'u1', eligiblePersonId: 'owner-1', eligibilityType: 'OWNER' },
+        ],
       });
     });
 
@@ -96,7 +101,14 @@ describe('VotingRepository', () => {
       ]);
       await repository.publishVote('vote-1', 'b1', true);
       expect(tx.voteEligibilitySnapshot.createMany).toHaveBeenCalledWith({
-        data: [{ voteId: 'vote-1', unitId: 'u1', eligiblePersonId: 'tenant-1', eligibilityType: 'TENANT' }],
+        data: [
+          {
+            voteId: 'vote-1',
+            unitId: 'u1',
+            eligiblePersonId: 'tenant-1',
+            eligibilityType: 'TENANT',
+          },
+        ],
       });
     });
 
@@ -107,7 +119,9 @@ describe('VotingRepository', () => {
       ]);
       await repository.publishVote('vote-1', 'b1', true);
       expect(tx.voteEligibilitySnapshot.createMany).toHaveBeenCalledWith({
-        data: [{ voteId: 'vote-1', unitId: 'u1', eligiblePersonId: 'owner-1', eligibilityType: 'OWNER' }],
+        data: [
+          { voteId: 'vote-1', unitId: 'u1', eligiblePersonId: 'owner-1', eligibilityType: 'OWNER' },
+        ],
       });
     });
 
@@ -130,6 +144,158 @@ describe('VotingRepository', () => {
       tx.unit.findMany.mockResolvedValue([{ id: 'no-owner', ownerships: [], tenancies: [] }]);
       await repository.publishVote('vote-1', 'b1', false);
       expect(tx.voteEligibilitySnapshot.createMany).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * Governance Staff Admin Backend Enablement — concurrency hardening
+   * regression coverage. `$transaction` is mocked the same way
+   * `publishVote`'s own describe block above already does (synchronously
+   * invoke the callback with a fake `tx`), proving `closeVote`/
+   * `cancelVote`/`createBallot` each perform their CAS/re-check
+   * correctly, independent of a real Postgres connection (the full e2e
+   * suite is the only thing that can prove the real row-visibility
+   * behavior these rely on — not runnable in this environment, see the
+   * phase report).
+   */
+  describe('closeVote', () => {
+    function setup(overrides: { claimedCount?: number } = {}) {
+      const tx = {
+        vote: {
+          updateMany: jest.fn().mockResolvedValue({ count: overrides.claimedCount ?? 1 }),
+          findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'vote-1', status: 'CLOSED' }),
+        },
+        voteEligibilitySnapshot: {
+          findMany: jest.fn().mockResolvedValue([{ id: 's1' }, { id: 's2' }]),
+        },
+        ballot: {
+          findMany: jest.fn().mockResolvedValue([
+            { selectedOptionId: 'opt-yes', selectedOption: { value: 'YES' } },
+            { selectedOptionId: 'opt-yes', selectedOption: { value: 'YES' } },
+          ]),
+        },
+        voteResult: { create: jest.fn().mockImplementation(({ data }) => Promise.resolve(data)) },
+      };
+      const transactionMock = jest.fn((callback: (tx: unknown) => unknown) => callback(tx));
+      const repository = new VotingRepository(
+        { $transaction: transactionMock } as unknown as PrismaService,
+        new VotePolicy(),
+      );
+      return { tx, repository };
+    }
+
+    it('atomically transitions ACTIVE -> CLOSED and writes a computed VoteResult', async () => {
+      const { tx, repository } = setup();
+      const { result } = await repository.closeVote('vote-1', null);
+      expect(tx.vote.updateMany).toHaveBeenCalledWith({
+        where: { id: 'vote-1', status: 'ACTIVE' },
+        data: { status: 'CLOSED', closedAt: expect.any(Date) },
+      });
+      expect(result.winningOptionId).toBe('opt-yes');
+      expect(result.resultStatus).toBe('PASSED');
+      expect(result.totalEligibleCount).toBe(2);
+      expect(result.totalBallotCount).toBe(2);
+    });
+
+    it('reads ballots/snapshots from inside the same transaction as the status CAS, not a pre-transaction snapshot', async () => {
+      const { tx, repository } = setup();
+      await repository.closeVote('vote-1', null);
+      expect(tx.ballot.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { voteId: 'vote-1' } }),
+      );
+      expect(tx.voteEligibilitySnapshot.findMany).toHaveBeenCalledWith({
+        where: { voteId: 'vote-1' },
+      });
+    });
+
+    it('throws ConflictError and never computes/writes a result when the CAS loses the race (vote no longer ACTIVE)', async () => {
+      const { tx, repository } = setup({ claimedCount: 0 });
+      await expect(repository.closeVote('vote-1', null)).rejects.toBeInstanceOf(ConflictError);
+      expect(tx.ballot.findMany).not.toHaveBeenCalled();
+      expect(tx.voteResult.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancelVote', () => {
+    it('CASes against the expected prior status and returns the cancelled vote on success', async () => {
+      const prisma = {
+        vote: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'vote-1', status: 'CANCELLED' }),
+        },
+      };
+      const repository = new VotingRepository(prisma as unknown as PrismaService, new VotePolicy());
+      await repository.cancelVote('vote-1', 'ACTIVE', 'no longer needed');
+      expect(prisma.vote.updateMany).toHaveBeenCalledWith({
+        where: { id: 'vote-1', status: 'ACTIVE' },
+        data: {
+          status: 'CANCELLED',
+          cancelledAt: expect.any(Date),
+          cancelReason: 'no longer needed',
+        },
+      });
+    });
+
+    it('throws ConflictError when the vote status has already moved on (e.g. a simultaneous close won the race)', async () => {
+      const prisma = {
+        vote: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      };
+      const repository = new VotingRepository(prisma as unknown as PrismaService, new VotePolicy());
+      await expect(repository.cancelVote('vote-1', 'ACTIVE')).rejects.toBeInstanceOf(ConflictError);
+    });
+  });
+
+  describe('createBallot', () => {
+    function setup(voteOverrides: Record<string, unknown> | null) {
+      const tx = {
+        vote: { findUnique: jest.fn().mockResolvedValue(voteOverrides) },
+        ballot: { create: jest.fn().mockResolvedValue({ id: 'ballot-1' }) },
+      };
+      const transactionMock = jest.fn((callback: (tx: unknown) => unknown) => callback(tx));
+      const repository = new VotingRepository(
+        { $transaction: transactionMock } as unknown as PrismaService,
+        new VotePolicy(),
+      );
+      return { tx, repository };
+    }
+    const PARAMS = {
+      voteId: 'vote-1',
+      unitId: 'unit-1',
+      voterPersonId: 'person-1',
+      selectedOptionId: 'opt-yes',
+    };
+
+    it('creates the ballot when the same-transaction re-check finds the vote still ACTIVE and within its window', async () => {
+      const { tx, repository } = setup({
+        status: 'ACTIVE',
+        endAt: new Date(Date.now() + 60_000),
+      });
+      await repository.createBallot(PARAMS);
+      expect(tx.ballot.create).toHaveBeenCalledWith({ data: PARAMS });
+    });
+
+    it('rejects with BusinessRuleViolationError instead of inserting when the vote closed in the gap (re-check sees non-ACTIVE)', async () => {
+      const { tx, repository } = setup({ status: 'CLOSED', endAt: new Date(Date.now() + 60_000) });
+      await expect(repository.createBallot(PARAMS)).rejects.toBeInstanceOf(
+        BusinessRuleViolationError,
+      );
+      expect(tx.ballot.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the re-check finds the voting window has since closed', async () => {
+      const { tx, repository } = setup({ status: 'ACTIVE', endAt: new Date(Date.now() - 1_000) });
+      await expect(repository.createBallot(PARAMS)).rejects.toBeInstanceOf(
+        BusinessRuleViolationError,
+      );
+      expect(tx.ballot.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the vote no longer exists', async () => {
+      const { tx, repository } = setup(null);
+      await expect(repository.createBallot(PARAMS)).rejects.toBeInstanceOf(
+        BusinessRuleViolationError,
+      );
+      expect(tx.ballot.create).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,16 +1,15 @@
 import { Injectable } from '@nestjs/common';
-import {
-  UnitType,
-  VoteCategory,
-  VoteResultStatus,
-  VoteScopeType,
-  VoteStatus,
-} from '@prisma/client';
+import { UnitType, VoteCategory, VoteScopeType, VoteStatus } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
+import { VotePolicy } from '../../domain/policies/vote.policy';
+import { BusinessRuleViolationError, ConflictError } from '../../../../common/errors/app-error';
 
 @Injectable()
 export class VotingRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly policy: VotePolicy,
+  ) {}
 
   createVote(params: {
     buildingId: string;
@@ -211,7 +210,16 @@ export class VotingRepository {
     voterPersonId: string;
     selectedOptionId: string;
   }) {
-    return this.prisma.ballot.create({ data: params });
+    return this.prisma.$transaction(async (tx) => {
+      const vote = await tx.vote.findUnique({
+        where: { id: params.voteId },
+        select: { status: true, endAt: true },
+      });
+      if (!vote || vote.status !== 'ACTIVE' || new Date() > vote.endAt) {
+        throw new BusinessRuleViolationError('This vote is not currently open for ballots.');
+      }
+      return tx.ballot.create({ data: params });
+    });
   }
 
   listBallots(voteId: string) {
@@ -219,34 +227,67 @@ export class VotingRepository {
   }
 
   /**
-   * ACTIVE -> CLOSED plus writes the (already-computed by
-   * `VotingService.closeVote`) `VoteResult` row, in one transaction — a
-   * vote is never left CLOSED without a result, or vice versa. Results
-   * publish immediately on close in this MVP (see schema.prisma section
-   * note: Close/Calculate/Publish collapse into one step).
+   * ACTIVE -> CLOSED plus computes and writes the `VoteResult` row, all
+   * in one transaction — a vote is never left CLOSED without a result,
+   * or vice versa. Results publish immediately on close in this MVP (see
+   * schema.prisma section note: Close/Calculate/Publish collapse into
+   * one step).
+   *
+   * Governance Staff Admin Backend Enablement — concurrency hardening.
+   * Previously this method unconditionally `update`d the vote's status
+   * with no precondition, so a simultaneous `closeVote`/`cancelVote` (or
+   * two `closeVote` calls) for the same vote could both pass their
+   * pre-read `assertClosable`/`assertCancellable` check and both writes
+   * would then succeed unconditionally — leaving a CLOSED vote with a
+   * CANCELLED status (or vice versa) with no error to either caller. The
+   * `updateMany({ where: { id, status: 'ACTIVE' } })` CAS below (same
+   * "expected-status" pattern `CaseRepository.resolveCase`/`closeCase`
+   * already establish) guarantees only ONE of two racing
+   * close/cancel calls can ever win; the loser gets a clean
+   * `ConflictError` (409) instead of silently corrupting the vote.
+   *
+   * The ballot/snapshot read the tally is computed from was also moved
+   * INSIDE this same transaction, AFTER the CAS succeeds (previously read
+   * by the service, before this transaction even began) — see
+   * `VotePolicy.calculateResult`'s own doc comment for why this closes,
+   * not merely narrows, the "a ballot cast in the gap between the read
+   * and the close" race.
    */
-  closeVote(params: {
-    voteId: string;
-    totalEligibleCount: number;
-    totalBallotCount: number;
-    quorumMet: boolean;
-    winningOptionId: string | null;
-    resultStatus: VoteResultStatus;
-  }) {
+  closeVote(voteId: string, quorumPercent: number | null) {
     return this.prisma.$transaction(async (tx) => {
-      const vote = await tx.vote.update({
-        where: { id: params.voteId },
+      const claimed = await tx.vote.updateMany({
+        where: { id: voteId, status: 'ACTIVE' },
         data: { status: 'CLOSED', closedAt: new Date() },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictError(
+          'This vote is no longer ACTIVE (it may have just been closed or cancelled). Reload and retry.',
+        );
+      }
 
+      const [snapshots, ballots] = await Promise.all([
+        tx.voteEligibilitySnapshot.findMany({ where: { voteId } }),
+        tx.ballot.findMany({ where: { voteId }, include: { selectedOption: true } }),
+      ]);
+
+      const computed = this.policy.calculateResult(
+        quorumPercent,
+        snapshots.length,
+        ballots.map((b) => ({
+          selectedOptionId: b.selectedOptionId,
+          optionValue: b.selectedOption.value,
+        })),
+      );
+
+      const vote = await tx.vote.findUniqueOrThrow({ where: { id: voteId } });
       const result = await tx.voteResult.create({
         data: {
-          voteId: params.voteId,
-          totalEligibleCount: params.totalEligibleCount,
-          totalBallotCount: params.totalBallotCount,
-          quorumMet: params.quorumMet,
-          winningOptionId: params.winningOptionId,
-          resultStatus: params.resultStatus,
+          voteId,
+          totalEligibleCount: computed.totalEligibleCount,
+          totalBallotCount: computed.totalBallotCount,
+          quorumMet: computed.quorumMet,
+          winningOptionId: computed.winningOptionId,
+          resultStatus: computed.resultStatus,
           publishedAt: new Date(),
         },
       });
@@ -278,11 +319,27 @@ export class VotingRepository {
     });
   }
 
-  cancelVote(id: string, reason?: string) {
-    return this.prisma.vote.update({
-      where: { id },
+  /**
+   * Governance Staff Admin Backend Enablement — concurrency hardening,
+   * same CAS pattern as `closeVote` above: `expectedStatus` is whatever
+   * status the service's own `assertCancellable` check just read (DRAFT
+   * or ACTIVE — the only two `assertCancellable` allows). If the vote's
+   * status has since moved on (e.g. a simultaneous `closeVote` won the
+   * race), this update matches zero rows and the caller gets a clean
+   * `ConflictError` (409) instead of silently cancelling a vote that was
+   * already closed (or double-cancelling).
+   */
+  async cancelVote(id: string, expectedStatus: VoteStatus, reason?: string) {
+    const claimed = await this.prisma.vote.updateMany({
+      where: { id, status: expectedStatus },
       data: { status: 'CANCELLED', cancelledAt: new Date(), cancelReason: reason },
     });
+    if (claimed.count !== 1) {
+      throw new ConflictError(
+        'This vote is no longer in the expected state (it may have just been closed or cancelled). Reload and retry.',
+      );
+    }
+    return this.prisma.vote.findUniqueOrThrow({ where: { id } });
   }
 
   getResult(voteId: string) {

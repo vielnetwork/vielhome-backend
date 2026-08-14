@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
-import type { VoteCategory, VoteResultStatus, VoteStatus } from '@prisma/client';
+import type { VoteCategory, VoteStatus } from '@prisma/client';
 import {
   buildPaginationMeta,
   toSkipTake,
@@ -52,17 +52,6 @@ function isUniqueConstraintViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }
 
-/** 06.06 Rule 011/012/013/014: quorum is a percentage of eligible units that must have cast a ballot, evaluated at closure. No quorum requirement means it's always considered met. */
-function isQuorumMet(
-  quorumPercent: number | null,
-  totalEligibleCount: number,
-  totalBallotCount: number,
-): boolean {
-  if (quorumPercent == null) return true;
-  if (totalEligibleCount === 0) return false;
-  return totalBallotCount * 100 >= quorumPercent * totalEligibleCount;
-}
-
 @Injectable()
 export class VotingService {
   private readonly logger = new Logger(VotingService.name);
@@ -89,6 +78,7 @@ export class VotingService {
     dto: CreateVoteDto,
     actorPersonId: string,
     requestId: string,
+    actorContext: 'MEMBER' | 'PLATFORM_STAFF' = 'MEMBER',
   ) {
     await this.getBuilding(buildingId);
 
@@ -195,7 +185,7 @@ export class VotingService {
       entityType: 'Vote',
       entityId: vote.id,
       requestId,
-      metadata: { category: dto.category, isManagerElection, scopeType },
+      metadata: { category: dto.category, isManagerElection, scopeType, actorContext },
     });
 
     return this.voting.findVoteById(vote.id);
@@ -229,6 +219,7 @@ export class VotingService {
     voteId: string,
     actorPersonId: string | undefined,
     requestId: string,
+    actorContext: 'MEMBER' | 'PLATFORM_STAFF' = 'MEMBER',
   ) {
     const vote = await this.getVote(buildingId, voteId);
     this.policy.assertPublishable(vote.status, vote.options.length);
@@ -248,6 +239,7 @@ export class VotingService {
       entityType: 'Vote',
       entityId: voteId,
       requestId,
+      metadata: { actorContext },
     });
 
     this.events.emit('VotePublished', new VotePublishedEvent(voteId, buildingId, actorPersonId));
@@ -380,55 +372,18 @@ export class VotingService {
     voteId: string,
     actorPersonId: string | undefined,
     requestId: string,
+    actorContext: 'MEMBER' | 'PLATFORM_STAFF' = 'MEMBER',
   ) {
     const vote = await this.getVote(buildingId, voteId);
+    // Fast, friendly pre-check for the common (non-racy) case — an
+    // already-DRAFT/CLOSED/CANCELLED vote gets this same 422 it always
+    // has. `VotingRepository.closeVote`'s own CAS transition below is the
+    // authoritative safety net for the genuinely-concurrent case this
+    // pre-check cannot see (see its doc comment) and throws a distinct
+    // 409 `ConflictError` only in that rare case.
     this.policy.assertClosable(vote.status);
 
-    const [snapshots, ballots] = await Promise.all([
-      this.voting.listEligibilitySnapshots(voteId),
-      this.voting.listBallots(voteId),
-    ]);
-
-    const totalEligibleCount = snapshots.length;
-    const totalBallotCount = ballots.length;
-    const quorumMet = isQuorumMet(vote.quorumPercent, totalEligibleCount, totalBallotCount);
-
-    // 06.06 Rule 014: Abstain counts for participation/quorum (already
-    // reflected in totalBallotCount above) but never for the winner.
-    const tally = new Map<string, number>();
-    for (const ballot of ballots) {
-      if (ballot.selectedOption.value === 'ABSTAIN') continue;
-      tally.set(ballot.selectedOptionId, (tally.get(ballot.selectedOptionId) ?? 0) + 1);
-    }
-
-    let winningOptionId: string | null = null;
-    let topCount = 0;
-    let tie = false;
-    for (const [optionId, count] of tally) {
-      if (count > topCount) {
-        winningOptionId = optionId;
-        topCount = count;
-        tie = false;
-      } else if (count === topCount && count > 0) {
-        tie = true;
-      }
-    }
-    if (tie) winningOptionId = null;
-
-    const resultStatus: VoteResultStatus = !quorumMet
-      ? 'QUORUM_NOT_MET'
-      : winningOptionId
-        ? 'PASSED'
-        : 'NOT_PASSED';
-
-    const { vote: closedVote, result } = await this.voting.closeVote({
-      voteId,
-      totalEligibleCount,
-      totalBallotCount,
-      quorumMet,
-      winningOptionId,
-      resultStatus,
-    });
+    const { vote: closedVote, result } = await this.voting.closeVote(voteId, vote.quorumPercent);
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -437,15 +392,22 @@ export class VotingService {
       entityType: 'Vote',
       entityId: voteId,
       requestId,
-      metadata: { resultStatus, totalEligibleCount, totalBallotCount, quorumMet },
+      metadata: {
+        resultStatus: result.resultStatus,
+        totalEligibleCount: result.totalEligibleCount,
+        totalBallotCount: result.totalBallotCount,
+        quorumMet: result.quorumMet,
+        actorContext,
+      },
     });
 
     this.events.emit(
       'VoteClosed',
-      new VoteClosedEvent(voteId, buildingId, resultStatus, actorPersonId),
+      new VoteClosedEvent(voteId, buildingId, result.resultStatus, actorPersonId),
     );
 
-    if (vote.isManagerElection && resultStatus === 'PASSED' && winningOptionId) {
+    if (vote.isManagerElection && result.resultStatus === 'PASSED' && result.winningOptionId) {
+      const winningOptionId = result.winningOptionId;
       const winningOption = vote.options.find((o) => o.id === winningOptionId);
       if (winningOption) {
         try {
@@ -492,11 +454,18 @@ export class VotingService {
     dto: CancelVoteDto,
     actorPersonId: string,
     requestId: string,
+    actorContext: 'MEMBER' | 'PLATFORM_STAFF' = 'MEMBER',
   ) {
     const vote = await this.getVote(buildingId, voteId);
+    // Same fast-pre-check / authoritative-CAS split as closeVote above:
+    // this policy check gives the familiar 422 for the common
+    // already-CLOSED/CANCELLED case; `VotingRepository.cancelVote`'s own
+    // CAS (`expectedStatus: vote.status`) is the safety net for a
+    // simultaneous close/cancel this pre-check cannot see, and throws a
+    // distinct 409 `ConflictError` only in that rare case.
     this.policy.assertCancellable(vote.status);
 
-    const cancelled = await this.voting.cancelVote(voteId, dto.reason);
+    const cancelled = await this.voting.cancelVote(voteId, vote.status, dto.reason);
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -506,6 +475,7 @@ export class VotingService {
       entityId: voteId,
       requestId,
       reason: dto.reason,
+      metadata: { actorContext },
     });
 
     this.events.emit('VoteCancelled', new VoteCancelledEvent(voteId, buildingId, actorPersonId));

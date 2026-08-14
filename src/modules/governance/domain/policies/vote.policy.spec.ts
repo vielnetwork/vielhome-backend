@@ -196,4 +196,69 @@ describe('VotePolicy', () => {
       ).toThrow(BusinessRuleViolationError);
     });
   });
+
+  /**
+   * Governance Staff Admin Backend Enablement — moved from
+   * `VotingService.closeVote`'s own former inline logic (see that
+   * method's history) into this pure policy so `VotingRepository
+   * .closeVote` can call it from inside its own transaction.
+   */
+  describe('calculateResult', () => {
+    it('no quorum requirement (null) is always met, winner is the highest non-abstain tally', () => {
+      const result = policy.calculateResult(null, 3, [
+        { selectedOptionId: 'yes', optionValue: 'YES' },
+        { selectedOptionId: 'yes', optionValue: 'YES' },
+        { selectedOptionId: 'no', optionValue: 'NO' },
+      ]);
+      expect(result).toEqual({
+        totalEligibleCount: 3,
+        totalBallotCount: 3,
+        quorumMet: true,
+        winningOptionId: 'yes',
+        resultStatus: 'PASSED',
+      });
+    });
+
+    it('QUORUM_NOT_MET when the ballot count falls short of the required percentage (winningOptionId still reflects the raw tally -- resultStatus is what encodes the quorum failure)', () => {
+      const result = policy.calculateResult(60, 10, [
+        { selectedOptionId: 'yes', optionValue: 'YES' },
+      ]);
+      expect(result.quorumMet).toBe(false);
+      expect(result.resultStatus).toBe('QUORUM_NOT_MET');
+      expect(result.winningOptionId).toBe('yes');
+    });
+
+    it('zero eligible units never meets a real quorum requirement', () => {
+      const result = policy.calculateResult(1, 0, []);
+      expect(result.quorumMet).toBe(false);
+      expect(result.resultStatus).toBe('QUORUM_NOT_MET');
+    });
+
+    it('06.06 Rule 014 — Abstain counts toward participation/quorum but never toward the winner', () => {
+      const result = policy.calculateResult(50, 2, [
+        { selectedOptionId: 'abstain', optionValue: 'ABSTAIN' },
+        { selectedOptionId: 'yes', optionValue: 'YES' },
+      ]);
+      expect(result.totalBallotCount).toBe(2);
+      expect(result.quorumMet).toBe(true);
+      expect(result.winningOptionId).toBe('yes');
+      expect(result.resultStatus).toBe('PASSED');
+    });
+
+    it('a tie among non-abstain options has no winner and is NOT_PASSED (quorum met)', () => {
+      const result = policy.calculateResult(null, 2, [
+        { selectedOptionId: 'yes', optionValue: 'YES' },
+        { selectedOptionId: 'no', optionValue: 'NO' },
+      ]);
+      expect(result.winningOptionId).toBeNull();
+      expect(result.resultStatus).toBe('NOT_PASSED');
+    });
+
+    it('quorum met with zero ballots (no quorum requirement) is NOT_PASSED, not a winner', () => {
+      const result = policy.calculateResult(null, 5, []);
+      expect(result.quorumMet).toBe(true);
+      expect(result.winningOptionId).toBeNull();
+      expect(result.resultStatus).toBe('NOT_PASSED');
+    });
+  });
 });

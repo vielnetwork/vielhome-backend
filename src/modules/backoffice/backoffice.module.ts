@@ -16,6 +16,7 @@ import { PersonAccessController } from './controller/person-access.controller';
 import { UserAdministrationController } from './controller/user-administration.controller';
 import { BuildingAdministrationController } from './controller/building-administration.controller';
 import { FinanceAdministrationController } from './controller/finance-administration.controller';
+import { GovernanceAdministrationController } from './controller/governance-administration.controller';
 import { BuildingVerificationService } from './application/building-verification.service';
 import { ManagerVerificationService } from './application/manager-verification.service';
 import { FraudCaseService } from './application/fraud-case.service';
@@ -27,6 +28,7 @@ import { PersonAccessService } from './application/person-access.service';
 import { UserAdministrationService } from './application/user-administration.service';
 import { BuildingAdministrationService } from './application/building-administration.service';
 import { FinanceAdministrationService } from './application/finance-administration.service';
+import { GovernanceAdministrationService } from './application/governance-administration.service';
 import { BackOfficeEventListener } from './application/backoffice-event-listener.service';
 import { BackOfficeRepository } from './infrastructure/repositories/backoffice.repository';
 import { BuildingVerificationPolicy } from './domain/policies/building-verification.policy';
@@ -42,6 +44,7 @@ import { MembershipGuard } from '../../common/guards/membership.guard';
 import { BuildingModule } from '../building/building.module';
 import { FinanceModule } from '../finance/finance.module';
 import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
+import { GovernanceModule } from '../governance/governance.module';
 import { FraudAppealJwtStrategy } from './infrastructure/strategies/fraud-appeal-jwt.strategy';
 import { FraudAppealAuthGuard } from './infrastructure/guards/fraud-appeal-auth.guard';
 
@@ -63,7 +66,12 @@ import { FraudAppealAuthGuard } from './infrastructure/guards/fraud-appeal-auth.
   // reasons, unrelated to this stage), which `FinanceAdministrationService`
   // needs to reuse the existing payment reversal/refund logic rather than
   // reimplement it.
-  imports: [BuildingModule, FinanceModule, BackofficeRbacModule],
+  // Governance Staff Admin Backend Enablement additionally imports
+  // `GovernanceModule` — it already exports `VotingService` (for its own
+  // reasons, unrelated to this stage), which `GovernanceAdministrationService`
+  // reuses directly rather than reimplement any Vote lifecycle rule. No
+  // cycle: `GovernanceModule` only imports `BuildingModule`, never this one.
+  imports: [BuildingModule, FinanceModule, BackofficeRbacModule, GovernanceModule],
   controllers: [
     BuildingVerificationController,
     BuildingVerificationAppealController,
@@ -82,6 +90,7 @@ import { FraudAppealAuthGuard } from './infrastructure/guards/fraud-appeal-auth.
     UserAdministrationController,
     BuildingAdministrationController,
     FinanceAdministrationController,
+    GovernanceAdministrationController,
   ],
   providers: [
     BuildingVerificationService,
@@ -95,6 +104,7 @@ import { FraudAppealAuthGuard } from './infrastructure/guards/fraud-appeal-auth.
     UserAdministrationService,
     BuildingAdministrationService,
     FinanceAdministrationService,
+    GovernanceAdministrationService,
     BackOfficeEventListener,
     BackOfficeRepository,
     BuildingVerificationPolicy,

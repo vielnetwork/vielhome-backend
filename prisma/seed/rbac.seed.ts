@@ -280,6 +280,21 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     description:
       'View day-bucketed platform growth trends (new users, new buildings, approved payments, XP awarded) and the Gamification analytics summary.',
   },
+  // Governance Staff Admin Backend Enablement -- gives platform staff a
+  // safe, explicit administrative path over Governance Voting, distinct
+  // from the existing member-facing (Manager/Board-only) Voting API.
+  // Deliberately excludes Ballot casting and Vote Proxy administration --
+  // both stay member-identity-driven only.
+  {
+    key: 'GOVERNANCE_VIEW',
+    label: 'View Governance Votes',
+    description: 'List Votes, view Vote detail, and view Vote results for any building.',
+  },
+  {
+    key: 'GOVERNANCE_MANAGE',
+    label: 'Manage Governance Votes',
+    description: 'Create, publish, close, and cancel a building Vote on behalf of staff.',
+  },
 ];
 
 // 21_ADRs > ADR-099 §2 — the approved final permission matrix (Support
@@ -315,6 +330,15 @@ const ROLE_PERMISSION_MATRIX: Record<string, PermissionKey[]> = {
     // 21_ADRs > ADR-117 — same "day-to-day / platform-wide operational
     // visibility" reasoning as this role's own DASHBOARD_VIEW grant above.
     'ANALYTICS_VIEW',
+    // Governance Staff Admin Backend Enablement -- Governance Voting
+    // administration (create/publish/close/cancel a building Vote, or
+    // just view its lifecycle/results) is the same "day-to-day building
+    // administration" shape as this role's existing Building/Manager
+    // Verification grants above, not a separate sensitive domain like
+    // Fraud/Compliance -- smallest appropriate operational role, per the
+    // same reasoning already applied to every other grant in this file.
+    'GOVERNANCE_VIEW',
+    'GOVERNANCE_MANAGE',
   ],
   'Finance Admin': ['FINANCE_VIEW', 'FINANCE_REFUND', 'USER_VIEW', 'BUILDING_VIEW'],
   // 21_ADRs > ADR-102 — Support Admin gains its own literally-named

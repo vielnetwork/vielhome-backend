@@ -101,6 +101,8 @@ export const E2E_SUITE_ID = {
   ADVERTISING: 33,
   // Monetization & Advertising — Phase 5B (Administration API).
   ADVERTISING_ADMINISTRATION: 34,
+  // Governance Staff Admin Backend Enablement.
+  GOVERNANCE_ADMINISTRATION: 35,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;

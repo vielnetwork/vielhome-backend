@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { VoteResultStatus } from '@prisma/client';
 import {
   AuthorizationError,
   BusinessRuleViolationError,
@@ -150,5 +151,73 @@ export class VotePolicy {
         'scopeUnitIds is only valid when scopeType is SELECTED_UNITS.',
       );
     }
+  }
+
+  /** 06.06 Rule 011/012/013/014: quorum is a percentage of eligible units that must have cast a ballot, evaluated at closure. No quorum requirement means it's always considered met. */
+  isQuorumMet(
+    quorumPercent: number | null,
+    totalEligibleCount: number,
+    totalBallotCount: number,
+  ): boolean {
+    if (quorumPercent == null) return true;
+    if (totalEligibleCount === 0) return false;
+    return totalBallotCount * 100 >= quorumPercent * totalEligibleCount;
+  }
+
+  /**
+   * Governance Staff Admin Backend Enablement — moved here (pure, no I/O)
+   * from `VotingService.closeVote` so `VotingRepository.closeVote` can
+   * call it INSIDE the same transaction that performs the ACTIVE->CLOSED
+   * CAS transition, re-reading ballots/snapshots atomically rather than
+   * from a pre-transaction snapshot read minutes/moments earlier — this
+   * closes (does not merely narrow) the "a ballot cast in the gap
+   * between the service's read and the close transaction's commit is
+   * silently excluded from the result" race, since both the status flip
+   * and the ballot/snapshot read that determines the result now happen
+   * inside one atomic transaction. 06.06 Rule 014: Abstain counts for
+   * participation/quorum but never for the winner; a tie among
+   * non-abstain options has no winner.
+   */
+  calculateResult(
+    quorumPercent: number | null,
+    totalEligibleCount: number,
+    ballots: Array<{ selectedOptionId: string; optionValue: string }>,
+  ): {
+    totalEligibleCount: number;
+    totalBallotCount: number;
+    quorumMet: boolean;
+    winningOptionId: string | null;
+    resultStatus: VoteResultStatus;
+  } {
+    const totalBallotCount = ballots.length;
+    const quorumMet = this.isQuorumMet(quorumPercent, totalEligibleCount, totalBallotCount);
+
+    const tally = new Map<string, number>();
+    for (const ballot of ballots) {
+      if (ballot.optionValue === 'ABSTAIN') continue;
+      tally.set(ballot.selectedOptionId, (tally.get(ballot.selectedOptionId) ?? 0) + 1);
+    }
+
+    let winningOptionId: string | null = null;
+    let topCount = 0;
+    let tie = false;
+    for (const [optionId, count] of tally) {
+      if (count > topCount) {
+        winningOptionId = optionId;
+        topCount = count;
+        tie = false;
+      } else if (count === topCount && count > 0) {
+        tie = true;
+      }
+    }
+    if (tie) winningOptionId = null;
+
+    const resultStatus: VoteResultStatus = !quorumMet
+      ? 'QUORUM_NOT_MET'
+      : winningOptionId
+        ? 'PASSED'
+        : 'NOT_PASSED';
+
+    return { totalEligibleCount, totalBallotCount, quorumMet, winningOptionId, resultStatus };
   }
 }
