@@ -69,6 +69,22 @@ async function deleteBuildingsOnceBatch(
   await prisma.voteResult.deleteMany({ where: { vote: { buildingId: { in: buildingIds } } } });
   await prisma.voteOption.deleteMany({ where: { vote: { buildingId: { in: buildingIds } } } });
   await prisma.vote.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  // `BackOfficeEventListener.onBuildingCreated` (backoffice-event-listener.service.ts)
+  // fires on every `BuildingCreated` event and unconditionally calls
+  // `buildingVerification.evaluateNewBuilding(...)`, which creates a
+  // `BuildingVerificationCase` row for every building this suite's own
+  // createBuilding() helper creates -- same precedent already established in
+  // building-administration.e2e-spec.ts, manager-verification.e2e-spec.ts,
+  // building-verification.e2e-spec.ts, etc. `BuildingVerificationCase` has no
+  // external child tables (schema.prisma has no other model with a FK to it;
+  // its only self-reference is the optional `previousCaseId` appeal chain,
+  // which this single deleteMany already covers in one statement since it
+  // matches every case row for these buildingIds at once). Must run before
+  // Building.deleteMany below or it fails on
+  // building_verification_cases_buildingId_fkey.
+  await prisma.buildingVerificationCase.deleteMany({
+    where: { buildingId: { in: buildingIds } },
+  });
   // `BuildingCreated` -> `GamificationEventListener.onBuildingCreated` ->
   // `awardXp({ buildingId, reason: 'BUILDING_SETUP_COMPLETED', ... })` ->
   // `applyBuildingScoreDelta` (xp-catalog.ts: BUILDING_SETUP_COMPLETED has
