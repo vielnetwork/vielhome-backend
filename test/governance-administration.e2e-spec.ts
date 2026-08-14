@@ -143,7 +143,34 @@ async function cleanupBuildings(prisma: PrismaService, buildingIds: string[]): P
   }
 }
 
+// Same registration-event-chain gap `auth.e2e-spec.ts`/`building.e2e-
+// spec.ts`/`governance.e2e-spec.ts` already document (welcome
+// notification, XP-bonus notification, XpTransaction, PersonAchievement,
+// achievement-unlocked notification — none awaited by the request/
+// response cycle), plus this suite's own `VotePublished`/`VoteClosed`/
+// `VoteCancelled` -> `NotificationEventListener` broadcasts
+// (notification-event-listener.service.ts) to the building's member
+// (`founder`), which land in these same tables. `Notification.recipientId`
+// is a required FK to Person (`notifications_recipientId_fkey`) with no
+// `onDelete`, so it — and its own child `NotificationDelivery`
+// (`notification_deliveries` -> `notifications`, notifications.service.ts:
+// "creates the Notification + NotificationDelivery rows") — must be
+// cleared before `Person.deleteMany` below. `NotificationPreference`,
+// `PersonAchievement`, and `XpTransaction` are each their own required,
+// non-cascading FK to Person and are cleared here too, matching
+// `governance.e2e-spec.ts`'s own identical, already-established
+// `deleteOncePerPhoneBatch` for this exact "generic across every module,
+// phone-scoped" cleanup.
 async function deleteOncePerPhoneBatch(prisma: PrismaService, phones: string[]): Promise<void> {
+  await prisma.notificationDelivery.deleteMany({
+    where: { notification: { recipient: { phone: { in: phones } } } },
+  });
+  await prisma.notification.deleteMany({ where: { recipient: { phone: { in: phones } } } });
+  await prisma.notificationPreference.deleteMany({
+    where: { person: { phone: { in: phones } } },
+  });
+  await prisma.personAchievement.deleteMany({ where: { person: { phone: { in: phones } } } });
+  await prisma.xpTransaction.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
