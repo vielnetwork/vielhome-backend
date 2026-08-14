@@ -9,8 +9,11 @@ import {
   LateFeeType,
   LedgerEntryType,
   PaymentMethod,
+  PaymentStatus,
+  Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
+import { BusinessRuleViolationError } from '../../../../common/errors/app-error';
 
 /**
  * Entry types whose ledger write actually moves `Fund.balance` (the
@@ -50,8 +53,26 @@ export class FinanceRepository {
 
   // --- Funds ---------------------------------------------------------------
 
-  listFunds(buildingId: string) {
-    return this.prisma.fund.findMany({ where: { buildingId }, orderBy: { createdAt: 'asc' } });
+  /**
+   * Finance Hardening Pass (post-audit) — `page`/`limit` (08_API_Architecture
+   * > Pagination, ADR-072 convention), same `{ items, total }` shape
+   * `BackOfficeRepository.searchPayments` already established. Previously
+   * an unbounded `findMany` — the in-building Finance module's own list
+   * endpoints were the one gap the audit found in the platform's otherwise
+   * complete ADR-072 pagination rollout.
+   */
+  async listFunds(buildingId: string, pagination: { skip: number; take: number }) {
+    const where = { buildingId };
+    const [items, total] = await Promise.all([
+      this.prisma.fund.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.fund.count({ where }),
+    ]);
+    return { items, total };
   }
 
   findFundById(fundId: string) {
@@ -227,31 +248,47 @@ export class FinanceRepository {
     });
   }
 
-  listChargeBatches(buildingId: string) {
-    return this.prisma.chargeBatch.findMany({
-      where: { buildingId },
-      orderBy: { createdAt: 'desc' },
-    });
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
+  async listChargeBatches(buildingId: string, pagination: { skip: number; take: number }) {
+    const where = { buildingId };
+    const [items, total] = await Promise.all([
+      this.prisma.chargeBatch.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.chargeBatch.count({ where }),
+    ]);
+    return { items, total };
   }
 
-  listChargeItemsByUnit(unitId: string) {
-    return this.prisma.chargeItem.findMany({
-      where: { unitId },
-      include: {
-        chargeBatch: {
-          select: {
-            id: true,
-            title: true,
-            status: true,
-            dueDate: true,
-            lateFeeType: true,
-            lateFeeValue: true,
-            lateFeeGraceDays: true,
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
+  async listChargeItemsByUnit(unitId: string, pagination: { skip: number; take: number }) {
+    const where = { unitId };
+    const [items, total] = await Promise.all([
+      this.prisma.chargeItem.findMany({
+        where,
+        include: {
+          chargeBatch: {
+            select: {
+              id: true,
+              title: true,
+              status: true,
+              dueDate: true,
+              lateFeeType: true,
+              lateFeeValue: true,
+              lateFeeGraceDays: true,
+            },
           },
         },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.chargeItem.count({ where }),
+    ]);
+    return { items, total };
   }
 
   /** ADR-095 — used by `applyLateFee`'s building+unit ownership guard and its eligibility recheck. */
@@ -425,6 +462,43 @@ export class FinanceRepository {
 
   // --- Payments --------------------------------------------------------------
 
+  /**
+   * Finance QA correction — physical-device duplicate-payment bug (2026-08).
+   * Root cause: `createPayment` used to be a bare, unvalidated
+   * `payment.create` — nothing stopped the same confirmed debt from being
+   * reported as a fresh PENDING_APPROVAL payment any number of times,
+   * since a still-pending payment (correctly — see `PaymentPolicy`'s own
+   * doc comment on why PENDING_APPROVAL never touches the ledger) never
+   * reduced `getUnitDebt`'s `totalDebt`, and Mobile's auto-fill kept
+   * re-offering the same full debt on every screen visit.
+   *
+   * This method now re-validates the requested amount against the unit's
+   * current *remaining payable* — `computeDebtSnapshot`'s own doc comment
+   * has the full confirmed-debt / pending-payment / remaining-payable
+   * model — inside a single transaction, serialized per-unit via a
+   * Postgres advisory transaction lock (`pg_advisory_xact_lock`, the same
+   * pattern `BackofficeRepository.changePersonSuspensionAtomically`
+   * already established for "read-then-validate-then-write must be
+   * atomic across concurrent callers" — released automatically at
+   * transaction end, no manual unlock/deadlock risk). Two near-
+   * simultaneous submissions for the same unit can therefore never both
+   * read the same stale remaining-payable figure and both pass
+   * validation: the second blocks until the first's transaction commits
+   * (or rolls back), then re-computes against the now-current
+   * PENDING_APPROVAL total.
+   *
+   * `isManualAmount` (mirrors Mobile's "I'll enter the amount myself"
+   * checkbox and the zero-debt/credit confirmation's "Yes" — see
+   * `CreatePaymentDto`'s own doc comment) is the explicit contract that
+   * bypasses the remaining-payable ceiling. A manually-entered amount may
+   * legitimately exceed it — a partial payment, a deliberate overpayment
+   * that becomes `CreditBalance` (already how `approvePayment` has always
+   * handled overpayment), or a voluntary payment reported while remaining
+   * payable is already zero. An auto-filled (non-manual) submission must
+   * never exceed it — that gap is exactly what let repeated taps create
+   * duplicate PENDING_APPROVAL payments for the same debt. Intent is never
+   * inferred from the amount itself; it is always this explicit flag.
+   */
   createPayment(params: {
     buildingId: string;
     unitId: string;
@@ -434,9 +508,34 @@ export class FinanceRepository {
     method: PaymentMethod;
     reference?: string;
     note?: string;
+    isManualAmount: boolean;
   }) {
-    return this.prisma.payment.create({
-      data: { ...params, status: 'PENDING_APPROVAL' },
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + params.unitId}))`;
+
+      if (!params.isManualAmount) {
+        const snapshot = await this.computeDebtSnapshot(tx, params.unitId);
+        if (params.amount > snapshot.remainingPayable) {
+          throw new BusinessRuleViolationError(
+            `This amount exceeds the unit's remaining payable amount (${snapshot.remainingPayable}). ` +
+              'If you intend to report a different amount, enable manual entry.',
+          );
+        }
+      }
+
+      return tx.payment.create({
+        data: {
+          buildingId: params.buildingId,
+          unitId: params.unitId,
+          fundId: params.fundId,
+          payerId: params.payerId,
+          amount: params.amount,
+          method: params.method,
+          reference: params.reference,
+          note: params.note,
+          status: 'PENDING_APPROVAL',
+        },
+      });
     });
   }
 
@@ -444,12 +543,44 @@ export class FinanceRepository {
     return this.prisma.payment.findUnique({ where: { id } });
   }
 
-  listPayments(buildingId: string) {
-    return this.prisma.payment.findMany({ where: { buildingId }, orderBy: { createdAt: 'desc' } });
+  /**
+   * Finance Hardening Pass — paginated, see `listFunds`'s own doc comment.
+   * Backend ↔ Mobile Contract Alignment — optional `status` filter, backed
+   * by the pre-existing `@@index([buildingId, status])` on `Payment`
+   * (added independently of this change, confirmed by direct schema read —
+   * no new index or migration needed for this filter to be cheap).
+   */
+  async listPayments(
+    buildingId: string,
+    pagination: { skip: number; take: number },
+    status?: PaymentStatus,
+  ) {
+    const where = { buildingId, ...(status ? { status } : {}) };
+    const [items, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+    return { items, total };
   }
 
-  listPaymentsByUnit(unitId: string) {
-    return this.prisma.payment.findMany({ where: { unitId }, orderBy: { createdAt: 'desc' } });
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
+  async listPaymentsByUnit(unitId: string, pagination: { skip: number; take: number }) {
+    const where = { unitId };
+    const [items, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+    return { items, total };
   }
 
   rejectPayment(id: string, reason?: string) {
@@ -674,8 +805,124 @@ export class FinanceRepository {
     });
   }
 
-  listAdjustmentsByUnit(unitId: string) {
-    return this.prisma.adjustment.findMany({ where: { unitId }, orderBy: { createdAt: 'desc' } });
+  /**
+   * Finance Correction Pass — creates the Adjustment record for one Opening
+   * Balance Correction AND applies its real debt/credit effect, kept
+   * intentionally separate from `createAdjustment` above because that
+   * method's negative-amount (waiver) path only targets outstanding
+   * `ChargeItem`s and — by design (see its own doc comment) — discards any
+   * waiver amount beyond what those cover rather than ever creating
+   * `CreditBalance`. Both of those choices are correct for an ordinary
+   * manual debt waiver, but wrong here:
+   *
+   *  - An opening-balance correction must never waive a unit's regular
+   *    monthly `ChargeItem` charges — "effective opening balance" is
+   *    deliberately kept isolated from that debt (see
+   *    `FinanceService.correctOpeningBalance`'s own doc comment), so a
+   *    downward correction instead waives the unit's own prior
+   *    `OPENING_BALANCE_CORRECTION`-tagged positive Adjustments, oldest
+   *    first — the exact debt this feature itself created.
+   *  - `targetBalance` is explicitly allowed to go negative to represent a
+   *    unit credit (08_API_Architecture — Charge Payment Amount UX 4B's own
+   *    "credit balance" case), so any correction amount beyond what those
+   *    prior corrections still owe must land in `CreditBalance`, mirroring
+   *    `approvePayment`'s own "excess payment becomes spendable credit"
+   *    waterfall (oldest-first debt reduction, then credit) rather than
+   *    `createAdjustment`'s "excess is simply discarded" rule.
+   *
+   * A positive `amount` (correcting the balance up) needs none of this — it
+   * just adds outstanding debt via a plain new Adjustment, identical in
+   * effect to `createAdjustment`'s own positive-amount path.
+   */
+  applyOpeningBalanceCorrection(params: {
+    unitId: string;
+    buildingId: string;
+    fundId: string;
+    amount: number;
+    reason: string;
+    createdById: string;
+    requestId?: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      const adjustment = await tx.adjustment.create({
+        data: {
+          unitId: params.unitId,
+          buildingId: params.buildingId,
+          fundId: params.fundId,
+          amount: params.amount,
+          reason: params.reason,
+          createdById: params.createdById,
+          sourceType: 'OPENING_BALANCE_CORRECTION',
+        },
+      });
+
+      if (params.amount < 0) {
+        let remaining = Math.abs(params.amount);
+
+        const priorCorrections = await tx.adjustment.findMany({
+          where: {
+            unitId: params.unitId,
+            sourceType: 'OPENING_BALANCE_CORRECTION',
+            amount: { gt: 0 },
+            id: { not: adjustment.id },
+          },
+          orderBy: { createdAt: 'asc' },
+        });
+
+        for (const prior of priorCorrections) {
+          if (remaining <= 0) break;
+          const outstanding = prior.amount - prior.paidAmount;
+          if (outstanding <= 0) continue;
+
+          const applied = Math.min(remaining, outstanding);
+          await tx.adjustment.update({
+            where: { id: prior.id },
+            data: { paidAmount: prior.paidAmount + applied },
+          });
+
+          remaining -= applied;
+        }
+
+        if (remaining > 0) {
+          await tx.creditBalance.upsert({
+            where: { unitId: params.unitId },
+            create: { unitId: params.unitId, buildingId: params.buildingId, balance: remaining },
+            update: { balance: { increment: remaining } },
+          });
+        }
+      }
+
+      await tx.ledgerEntry.create({
+        data: {
+          buildingId: params.buildingId,
+          fundId: params.fundId,
+          entryType: 'ADJUSTMENT',
+          direction: params.amount < 0 ? 'CREDIT' : 'DEBIT',
+          amount: Math.abs(params.amount),
+          referenceType: 'Adjustment',
+          referenceId: adjustment.id,
+          actorId: params.createdById,
+          requestId: params.requestId,
+        },
+      });
+
+      return adjustment;
+    });
+  }
+
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
+  async listAdjustmentsByUnit(unitId: string, pagination: { skip: number; take: number }) {
+    const where = { unitId };
+    const [items, total] = await Promise.all([
+      this.prisma.adjustment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.adjustment.count({ where }),
+    ]);
+    return { items, total };
   }
 
   /** ADR-095 — idempotency pre-check before `createAdjustment` for a system-sourced adjustment (e.g. a late fee). */
@@ -684,32 +931,76 @@ export class FinanceRepository {
   }
 
   /**
-   * A unit's total outstanding debt (08.05 "Get Property Debt"): every
-   * outstanding `ChargeItem`'s remaining balance, plus the still-unpaid
-   * portion of every positive (debt-adding) `Adjustment` recorded for the
-   * unit. Negative (waiving) adjustments are NOT summed separately here —
-   * they already reduced the relevant `ChargeItem.paidAmount` at creation
-   * time (see `createAdjustment`), so counting them again would
-   * double-subtract.
+   * A unit's total outstanding debt (08.05 "Get Property Debt") PLUS —
+   * Finance QA correction (physical-device duplicate-payment bug, 2026-08)
+   * — the amount still safely reportable given payments already awaiting
+   * approval. `chargeItemDebt`/`adjustmentDebt`/`totalDebt`/`creditBalance`
+   * are exactly the pre-existing "confirmed/accounting debt" figures,
+   * computed identically to before this pass (every outstanding
+   * `ChargeItem`'s remaining balance, plus the still-unpaid portion of
+   * every positive (debt-adding) `Adjustment` — negative/waiving
+   * Adjustments are NOT summed separately, since they already reduced the
+   * relevant `ChargeItem.paidAmount` at creation time, see
+   * `createAdjustment`). A PENDING_APPROVAL `Payment` deliberately never
+   * touches any of those fields — approval is what makes a payment a real
+   * accounting event (`FinanceService.approvePayment`) — so these four
+   * fields alone cannot tell a caller "how much of this debt already has
+   * a payment sitting in review."
    *
-   * As of ADR-053, `adjustmentDebt` reflects `amount - paidAmount` per
-   * positive Adjustment (previously the full gross `amount`, since a
-   * positive Adjustment had no way to ever be paid down before that ADR)
-   * — `approvePayment` now allocates against outstanding positive
-   * Adjustments once every ChargeItem is settled, so this figure shrinks
-   * as a unit pays it off, the same way `chargeItemDebt` already did.
+   * `pendingPaymentAmount` closes that gap: the sum of every
+   * PENDING_APPROVAL Payment currently reported for the unit — REJECTED
+   * payments never reserve anything (rejection was never accounting-
+   * mutating to begin with, so there is nothing to release); APPROVED
+   * payments already reduced `chargeItemDebt`/`adjustmentDebt` for real,
+   * so counting them here too would double-reserve the same debt twice;
+   * REVERSED/REFUNDED payments were APPROVED at the time (`PaymentPolicy`
+   * only allows reversing/refunding an APPROVED payment), so they're
+   * excluded by the same `PENDING_APPROVAL`-only filter without needing a
+   * separate exclusion rule.
+   *
+   * `remainingPayable` is the actual answer to "how much should Mobile
+   * auto-fill / accept as a new normal payment right now":
+   * `max((totalDebt - creditBalance) - pendingPaymentAmount, 0)` — netting
+   * out any existing credit first (the same "netDebt" concept the Charge
+   * Payment Amount UX already established), then reserving whatever's
+   * already pending, floored at zero so an already-covered (or
+   * over-covered) unit never reports a negative remaining amount. This is
+   * the single canonical figure both `FinanceRepository.createPayment`'s
+   * own validation and Mobile's auto-fill must use — see that method's own
+   * doc comment for why duplicating this math in Mobile is exactly the bug
+   * class this correction closes.
    */
   async getUnitDebt(unitId: string) {
-    const [outstandingItems, positiveAdjustments, credit] = await Promise.all([
-      this.prisma.chargeItem.findMany({
+    return this.computeDebtSnapshot(this.prisma, unitId);
+  }
+
+  /**
+   * Shared by `getUnitDebt` (read, outside any transaction) and
+   * `createPayment` (write, computed INSIDE the same transaction that
+   * holds the per-unit advisory lock — see that method's own doc comment)
+   * so both the read endpoint and the write-path validation always agree
+   * on exactly the same figures, computed by exactly the same query
+   * shapes. `client` accepts either the plain `PrismaService` or a
+   * `Prisma.TransactionClient` — a `PrismaService` structurally satisfies
+   * `Prisma.TransactionClient`'s (smaller) shape, so `getUnitDebt` can pass
+   * `this.prisma` directly with no cast, the same way
+   * `DocumentRepository.consumeUploadIntent` accepts either.
+   */
+  private async computeDebtSnapshot(client: Prisma.TransactionClient, unitId: string) {
+    const [outstandingItems, positiveAdjustments, credit, pendingPayments] = await Promise.all([
+      client.chargeItem.findMany({
         where: { unitId, status: { not: 'PAID' } },
         select: { amount: true, paidAmount: true },
       }),
-      this.prisma.adjustment.findMany({
+      client.adjustment.findMany({
         where: { unitId, amount: { gt: 0 } },
         select: { amount: true, paidAmount: true },
       }),
-      this.prisma.creditBalance.findUnique({ where: { unitId } }),
+      client.creditBalance.findUnique({ where: { unitId } }),
+      client.payment.findMany({
+        where: { unitId, status: 'PENDING_APPROVAL' },
+        select: { amount: true },
+      }),
     ]);
 
     const chargeItemDebt = outstandingItems.reduce((sum, i) => sum + (i.amount - i.paidAmount), 0);
@@ -717,13 +1008,37 @@ export class FinanceRepository {
       (sum, a) => sum + Math.max(0, a.amount - a.paidAmount),
       0,
     );
+    const totalDebt = chargeItemDebt + adjustmentDebt;
+    const creditBalance = credit?.balance ?? 0;
+    const pendingPaymentAmount = pendingPayments.reduce((sum, p) => sum + p.amount, 0);
+    const remainingPayable = Math.max(totalDebt - creditBalance - pendingPaymentAmount, 0);
 
     return {
       chargeItemDebt,
       adjustmentDebt,
-      totalDebt: chargeItemDebt + adjustmentDebt,
-      creditBalance: credit?.balance ?? 0,
+      totalDebt,
+      creditBalance,
+      pendingPaymentAmount,
+      remainingPayable,
     };
+  }
+
+  /**
+   * Finance Correction Pass — a unit's *effective opening balance* is
+   * defined as the running sum of every Adjustment ever recorded against it
+   * with `sourceType: 'OPENING_BALANCE_CORRECTION'` (mirroring how Funds
+   * tag their own starting-point `OPENING_BALANCE` ledger entries — see
+   * `Adjustment`'s own schema comment on why NULL `sourceId` never collides
+   * with the `@@unique([sourceType, sourceId])` constraint, letting this
+   * unit accumulate any number of corrections over time). Zero for a unit
+   * that has never had a correction applied.
+   */
+  async getUnitOpeningBalanceCorrectionTotal(unitId: string): Promise<number> {
+    const rows = await this.prisma.adjustment.findMany({
+      where: { unitId, sourceType: 'OPENING_BALANCE_CORRECTION' },
+      select: { amount: true },
+    });
+    return rows.reduce((sum, row) => sum + row.amount, 0);
   }
 
   // --- Payment Reversal & Refund (08.06 Rules 010/014/015 — ADR-037) ----------
@@ -890,6 +1205,31 @@ export class FinanceRepository {
     return this.prisma.refund.findMany({ where: { paymentId }, orderBy: { createdAt: 'desc' } });
   }
 
+  /**
+   * Finance Hardening Pass — paginated variant of `findRefundsByPayment`,
+   * see `listFunds`'s own doc comment. `findRefundsByPayment` (unpaginated)
+   * stays as-is: it's also used internally by `FinanceRepository`/
+   * `FinanceService` write paths (`refundPayment`'s `alreadyRefunded`
+   * check) where a full, unbounded read is actually correct — a payment
+   * has at most one Refund this MVP (`Refund`'s own schema comment), so
+   * that internal use was never the unbounded-listing risk the audit
+   * flagged; only the public `GET .../refunds` read needed a page/limit
+   * escape hatch for consistency with every other Finance list route.
+   */
+  async listRefundsByPayment(paymentId: string, pagination: { skip: number; take: number }) {
+    const where = { paymentId };
+    const [items, total] = await Promise.all([
+      this.prisma.refund.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.refund.count({ where }),
+    ]);
+    return { items, total };
+  }
+
   // --- Reporting ---------------------------------------------------------------
 
   async getFinancialSummary(buildingId: string) {
@@ -938,11 +1278,23 @@ export class FinanceRepository {
     };
   }
 
-  listLedger(buildingId: string, fundId?: string) {
-    return this.prisma.ledgerEntry.findMany({
-      where: { buildingId, ...(fundId ? { fundId } : {}) },
-      orderBy: { createdAt: 'desc' },
-    });
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
+  async listLedger(
+    buildingId: string,
+    fundId: string | undefined,
+    pagination: { skip: number; take: number },
+  ) {
+    const where = { buildingId, ...(fundId ? { fundId } : {}) };
+    const [items, total] = await Promise.all([
+      this.prisma.ledgerEntry.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.ledgerEntry.count({ where }),
+    ]);
+    return { items, total };
   }
 
   /**

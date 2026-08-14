@@ -1,0 +1,862 @@
+import { FinanceRepository } from './finance.repository';
+import { PrismaService } from '../../../../common/prisma/prisma.service';
+import { BusinessRuleViolationError } from '../../../../common/errors/app-error';
+
+/**
+ * Finance Hardening Pass (post-audit) — `FinanceRepository` unit tests.
+ *
+ * The audit's own §5/§9 finding: this repository had zero unit-level
+ * coverage before this pass, despite owning the highest-risk logic in the
+ * whole Finance module — the oldest-debt-first allocation loops
+ * (`approvePayment`, `createAdjustment`'s waiver path), the rollback loop
+ * (`reversePayment`), and the credit-auto-apply loop (`issueChargeBatch`).
+ * Only the e2e suite ever exercised these before now, always through a
+ * real Postgres transaction.
+ *
+ * `PrismaService` is mocked at the `$transaction`/model-method level —
+ * `$transaction` is stubbed to invoke the callback with the same mock
+ * object every model method lives on, so a test can assert the exact
+ * sequence and arguments of every `tx.<model>.<method>` call the
+ * transaction body makes, matching the sequential `for...of` + `await`
+ * shape the real methods use (the audit's own §6 finding — deliberately
+ * left unbatched this pass; see the hardening-pass report for why).
+ */
+describe('FinanceRepository', () => {
+  let prisma: {
+    $transaction: jest.Mock;
+    $executeRaw: jest.Mock;
+    fund: { findUnique: jest.Mock; update: jest.Mock };
+    chargeItem: { findMany: jest.Mock; findUnique: jest.Mock; update: jest.Mock };
+    adjustment: { findMany: jest.Mock; findUnique: jest.Mock; update: jest.Mock; create: jest.Mock };
+    creditBalance: { findUnique: jest.Mock; update: jest.Mock; upsert: jest.Mock };
+    paymentAllocation: { create: jest.Mock; findMany: jest.Mock };
+    payment: { create: jest.Mock; update: jest.Mock; findMany: jest.Mock; count: jest.Mock };
+    ledgerEntry: { create: jest.Mock };
+  };
+  let repo: FinanceRepository;
+
+  beforeEach(() => {
+    prisma = {
+      $transaction: jest.fn((cb: (tx: unknown) => unknown) => cb(prisma)),
+      // Tagged-template mock — `pg_advisory_xact_lock` calls in the SUT use
+      // `tx.$executeRaw\`...\`` (tagged template form, not a function call
+      // with a query object), so this must accept that call shape.
+      $executeRaw: jest.fn().mockResolvedValue(undefined),
+      fund: { findUnique: jest.fn(), update: jest.fn() },
+      chargeItem: { findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+      adjustment: {
+        findMany: jest.fn(),
+        findUnique: jest.fn(),
+        update: jest.fn(),
+        create: jest.fn(),
+      },
+      creditBalance: { findUnique: jest.fn(), update: jest.fn(), upsert: jest.fn() },
+      paymentAllocation: { create: jest.fn(), findMany: jest.fn() },
+      payment: {
+        create: jest.fn(),
+        update: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn(),
+      },
+      ledgerEntry: { create: jest.fn() },
+    };
+    repo = new FinanceRepository(prisma as unknown as PrismaService);
+  });
+
+  describe('approvePayment — oldest-debt-first allocation order (ChargeItems, then Adjustments, then CreditBalance)', () => {
+    it('allocates across ChargeItems oldest-due-first until the payment is exhausted, writing one PaymentAllocation row per item touched', async () => {
+      prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'APPROVED' });
+      prisma.chargeItem.findMany.mockResolvedValue([
+        { id: 'item-old', amount: 100_000, paidAmount: 0, chargeBatch: { dueDate: new Date('2026-01-01') } },
+        { id: 'item-new', amount: 100_000, paidAmount: 0, chargeBatch: { dueDate: new Date('2026-02-01') } },
+      ]);
+      prisma.adjustment.findMany.mockResolvedValue([]);
+      prisma.chargeItem.update.mockResolvedValue({});
+      prisma.paymentAllocation.create.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await repo.approvePayment({
+        paymentId: 'pay-1',
+        buildingId: 'b1',
+        unitId: 'u1',
+        fundId: 'fund-1',
+        amount: 150_000,
+        actorId: 'actor-1',
+      });
+
+      // item-old (due first) fully settled: 100_000 applied.
+      expect(prisma.paymentAllocation.create).toHaveBeenNthCalledWith(1, {
+        data: { paymentId: 'pay-1', chargeItemId: 'item-old', amount: 100_000 },
+      });
+      expect(prisma.chargeItem.update).toHaveBeenNthCalledWith(1, {
+        where: { id: 'item-old' },
+        data: { paidAmount: 100_000, status: 'PAID' },
+      });
+      // item-new (due later) gets only the 50_000 remainder, stays PARTIALLY_PAID.
+      expect(prisma.paymentAllocation.create).toHaveBeenNthCalledWith(2, {
+        data: { paymentId: 'pay-1', chargeItemId: 'item-new', amount: 50_000 },
+      });
+      expect(prisma.chargeItem.update).toHaveBeenNthCalledWith(2, {
+        where: { id: 'item-new' },
+        data: { paidAmount: 50_000, status: 'PARTIALLY_PAID' },
+      });
+      // Fully exhausted — never touches Adjustments or CreditBalance.
+      expect(prisma.adjustment.findMany).not.toHaveBeenCalled();
+      expect(prisma.creditBalance.upsert).not.toHaveBeenCalled();
+      // Single cash-moving ledger entry for the FULL payment amount, and Fund.balance bumped by it.
+      expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ entryType: 'PAYMENT', direction: 'CREDIT', amount: 150_000 }),
+      });
+      expect(prisma.fund.update).toHaveBeenCalledWith({
+        where: { id: 'fund-1' },
+        data: { balance: { increment: 150_000 } },
+      });
+    });
+
+    it('applies any remainder after ChargeItems to outstanding positive Adjustments, oldest-created-first (ADR-053)', async () => {
+      prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'APPROVED' });
+      prisma.chargeItem.findMany.mockResolvedValue([]); // nothing outstanding
+      prisma.adjustment.findMany.mockResolvedValue([
+        { id: 'adj-old', amount: 30_000, paidAmount: 0, createdAt: new Date('2026-01-01') },
+        { id: 'adj-new', amount: 30_000, paidAmount: 0, createdAt: new Date('2026-02-01') },
+      ]);
+      prisma.adjustment.update.mockResolvedValue({});
+      prisma.paymentAllocation.create.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await repo.approvePayment({
+        paymentId: 'pay-1',
+        buildingId: 'b1',
+        unitId: 'u1',
+        fundId: 'fund-1',
+        amount: 40_000,
+        actorId: 'actor-1',
+      });
+
+      expect(prisma.paymentAllocation.create).toHaveBeenNthCalledWith(1, {
+        data: { paymentId: 'pay-1', adjustmentId: 'adj-old', amount: 30_000 },
+      });
+      expect(prisma.paymentAllocation.create).toHaveBeenNthCalledWith(2, {
+        data: { paymentId: 'pay-1', adjustmentId: 'adj-new', amount: 10_000 },
+      });
+      expect(prisma.creditBalance.upsert).not.toHaveBeenCalled();
+    });
+
+    it('banks any leftover beyond ChargeItems and Adjustments as CreditBalance (overpayment)', async () => {
+      prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'APPROVED' });
+      prisma.chargeItem.findMany.mockResolvedValue([]);
+      prisma.adjustment.findMany.mockResolvedValue([]);
+      prisma.creditBalance.upsert.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await repo.approvePayment({
+        paymentId: 'pay-1',
+        buildingId: 'b1',
+        unitId: 'u1',
+        fundId: 'fund-1',
+        amount: 25_000,
+        actorId: 'actor-1',
+      });
+
+      expect(prisma.creditBalance.upsert).toHaveBeenCalledWith({
+        where: { unitId: 'u1' },
+        create: { unitId: 'u1', buildingId: 'b1', balance: 25_000 },
+        update: { balance: { increment: 25_000 } },
+      });
+    });
+  });
+
+  describe('reversePayment — allocation rollback', () => {
+    it('rolls back a ChargeItem allocation (decrementing paidAmount, recomputing status) and writes a REVERSAL ledger entry that decrements Fund.balance', async () => {
+      prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
+      prisma.paymentAllocation.findMany.mockResolvedValue([
+        { chargeItemId: 'item-1', adjustmentId: null, amount: 40_000 },
+      ]);
+      prisma.chargeItem.findUnique.mockResolvedValue({ id: 'item-1', amount: 100_000, paidAmount: 40_000 });
+      prisma.chargeItem.update.mockResolvedValue({});
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await repo.reversePayment({
+        paymentId: 'pay-1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: 40_000,
+        actorId: 'actor-1',
+      });
+
+      expect(prisma.chargeItem.update).toHaveBeenCalledWith({
+        where: { id: 'item-1' },
+        data: { paidAmount: 0, status: 'UNPAID' },
+      });
+      expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ entryType: 'REVERSAL', direction: 'DEBIT', amount: 40_000 }),
+      });
+      expect(prisma.fund.update).toHaveBeenCalledWith({
+        where: { id: 'fund-1' },
+        data: { balance: { decrement: 40_000 } },
+      });
+    });
+
+    it('rolls back an Adjustment allocation (never touching ChargeItem) when the allocation row targets an Adjustment', async () => {
+      prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
+      prisma.paymentAllocation.findMany.mockResolvedValue([
+        { chargeItemId: null, adjustmentId: 'adj-1', amount: 15_000 },
+      ]);
+      prisma.adjustment.findUnique.mockResolvedValue({ id: 'adj-1', paidAmount: 15_000 });
+      prisma.adjustment.update.mockResolvedValue({});
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await repo.reversePayment({
+        paymentId: 'pay-1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: 15_000,
+        actorId: 'actor-1',
+      });
+
+      expect(prisma.adjustment.update).toHaveBeenCalledWith({
+        where: { id: 'adj-1' },
+        data: { paidAmount: 0 },
+      });
+      expect(prisma.chargeItem.update).not.toHaveBeenCalled();
+    });
+
+    it('clamps a CreditBalance overflow rollback at 0 rather than going negative (disclosed limitation)', async () => {
+      prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
+      prisma.paymentAllocation.findMany.mockResolvedValue([
+        { chargeItemId: 'item-1', adjustmentId: null, amount: 60_000 },
+      ]);
+      prisma.chargeItem.findUnique.mockResolvedValue({ id: 'item-1', amount: 60_000, paidAmount: 60_000 });
+      prisma.chargeItem.update.mockResolvedValue({});
+      // Original payment was 100_000, only 60_000 allocated -> 40_000 overflow banked as credit.
+      // But only 10_000 of that credit remains (the rest was already spent elsewhere).
+      prisma.creditBalance.findUnique.mockResolvedValue({ unitId: 'u1', balance: 10_000 });
+      prisma.creditBalance.update.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await repo.reversePayment({
+        paymentId: 'pay-1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: 100_000,
+        actorId: 'actor-1',
+      });
+
+      expect(prisma.creditBalance.update).toHaveBeenCalledWith({
+        where: { unitId: 'u1' },
+        data: { balance: 0 },
+      });
+    });
+  });
+
+  describe('createAdjustment — waiver allocation (negative amount)', () => {
+    it('applies a negative (waiver) adjustment oldest-debt-first across outstanding ChargeItems, never creating a PaymentAllocation row', async () => {
+      prisma.adjustment.create.mockResolvedValue({ id: 'adj-1' });
+      prisma.chargeItem.findMany.mockResolvedValue([
+        { id: 'item-1', amount: 50_000, paidAmount: 0, chargeBatch: { dueDate: new Date('2026-01-01') } },
+      ]);
+      prisma.chargeItem.update.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+
+      await repo.createAdjustment({
+        unitId: 'u1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: -20_000,
+        reason: 'goodwill waiver',
+        createdById: 'actor-1',
+      });
+
+      expect(prisma.chargeItem.update).toHaveBeenCalledWith({
+        where: { id: 'item-1' },
+        data: { paidAmount: 20_000, status: 'PARTIALLY_PAID' },
+      });
+      expect(prisma.paymentAllocation.create).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ entryType: 'ADJUSTMENT', direction: 'CREDIT', amount: 20_000 }),
+      });
+    });
+
+    it('does not create CreditBalance when a waiver exceeds total outstanding debt (waiving is not the same as receiving cash)', async () => {
+      prisma.adjustment.create.mockResolvedValue({ id: 'adj-1' });
+      prisma.chargeItem.findMany.mockResolvedValue([
+        { id: 'item-1', amount: 10_000, paidAmount: 0, chargeBatch: { dueDate: new Date('2026-01-01') } },
+      ]);
+      prisma.chargeItem.update.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+
+      await repo.createAdjustment({
+        unitId: 'u1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: -50_000, // waives far more than the 10_000 outstanding
+        reason: 'large waiver',
+        createdById: 'actor-1',
+      });
+
+      expect(prisma.chargeItem.update).toHaveBeenCalledWith({
+        where: { id: 'item-1' },
+        data: { paidAmount: 10_000, status: 'PAID' },
+      });
+      expect(prisma.creditBalance.upsert).not.toHaveBeenCalled();
+      expect(prisma.creditBalance.update).not.toHaveBeenCalled();
+    });
+
+    it('a positive (debt-adding) adjustment never touches any ChargeItem', async () => {
+      prisma.adjustment.create.mockResolvedValue({ id: 'adj-1' });
+      prisma.ledgerEntry.create.mockResolvedValue({});
+
+      await repo.createAdjustment({
+        unitId: 'u1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: 25_000,
+        reason: 'late fee',
+        createdById: 'actor-1',
+      });
+
+      expect(prisma.chargeItem.findMany).not.toHaveBeenCalled();
+      expect(prisma.chargeItem.update).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ entryType: 'ADJUSTMENT', direction: 'DEBIT', amount: 25_000 }),
+      });
+    });
+  });
+
+  describe('applyOpeningBalanceCorrection (Finance Correction Pass)', () => {
+    it('a positive delta just creates an outstanding Adjustment — touches no ChargeItem and no prior correction', async () => {
+      prisma.adjustment.create.mockResolvedValue({ id: 'adj-new' });
+      prisma.ledgerEntry.create.mockResolvedValue({});
+
+      await repo.applyOpeningBalanceCorrection({
+        unitId: 'u1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: 500_000,
+        reason: 'Initial ledger migration',
+        createdById: 'actor-1',
+      });
+
+      expect(prisma.adjustment.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          unitId: 'u1',
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          amount: 500_000,
+          reason: 'Initial ledger migration',
+          createdById: 'actor-1',
+          sourceType: 'OPENING_BALANCE_CORRECTION',
+        }),
+      });
+      expect(prisma.adjustment.findMany).not.toHaveBeenCalled();
+      expect(prisma.chargeItem.findMany).not.toHaveBeenCalled();
+      expect(prisma.creditBalance.upsert).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ entryType: 'ADJUSTMENT', direction: 'DEBIT', amount: 500_000 }),
+      });
+    });
+
+    it('a negative delta waives the unit\'s own prior OPENING_BALANCE_CORRECTION Adjustments oldest-first — never touching a ChargeItem, unlike createAdjustment', async () => {
+      prisma.adjustment.create.mockResolvedValue({ id: 'adj-waiver' });
+      prisma.adjustment.findMany.mockResolvedValue([
+        { id: 'adj-old', amount: 500_000, paidAmount: 0, createdAt: new Date('2026-01-01') },
+        { id: 'adj-new', amount: 50_000, paidAmount: 0, createdAt: new Date('2026-02-01') },
+      ]);
+      prisma.adjustment.update.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+
+      await repo.applyOpeningBalanceCorrection({
+        unitId: 'u1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: -200_000,
+        reason: 'Overstated originally',
+        createdById: 'actor-1',
+      });
+
+      // Queried only the unit's own OPENING_BALANCE_CORRECTION positive
+      // Adjustments (excluding the just-created waiver row itself) — never
+      // ChargeItems, which `createAdjustment`'s own waiver loop would hit.
+      expect(prisma.adjustment.findMany).toHaveBeenCalledWith({
+        where: {
+          unitId: 'u1',
+          sourceType: 'OPENING_BALANCE_CORRECTION',
+          amount: { gt: 0 },
+          id: { not: 'adj-waiver' },
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+      expect(prisma.chargeItem.findMany).not.toHaveBeenCalled();
+      expect(prisma.chargeItem.update).not.toHaveBeenCalled();
+      // Oldest prior correction (adj-old, 500_000 outstanding) fully absorbs
+      // the 200_000 waiver; adj-new is never touched.
+      expect(prisma.adjustment.update).toHaveBeenCalledTimes(1);
+      expect(prisma.adjustment.update).toHaveBeenCalledWith({
+        where: { id: 'adj-old' },
+        data: { paidAmount: 200_000 },
+      });
+      expect(prisma.creditBalance.upsert).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ entryType: 'ADJUSTMENT', direction: 'CREDIT', amount: 200_000 }),
+      });
+    });
+
+    it('spills across multiple prior corrections oldest-first once the first is exhausted', async () => {
+      prisma.adjustment.create.mockResolvedValue({ id: 'adj-waiver' });
+      prisma.adjustment.findMany.mockResolvedValue([
+        { id: 'adj-old', amount: 200_000, paidAmount: 0, createdAt: new Date('2026-01-01') },
+        { id: 'adj-new', amount: 50_000, paidAmount: 0, createdAt: new Date('2026-02-01') },
+      ]);
+      prisma.adjustment.update.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+
+      await repo.applyOpeningBalanceCorrection({
+        unitId: 'u1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: -230_000,
+        reason: 'Large downward correction',
+        createdById: 'actor-1',
+      });
+
+      expect(prisma.adjustment.update).toHaveBeenNthCalledWith(1, {
+        where: { id: 'adj-old' },
+        data: { paidAmount: 200_000 },
+      });
+      expect(prisma.adjustment.update).toHaveBeenNthCalledWith(2, {
+        where: { id: 'adj-new' },
+        data: { paidAmount: 30_000 },
+      });
+      expect(prisma.creditBalance.upsert).not.toHaveBeenCalled();
+    });
+
+    it('routes any waiver amount beyond the unit\'s own prior corrections into CreditBalance — unlike createAdjustment, which discards excess', async () => {
+      prisma.adjustment.create.mockResolvedValue({ id: 'adj-waiver' });
+      prisma.adjustment.findMany.mockResolvedValue([
+        { id: 'adj-old', amount: 100_000, paidAmount: 0, createdAt: new Date('2026-01-01') },
+      ]);
+      prisma.adjustment.update.mockResolvedValue({});
+      prisma.creditBalance.upsert.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+
+      await repo.applyOpeningBalanceCorrection({
+        unitId: 'u1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: -150_000, // 100_000 owed via prior corrections, 50_000 becomes credit
+        reason: 'Correcting to a credit balance',
+        createdById: 'actor-1',
+      });
+
+      expect(prisma.adjustment.update).toHaveBeenCalledWith({
+        where: { id: 'adj-old' },
+        data: { paidAmount: 100_000 },
+      });
+      expect(prisma.creditBalance.upsert).toHaveBeenCalledWith({
+        where: { unitId: 'u1' },
+        create: { unitId: 'u1', buildingId: 'b1', balance: 50_000 },
+        update: { balance: { increment: 50_000 } },
+      });
+    });
+
+    it('with no prior corrections at all, a negative delta becomes pure CreditBalance (first-ever correction is straight to a credit)', async () => {
+      prisma.adjustment.create.mockResolvedValue({ id: 'adj-waiver' });
+      prisma.adjustment.findMany.mockResolvedValue([]);
+      prisma.creditBalance.upsert.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+
+      await repo.applyOpeningBalanceCorrection({
+        unitId: 'u1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: -150_000,
+        reason: 'Actually a credit',
+        createdById: 'actor-1',
+      });
+
+      expect(prisma.adjustment.update).not.toHaveBeenCalled();
+      expect(prisma.creditBalance.upsert).toHaveBeenCalledWith({
+        where: { unitId: 'u1' },
+        create: { unitId: 'u1', buildingId: 'b1', balance: 150_000 },
+        update: { balance: { increment: 150_000 } },
+      });
+    });
+  });
+
+  describe('getUnitDebt — confirmed debt / pending payment / remaining payable (Finance QA correction)', () => {
+    it('no pending payment: remainingPayable equals confirmed net debt', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([{ amount: 35_000_000, paidAmount: 0 }]);
+      prisma.adjustment.findMany.mockResolvedValue([{ amount: 3_000, paidAmount: 0 }]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      prisma.payment.findMany.mockResolvedValue([]);
+
+      const debt = await repo.getUnitDebt('u1');
+
+      expect(debt).toEqual({
+        chargeItemDebt: 35_000_000,
+        adjustmentDebt: 3_000,
+        totalDebt: 35_003_000,
+        creditBalance: 0,
+        pendingPaymentAmount: 0,
+        remainingPayable: 35_003_000,
+      });
+    });
+
+    it('partial pending payment reduces remainingPayable but not confirmed debt', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([{ amount: 35_000_000, paidAmount: 0 }]);
+      prisma.adjustment.findMany.mockResolvedValue([{ amount: 3_000, paidAmount: 0 }]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      prisma.payment.findMany.mockResolvedValue([{ amount: 10_000_000 }]);
+
+      const debt = await repo.getUnitDebt('u1');
+
+      expect(debt.totalDebt).toBe(35_003_000);
+      expect(debt.pendingPaymentAmount).toBe(10_000_000);
+      expect(debt.remainingPayable).toBe(25_003_000);
+      // Queried only PENDING_APPROVAL — the query shape itself is what
+      // excludes REJECTED/APPROVED/REVERSED/REFUNDED, not a JS filter.
+      expect(prisma.payment.findMany).toHaveBeenCalledWith({
+        where: { unitId: 'u1', status: 'PENDING_APPROVAL' },
+        select: { amount: true },
+      });
+    });
+
+    it('full pending payment brings remainingPayable to exactly 0 while confirmed debt is unchanged', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([{ amount: 35_000_000, paidAmount: 0 }]);
+      prisma.adjustment.findMany.mockResolvedValue([{ amount: 3_000, paidAmount: 0 }]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      prisma.payment.findMany.mockResolvedValue([{ amount: 35_003_000 }]);
+
+      const debt = await repo.getUnitDebt('u1');
+
+      expect(debt.totalDebt).toBe(35_003_000);
+      expect(debt.remainingPayable).toBe(0);
+    });
+
+    it('multiple legitimate pending payments sum correctly', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([{ amount: 35_000_000, paidAmount: 0 }]);
+      prisma.adjustment.findMany.mockResolvedValue([{ amount: 3_000, paidAmount: 0 }]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      prisma.payment.findMany.mockResolvedValue([
+        { amount: 10_000_000 },
+        { amount: 5_000_000 },
+        { amount: 20_003_000 },
+      ]);
+
+      const debt = await repo.getUnitDebt('u1');
+
+      expect(debt.pendingPaymentAmount).toBe(35_003_000);
+      expect(debt.remainingPayable).toBe(0);
+    });
+
+    it('remainingPayable never goes negative when pending exceeds confirmed net debt', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([]);
+      prisma.adjustment.findMany.mockResolvedValue([]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      // Shouldn't happen once the createPayment validation below is in
+      // place, but the read side must stay defensively floored at 0
+      // regardless (e.g. pre-existing dev data, or a manual override that
+      // legitimately exceeded it).
+      prisma.payment.findMany.mockResolvedValue([{ amount: 5_000 }]);
+
+      const debt = await repo.getUnitDebt('u1');
+
+      expect(debt.remainingPayable).toBe(0);
+    });
+
+    it('nets out an existing CreditBalance before reserving pending amounts (zero-debt/credit case stays intact)', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([]);
+      prisma.adjustment.findMany.mockResolvedValue([]);
+      prisma.creditBalance.findUnique.mockResolvedValue({ unitId: 'u1', balance: 50_000 });
+      prisma.payment.findMany.mockResolvedValue([]);
+
+      const debt = await repo.getUnitDebt('u1');
+
+      expect(debt.totalDebt).toBe(0);
+      expect(debt.creditBalance).toBe(50_000);
+      expect(debt.remainingPayable).toBe(0);
+    });
+  });
+
+  describe('createPayment — remaining-payable validation & concurrency (Finance QA correction)', () => {
+    it('accepts a non-manual amount at or under remaining payable', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([{ amount: 35_000_000, paidAmount: 0 }]);
+      prisma.adjustment.findMany.mockResolvedValue([{ amount: 3_000, paidAmount: 0 }]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.create.mockResolvedValue({ id: 'pay-1', status: 'PENDING_APPROVAL' });
+
+      const result = await repo.createPayment({
+        buildingId: 'b1',
+        unitId: 'u1',
+        fundId: 'fund-1',
+        payerId: 'payer-1',
+        amount: 35_003_000,
+        method: 'CASH',
+        isManualAmount: false,
+      });
+
+      expect(result).toEqual({ id: 'pay-1', status: 'PENDING_APPROVAL' });
+      expect(prisma.payment.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ amount: 35_003_000, status: 'PENDING_APPROVAL' }),
+      });
+      // Per-unit advisory lock acquired before the validating read.
+      expect(prisma.$executeRaw).toHaveBeenCalled();
+    });
+
+    it('rejects a non-manual amount that exceeds remaining payable — the exact duplicate-tap bug this closes', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([{ amount: 35_000_000, paidAmount: 0 }]);
+      prisma.adjustment.findMany.mockResolvedValue([{ amount: 3_000, paidAmount: 0 }]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      // A payment for the FULL debt is already pending — remainingPayable is 0.
+      prisma.payment.findMany.mockResolvedValue([{ amount: 35_003_000 }]);
+
+      await expect(
+        repo.createPayment({
+          buildingId: 'b1',
+          unitId: 'u1',
+          fundId: 'fund-1',
+          payerId: 'payer-1',
+          amount: 35_003_000,
+          method: 'CASH',
+          isManualAmount: false,
+        }),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-manual amount that exceeds a PARTIAL remaining payable', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([{ amount: 35_000_000, paidAmount: 0 }]);
+      prisma.adjustment.findMany.mockResolvedValue([{ amount: 3_000, paidAmount: 0 }]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      // 10_000_000 already pending -> remainingPayable is 25_003_000.
+      prisma.payment.findMany.mockResolvedValue([{ amount: 10_000_000 }]);
+
+      await expect(
+        repo.createPayment({
+          buildingId: 'b1',
+          unitId: 'u1',
+          fundId: 'fund-1',
+          payerId: 'payer-1',
+          amount: 25_003_001,
+          method: 'CASH',
+          isManualAmount: false,
+        }),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+    });
+
+    it('a manual amount bypasses the remaining-payable ceiling even when remaining payable is 0 (zero-debt/credit manual entry stays valid)', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([]);
+      prisma.adjustment.findMany.mockResolvedValue([]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.create.mockResolvedValue({ id: 'pay-1', status: 'PENDING_APPROVAL' });
+
+      const result = await repo.createPayment({
+        buildingId: 'b1',
+        unitId: 'u1',
+        fundId: 'fund-1',
+        payerId: 'payer-1',
+        amount: 20_000,
+        method: 'CASH',
+        isManualAmount: true,
+      });
+
+      expect(result).toEqual({ id: 'pay-1', status: 'PENDING_APPROVAL' });
+      // Manual mode skips the validating read entirely — never even
+      // queries ChargeItem/Adjustment/CreditBalance/Payment to check a
+      // ceiling that doesn't apply.
+      expect(prisma.chargeItem.findMany).not.toHaveBeenCalled();
+      expect(prisma.payment.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ amount: 20_000 }),
+      });
+    });
+
+    it('acquires the per-unit advisory lock before reading the debt snapshot, serializing concurrent reports for the same unit', async () => {
+      const callOrder: string[] = [];
+      prisma.$executeRaw.mockImplementation(() => {
+        callOrder.push('lock');
+        return Promise.resolve(undefined);
+      });
+      prisma.chargeItem.findMany.mockImplementation(() => {
+        callOrder.push('read-debt');
+        return Promise.resolve([{ amount: 10_000, paidAmount: 0 }]);
+      });
+      prisma.adjustment.findMany.mockResolvedValue([]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.create.mockImplementation(() => {
+        callOrder.push('create');
+        return Promise.resolve({ id: 'pay-1', status: 'PENDING_APPROVAL' });
+      });
+
+      await repo.createPayment({
+        buildingId: 'b1',
+        unitId: 'u1',
+        fundId: 'fund-1',
+        payerId: 'payer-1',
+        amount: 10_000,
+        method: 'CASH',
+        isManualAmount: false,
+      });
+
+      expect(callOrder).toEqual(['lock', 'read-debt', 'create']);
+      // Locked per-unit (hashtext over a unit-scoped key), inside the same
+      // transaction as the read+write it protects.
+      expect(prisma.$transaction).toHaveBeenCalled();
+    });
+  });
+
+  describe('getUnitOpeningBalanceCorrectionTotal (Finance Correction Pass)', () => {
+    it('returns 0 for a unit with no OPENING_BALANCE_CORRECTION adjustments', async () => {
+      prisma.adjustment.findMany.mockResolvedValue([]);
+
+      const total = await repo.getUnitOpeningBalanceCorrectionTotal('u1');
+
+      expect(total).toBe(0);
+      expect(prisma.adjustment.findMany).toHaveBeenCalledWith({
+        where: { unitId: 'u1', sourceType: 'OPENING_BALANCE_CORRECTION' },
+        select: { amount: true },
+      });
+    });
+
+    it('sums every OPENING_BALANCE_CORRECTION adjustment recorded for the unit, positive and negative alike', async () => {
+      prisma.adjustment.findMany.mockResolvedValue([
+        { amount: 500_000 },
+        { amount: -200_000 },
+        { amount: 100_000 },
+      ]);
+
+      const total = await repo.getUnitOpeningBalanceCorrectionTotal('u1');
+
+      expect(total).toBe(400_000);
+    });
+
+    it('never includes adjustments with a different sourceType (e.g. LATE_FEE) or plain manual adjustments — filtered entirely by the where clause, not by this method summing extra rows', async () => {
+      // The where clause itself is what excludes LATE_FEE/manual rows —
+      // this test documents that expectation by asserting the query shape
+      // (above) rather than re-deriving Prisma's own filtering behavior.
+      prisma.adjustment.findMany.mockResolvedValue([{ amount: 50_000 }]);
+
+      const total = await repo.getUnitOpeningBalanceCorrectionTotal('u1');
+
+      expect(total).toBe(50_000);
+    });
+  });
+
+  describe('issueChargeBatch — credit auto-apply', () => {
+    it('applies an existing CreditBalance against the new ChargeItem, decrementing the credit and writing a CREDIT_APPLIED entry, before the final CHARGE entry', async () => {
+      prisma.chargeItem.update.mockResolvedValue({});
+      prisma.creditBalance.update.mockResolvedValue({});
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      // First $transaction call in the SUT is chargeBatch.update; mock that
+      // via a second injected model, since the repository's issueChargeBatch
+      // reads `tx.chargeBatch.update`/`tx.chargeItem.findMany` too.
+      (prisma as unknown as { chargeBatch: { update: jest.Mock } }).chargeBatch = {
+        update: jest.fn().mockResolvedValue({ id: 'batch-1', status: 'ISSUED' }),
+      };
+      prisma.chargeItem.findMany.mockResolvedValue([
+        { id: 'item-1', unitId: 'u1', amount: 100_000, paidAmount: 0 },
+      ]);
+      prisma.creditBalance.findUnique.mockResolvedValue({ unitId: 'u1', balance: 30_000 });
+
+      await repo.issueChargeBatch({
+        chargeBatchId: 'batch-1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        totalAmount: 100_000,
+        actorId: 'actor-1',
+      });
+
+      expect(prisma.chargeItem.update).toHaveBeenCalledWith({
+        where: { id: 'item-1' },
+        data: { paidAmount: 30_000, status: 'PARTIALLY_PAID' },
+      });
+      expect(prisma.creditBalance.update).toHaveBeenCalledWith({
+        where: { unitId: 'u1' },
+        data: { balance: 0 },
+      });
+      expect(prisma.ledgerEntry.create).toHaveBeenNthCalledWith(1, {
+        data: expect.objectContaining({ entryType: 'CREDIT_APPLIED', amount: 30_000 }),
+      });
+      // The batch-level CHARGE entry always comes last, for the full totalAmount.
+      expect(prisma.ledgerEntry.create).toHaveBeenLastCalledWith({
+        data: expect.objectContaining({ entryType: 'CHARGE', direction: 'DEBIT', amount: 100_000 }),
+      });
+    });
+
+    it('skips credit application entirely when a unit has no CreditBalance row', async () => {
+      (prisma as unknown as { chargeBatch: { update: jest.Mock } }).chargeBatch = {
+        update: jest.fn().mockResolvedValue({ id: 'batch-1', status: 'ISSUED' }),
+      };
+      prisma.chargeItem.findMany.mockResolvedValue([
+        { id: 'item-1', unitId: 'u1', amount: 100_000, paidAmount: 0 },
+      ]);
+      prisma.creditBalance.findUnique.mockResolvedValue(null);
+      prisma.ledgerEntry.create.mockResolvedValue({});
+
+      await repo.issueChargeBatch({
+        chargeBatchId: 'batch-1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        totalAmount: 100_000,
+        actorId: 'actor-1',
+      });
+
+      expect(prisma.chargeItem.update).not.toHaveBeenCalled();
+      expect(prisma.creditBalance.update).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('listPayments — optional status filter (Backend ↔ Mobile Contract Alignment)', () => {
+    it('omits status from the where clause when not provided (unchanged pre-existing behavior)', async () => {
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.count.mockResolvedValue(0);
+
+      await repo.listPayments('b1', { skip: 0, take: 20 });
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { buildingId: 'b1' } }),
+      );
+      expect(prisma.payment.count).toHaveBeenCalledWith({ where: { buildingId: 'b1' } });
+    });
+
+    it('adds status to both the findMany and count where clauses when provided', async () => {
+      prisma.payment.findMany.mockResolvedValue([{ id: 'p1', status: 'PENDING_APPROVAL' }]);
+      prisma.payment.count.mockResolvedValue(1);
+
+      const result = await repo.listPayments('b1', { skip: 0, take: 20 }, 'PENDING_APPROVAL');
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { buildingId: 'b1', status: 'PENDING_APPROVAL' },
+        }),
+      );
+      expect(prisma.payment.count).toHaveBeenCalledWith({
+        where: { buildingId: 'b1', status: 'PENDING_APPROVAL' },
+      });
+      expect(result).toEqual({ items: [{ id: 'p1', status: 'PENDING_APPROVAL' }], total: 1 });
+    });
+
+    it('still orders by createdAt desc and honors skip/take with a status filter applied', async () => {
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.count.mockResolvedValue(0);
+
+      await repo.listPayments('b1', { skip: 40, take: 20 }, 'APPROVED');
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { createdAt: 'desc' }, skip: 40, take: 20 }),
+      );
+    });
+  });
+});

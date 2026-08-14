@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma } from '@prisma/client';
+import { Prisma, PaymentStatus } from '@prisma/client';
 import { FinanceRepository } from '../infrastructure/repositories/finance.repository';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { ChargePolicy } from '../domain/policies/charge.policy';
@@ -12,6 +12,7 @@ import { CreateChargeBatchDto } from './dto/create-charge-batch.dto';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { RejectPaymentDto } from './dto/reject-payment.dto';
 import { CreateAdjustmentDto } from './dto/create-adjustment.dto';
+import { CorrectOpeningBalanceDto } from './dto/correct-opening-balance.dto';
 import { ReversePaymentDto } from './dto/reverse-payment.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { AuditService } from '../../../common/audit/audit.service';
@@ -20,6 +21,11 @@ import {
   DuplicateError,
   NotFoundAppError,
 } from '../../../common/errors/app-error';
+import {
+  buildPaginationMeta,
+  toSkipTake,
+  type PaginationParams,
+} from '../../../common/pagination/pagination.util';
 
 /** ADR-095 — defensive backstop against `Adjustment`'s `@@unique([sourceType, sourceId])` racing a concurrent duplicate late-fee application; the `findAdjustmentBySource` pre-check in `applyLateFee` handles the non-concurrent case. */
 function isUniqueConstraintViolation(error: unknown): boolean {
@@ -50,6 +56,37 @@ export class FinanceService {
     const building = await this.buildings.findById(buildingId);
     if (!building) throw new NotFoundAppError('Building not found.');
     return building;
+  }
+
+  /**
+   * Finance Hardening Pass (post-audit) — resolves the target Fund for any
+   * WRITE path (explicit `dto.fundId`, or the building's default fund when
+   * omitted) and asserts it's active before the caller uses it.
+   *
+   * Root cause this fixes: `createChargeBatch`/`createPayment`/
+   * `createAdjustment` previously fetched the fund via this exact
+   * `dto.fundId ?? getOrCreateDefaultFund` pattern inline, checked only
+   * "does it exist and belong to this building," and never consulted
+   * `fund.isActive` — contradicting `Fund`'s own schema comment ("a
+   * deactivated fund ... can't receive new Charge Batches or Payments
+   * going forward") and `FundPolicy.assertActive`'s only prior call site
+   * (`updateFund`). Centralizing the resolve+validate step here means
+   * every write path enforces the same invariant the same way, whether
+   * the fund came from an explicit id or default-fund resolution — a
+   * newly-created default fund is always active by construction
+   * (`getOrCreateDefaultFund`/`FundPolicy.assertDeactivatable` both keep
+   * it that way), so this is a no-op for the common case and only ever
+   * bites when a caller deliberately targets a deactivated fund by id.
+   */
+  private async resolveFundForWrite(buildingId: string, fundId: string | undefined) {
+    const fund = fundId
+      ? await this.finance.findFundById(fundId)
+      : await this.finance.getOrCreateDefaultFund(buildingId);
+    if (!fund || fund.buildingId !== buildingId) {
+      throw new NotFoundAppError('Fund not found.');
+    }
+    this.fundPolicy.assertActive(fund.isActive);
+    return fund;
   }
 
   // --- Funds -----------------------------------------------------------------
@@ -87,8 +124,10 @@ export class FinanceService {
     return fund;
   }
 
-  listFunds(buildingId: string) {
-    return this.finance.listFunds(buildingId);
+  /** Finance Hardening Pass — paginated (ADR-072 convention), see `FinanceRepository.listFunds`'s own doc comment. */
+  async listFunds(buildingId: string, pagination: PaginationParams) {
+    const { items, total } = await this.finance.listFunds(buildingId, toSkipTake(pagination));
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   /** Same not-found-or-wrong-building guard shape as `getChargeBatch`. */
@@ -281,12 +320,7 @@ export class FinanceService {
   ) {
     await this.getBuilding(buildingId);
 
-    const fund = dto.fundId
-      ? await this.finance.findFundById(dto.fundId)
-      : await this.finance.getOrCreateDefaultFund(buildingId);
-    if (!fund || fund.buildingId !== buildingId) {
-      throw new NotFoundAppError('Fund not found.');
-    }
+    const fund = await this.resolveFundForWrite(buildingId, dto.fundId);
 
     const { items, effectiveUnitScope } = await this.resolveChargeItems(buildingId, dto);
 
@@ -347,10 +381,22 @@ export class FinanceService {
       if (!found || found.buildingId !== buildingId) {
         throw new NotFoundAppError('Fund not found.');
       }
+      // Finance Hardening Pass — preview must reject an inactive fund the
+      // same way the real `createChargeBatch` now does (via
+      // `resolveFundForWrite`), so preview output never promises a batch
+      // the real create would then refuse. See `resolveFundForWrite`'s own
+      // doc comment for the full rationale.
+      this.fundPolicy.assertActive(found.isActive);
       fund = { id: found.id, name: found.name };
     } else {
       const found = await this.finance.findDefaultFund(buildingId);
       if (found) {
+        // Defensive, not expected to ever trip in practice — a default
+        // fund cannot be deactivated (`FundPolicy.assertDeactivatable`) —
+        // but kept for the same "explicit id or default resolution, same
+        // check" symmetry `resolveFundForWrite` establishes for the real
+        // create path.
+        this.fundPolicy.assertActive(found.isActive);
         fund = { id: found.id, name: found.name };
       } else {
         willCreateDefaultFund = true;
@@ -409,8 +455,13 @@ export class FinanceService {
     };
   }
 
-  listChargeBatches(buildingId: string) {
-    return this.finance.listChargeBatches(buildingId);
+  /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. */
+  async listChargeBatches(buildingId: string, pagination: PaginationParams) {
+    const { items, total } = await this.finance.listChargeBatches(
+      buildingId,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   async getChargeBatch(buildingId: string, chargeBatchId: string) {
@@ -526,14 +577,23 @@ export class FinanceService {
     return unit;
   }
 
-  /** ADR-095 — each item's `lateFee` is computed live (never persisted) via `ChargePolicy.computeLateFeeEligibility`. */
-  async listUnitChargeItems(buildingId: string, unitId: string) {
+  /**
+   * ADR-095 — each item's `lateFee` is computed live (never persisted) via
+   * `ChargePolicy.computeLateFeeEligibility`. Finance Hardening Pass —
+   * paginated (see `FinanceRepository.listFunds`'s own doc comment); the
+   * late-fee computation runs only over the current page's items, same as
+   * every other per-item derivation in this method already did per item.
+   */
+  async listUnitChargeItems(buildingId: string, unitId: string, pagination: PaginationParams) {
     await this.getOwnUnit(buildingId, unitId);
-    const items = await this.finance.listChargeItemsByUnit(unitId);
+    const { items, total } = await this.finance.listChargeItemsByUnit(
+      unitId,
+      toSkipTake(pagination),
+    );
     const appliedIds = await this.finance.findAppliedLateFeeChargeItemIds(items.map((i) => i.id));
     const now = new Date();
 
-    return items.map((item) => {
+    const withLateFee = items.map((item) => {
       const result = this.chargePolicy.computeLateFeeEligibility({
         batchStatus: item.chargeBatch.status,
         lateFeeType: item.chargeBatch.lateFeeType,
@@ -550,6 +610,8 @@ export class FinanceService {
         lateFee: result?.eligible ? { eligible: true as const, amount: result.amount } : null,
       };
     });
+
+    return { items: withLateFee, meta: buildPaginationMeta(pagination, total) };
   }
 
   /**
@@ -661,12 +723,7 @@ export class FinanceService {
     await this.getOwnUnit(buildingId, unitId);
     this.chargePolicy.assertValidAdjustmentAmount(dto.amount);
 
-    const fund = dto.fundId
-      ? await this.finance.findFundById(dto.fundId)
-      : await this.finance.getOrCreateDefaultFund(buildingId);
-    if (!fund || fund.buildingId !== buildingId) {
-      throw new NotFoundAppError('Fund not found.');
-    }
+    const fund = await this.resolveFundForWrite(buildingId, dto.fundId);
 
     const adjustment = await this.finance.createAdjustment({
       unitId,
@@ -697,9 +754,115 @@ export class FinanceService {
     return adjustment;
   }
 
-  async listUnitAdjustments(buildingId: string, unitId: string) {
+  /**
+   * Finance Correction Pass — read-side companion to `correctOpeningBalance`
+   * below. Any current member may read it (same `MembershipGuard` tier as
+   * `getUnitDebt`) — only the correction *write* is role-gated.
+   */
+  async getUnitOpeningBalance(buildingId: string, unitId: string) {
     await this.getOwnUnit(buildingId, unitId);
-    return this.finance.listAdjustmentsByUnit(unitId);
+    const effectiveOpeningBalance = await this.finance.getUnitOpeningBalanceCorrectionTotal(unitId);
+    return { effectiveOpeningBalance };
+  }
+
+  /**
+   * Finance Correction Pass — corrects a unit's *effective opening balance*
+   * (its initial debt/credit, independent of regular ChargeBatch/Payment
+   * activity since) without ever overwriting a historical ledger/Adjustment/
+   * ChargeItem row. There is no dedicated "opening balance" field anywhere
+   * on `Unit` — only `Fund` has one (`Fund.initialBalance` /
+   * `OPENING_BALANCE` ledger entries). This method defines a Unit's
+   * *effective opening balance* as the running sum of every Adjustment ever
+   * recorded against it with `sourceType: 'OPENING_BALANCE_CORRECTION'`
+   * (see `FinanceRepository.getUnitOpeningBalanceCorrectionTotal`) —
+   * mirroring the Fund convention instead of inventing a new one.
+   *
+   * Each correction is itself just another signed Adjustment for the
+   * *delta* between the requested `targetBalance` and the unit's current
+   * effective opening balance, created via
+   * `FinanceRepository.applyOpeningBalanceCorrection` — a dedicated method,
+   * not `createAdjustment`, because `createAdjustment`'s own waiver
+   * semantics (ChargeItem-only, excess silently discarded, never creates
+   * credit) are wrong for this feature: they'd let a downward correction
+   * bleed into unrelated regular monthly charges, and would silently drop
+   * any correction amount deep enough to represent a real unit credit. See
+   * `applyOpeningBalanceCorrection`'s own doc comment for the full waterfall
+   * (prior opening-balance corrections, oldest first, then `CreditBalance`)
+   * this uses instead. Every correction still gets its own immutable
+   * Adjustment + LedgerEntry + AuditLog row — nothing is ever overwritten —
+   * and the unit's aggregate debt/credit (`FinanceService.getUnitDebt`)
+   * stays mathematically correct because it is always computed live from
+   * those rows, never cached. The same `AdjustmentCreatedEvent` (already
+   * wired to `NotificationEventListener`) still fires either way.
+   *
+   * Authorization: `ACCOUNTANT` and `MANAGER` — the identical
+   * `@Roles('ACCOUNTANT', 'MANAGER')` gate as `createAdjustment`/
+   * `applyLateFee` (both are financial corrections with the same
+   * real-money consequence). `RolesGuard` unions a caller's own roles
+   * (OR-based — see its own doc comment): an Accountant existing on the
+   * building never revokes the Manager's own authority, and vice versa.
+   */
+  async correctOpeningBalance(
+    buildingId: string,
+    unitId: string,
+    dto: CorrectOpeningBalanceDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    await this.getOwnUnit(buildingId, unitId);
+
+    const previousBalance = await this.finance.getUnitOpeningBalanceCorrectionTotal(unitId);
+    const delta = dto.targetBalance - previousBalance;
+    if (delta === 0) {
+      throw new BusinessRuleViolationError(
+        'The requested opening balance matches the unit\'s current effective opening balance; no correction is needed.',
+      );
+    }
+
+    const fund = await this.resolveFundForWrite(buildingId, dto.fundId);
+
+    const adjustment = await this.finance.applyOpeningBalanceCorrection({
+      unitId,
+      buildingId,
+      fundId: fund.id,
+      amount: delta,
+      reason: dto.reason,
+      createdById: actorPersonId,
+      requestId,
+    });
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      buildingId,
+      action: 'UnitOpeningBalanceCorrected',
+      entityType: 'Adjustment',
+      entityId: adjustment.id,
+      requestId,
+      reason: dto.reason,
+      metadata: {
+        unitId,
+        previousBalance,
+        newBalance: dto.targetBalance,
+        delta,
+      },
+    });
+
+    this.events.emit(
+      'AdjustmentCreated',
+      new AdjustmentCreatedEvent(adjustment.id, buildingId, unitId, delta, actorPersonId),
+    );
+
+    return { adjustment, previousBalance, newBalance: dto.targetBalance, delta };
+  }
+
+  /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. */
+  async listUnitAdjustments(buildingId: string, unitId: string, pagination: PaginationParams) {
+    await this.getOwnUnit(buildingId, unitId);
+    const { items, total } = await this.finance.listAdjustmentsByUnit(
+      unitId,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   /** ADR-095 — `eligibleLateFeeTotal`/`eligibleLateFees` are computed, informational-only additions; the existing `chargeItemDebt`/`adjustmentDebt`/`totalDebt`/`creditBalance` shape is unchanged. */
@@ -748,6 +911,14 @@ export class FinanceService {
    * person) at the cost of not restricting *who* can report; the real
    * gate is the ACCOUNTANT/MANAGER approval step below, where nothing
    * touches the ledger until a human with the right role confirms it.
+   *
+   * Finance QA correction (physical-device duplicate-payment bug, 2026-08)
+   * — `FinanceRepository.createPayment` now validates `dto.amount` against
+   * the unit's current *remaining payable* (confirmed debt minus whatever
+   * is already PENDING_APPROVAL) unless `dto.isManualAmount` is set, and
+   * does so atomically per-unit so two near-simultaneous reports can't
+   * both slip past the same stale figure — see that method's own doc
+   * comment for the full model and the concurrency mechanism.
    */
   async createPayment(
     buildingId: string,
@@ -759,12 +930,7 @@ export class FinanceService {
     await this.getOwnUnit(buildingId, unitId);
     this.paymentPolicy.assertPositiveAmount(dto.amount);
 
-    const fund = dto.fundId
-      ? await this.finance.findFundById(dto.fundId)
-      : await this.finance.getOrCreateDefaultFund(buildingId);
-    if (!fund || fund.buildingId !== buildingId) {
-      throw new NotFoundAppError('Fund not found.');
-    }
+    const fund = await this.resolveFundForWrite(buildingId, dto.fundId);
 
     const payment = await this.finance.createPayment({
       buildingId,
@@ -775,6 +941,7 @@ export class FinanceService {
       method: dto.method,
       reference: dto.reference,
       note: dto.note,
+      isManualAmount: dto.isManualAmount ?? false,
     });
 
     await this.audit.record({
@@ -790,13 +957,22 @@ export class FinanceService {
     return payment;
   }
 
-  listPayments(buildingId: string) {
-    return this.finance.listPayments(buildingId);
+  /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. */
+  /** Backend ↔ Mobile Contract Alignment — optional `status` filter, see `FinanceController.listPayments`'s own doc comment for the full rationale. */
+  async listPayments(buildingId: string, pagination: PaginationParams, status?: PaymentStatus) {
+    const { items, total } = await this.finance.listPayments(
+      buildingId,
+      toSkipTake(pagination),
+      status,
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
-  async listUnitPayments(buildingId: string, unitId: string) {
+  /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. */
+  async listUnitPayments(buildingId: string, unitId: string, pagination: PaginationParams) {
     await this.getOwnUnit(buildingId, unitId);
-    return this.finance.listPaymentsByUnit(unitId);
+    const { items, total } = await this.finance.listPaymentsByUnit(unitId, toSkipTake(pagination));
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   private async getOwnPayment(buildingId: string, paymentId: string) {
@@ -1005,9 +1181,14 @@ export class FinanceService {
     return refund;
   }
 
-  async listPaymentRefunds(buildingId: string, paymentId: string) {
+  /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. In practice bounded to 0–1 rows per payment (one refund per payment this MVP — see the `Refund` model's own schema comment), but added for consistency with every other Finance list route. */
+  async listPaymentRefunds(buildingId: string, paymentId: string, pagination: PaginationParams) {
     await this.getOwnPayment(buildingId, paymentId);
-    return this.finance.findRefundsByPayment(paymentId);
+    const { items, total } = await this.finance.listRefundsByPayment(
+      paymentId,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   // --- Reporting -----------------------------------------------------------------
@@ -1017,9 +1198,15 @@ export class FinanceService {
     return this.finance.getFinancialSummary(buildingId);
   }
 
-  async listLedger(buildingId: string, fundId?: string) {
+  /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. */
+  async listLedger(buildingId: string, fundId: string | undefined, pagination: PaginationParams) {
     await this.getBuilding(buildingId);
-    return this.finance.listLedger(buildingId, fundId);
+    const { items, total } = await this.finance.listLedger(
+      buildingId,
+      fundId,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
   /** 21_ADRs > ADR-055 — `12_Finance_Architecture_v2.0`'s Collection Rate report, see `FinanceRepository.getCollectionRate` for exactly what's computed and how. */

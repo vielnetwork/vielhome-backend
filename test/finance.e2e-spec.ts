@@ -358,18 +358,31 @@ async function issueFixedChargeBatch(
   return chargeBatchId;
 }
 
-/** Reports a payment on `unitId` as `accessToken`, returns its id (PENDING_APPROVAL). */
+/**
+ * Reports a payment on `unitId` as `accessToken`, returns its id
+ * (PENDING_APPROVAL). Finance QA correction (physical-device duplicate-
+ * payment bug, 2026-08) — `POST .../payments` now validates a non-manual
+ * `amount` against the unit's current remaining payable
+ * (`FinanceRepository.computeDebtSnapshot`'s own doc comment); every
+ * pre-existing call site in this file reports an amount that fits within
+ * real remaining debt, so `isManualAmount` defaults to `false` to match
+ * this helper's prior behavior everywhere except the handful of call
+ * sites (documented at each one) that report a payment un-backed by real
+ * debt on purpose — those pass `isManualAmount: true`, the same explicit
+ * signal Mobile's "I'll enter the amount myself" checkbox now sends.
+ */
 async function reportPayment(
   app: INestApplication,
   buildingId: string,
   unitId: string,
   accessToken: string,
   amount: number,
+  isManualAmount = false,
 ): Promise<string> {
   const res = await request(app.getHttpServer())
     .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
     .set('Authorization', `Bearer ${accessToken}`)
-    .send({ amount, method: 'CASH' })
+    .send({ amount, method: 'CASH', isManualAmount })
     .expect(201);
   return res.body.data.id as string;
 }
@@ -383,8 +396,16 @@ async function reportAndApprovePayment(
   reporterAccessToken: string,
   managerAccessToken: string,
   amount: number,
+  isManualAmount = false,
 ): Promise<string> {
-  const paymentId = await reportPayment(app, buildingId, unitId, reporterAccessToken, amount);
+  const paymentId = await reportPayment(
+    app,
+    buildingId,
+    unitId,
+    reporterAccessToken,
+    amount,
+    isManualAmount,
+  );
   await request(app.getHttpServer())
     .patch(`/api/v1/buildings/${buildingId}/payments/${paymentId}/approve`)
     .set('Authorization', `Bearer ${managerAccessToken}`)
@@ -419,6 +440,35 @@ async function waitFor<T>(
     }
   }
   return undefined;
+}
+
+/**
+ * `GET .../units/:unitId/debt` — Finance QA correction (physical-device
+ * duplicate-payment bug, 2026-08). A plain top-level helper (not a
+ * per-describe closure) so every describe below that needs to read the
+ * confirmed-debt/pending-payment/remaining-payable snapshot
+ * (`FinanceRepository.computeDebtSnapshot`'s own doc comment) does so the
+ * same way, against whichever `app`/`buildingId` that describe's own
+ * `beforeAll` set up.
+ */
+async function getUnitDebtSnapshot(
+  app: INestApplication,
+  buildingId: string,
+  unitId: string,
+  accessToken: string,
+): Promise<{
+  chargeItemDebt: number;
+  adjustmentDebt: number;
+  totalDebt: number;
+  creditBalance: number;
+  pendingPaymentAmount: number;
+  remainingPayable: number;
+}> {
+  const res = await request(app.getHttpServer())
+    .get(`/api/v1/buildings/${buildingId}/units/${unitId}/debt`)
+    .set('Authorization', `Bearer ${accessToken}`)
+    .expect(200);
+  return res.body.data;
 }
 
 describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', () => {
@@ -958,6 +1008,264 @@ describe('Finance (e2e) — Adjustments & Unit Debt (21_ADRs > ADR-037/ADR-053)'
   });
 });
 
+describe('Finance (e2e) — Opening Balance Correction (Finance Correction Pass, 2026-08)', () => {
+  // Budget: 3 calls to POST /auth/otp/request (manager + accountant + owner).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let accountant: RegisteredPerson;
+  let owner: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+  // A second, untouched unit on the same building — kept isolated from the
+  // primary `unitId`'s running correction history above, so the
+  // credit-fallback test below (a downward correction with no prior
+  // corrections at all to waive) has fully deterministic starting state.
+  let creditUnitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    accountant = await registerPerson(app);
+    createdPhones.push(accountant.phone);
+    owner = await registerPerson(app);
+    createdPhones.push(owner.phone);
+
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 2 });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+    creditUnitId = unitsRes.body.data[1].id;
+
+    // `CreateMembershipRequestDto.role` only accepts `'OWNER' | 'MANAGER'`
+    // via the public API (see this file's own top-of-file doc comment) —
+    // there is no reachable invite/join flow that grants ACCOUNTANT. This
+    // describe seeds a real ACCOUNTANT Membership row directly via Prisma
+    // instead of leaving the role "unreachable" — same direct-seed
+    // precedent the Ownership Transfer describe already established above
+    // for a real, current Membership fixture. Building-level, not
+    // unit-scoped (`unitId` omitted), exactly like the MANAGER Membership
+    // this app already seeds on building creation.
+    await prisma.membership.create({
+      data: { personId: accountant.personId, buildingId, role: 'ACCOUNTANT' },
+    });
+
+    await joinBuildingAsApprovedMember(app, buildingId, owner.accessToken, manager.accessToken);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('GET .../opening-balance returns zero for a unit that has never had a correction', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/opening-balance`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(res.body.data.effectiveOpeningBalance).toBe(0);
+  });
+
+  it('Manager can correct the opening balance, and the resulting debt aggregate reflects it', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/opening-balance-correction`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ targetBalance: 500_000, reason: 'Initial ledger migration' })
+      .expect(201);
+
+    expect(res.body.data.previousBalance).toBe(0);
+    expect(res.body.data.newBalance).toBe(500_000);
+    expect(res.body.data.delta).toBe(500_000);
+
+    const balanceRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/opening-balance`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(balanceRes.body.data.effectiveOpeningBalance).toBe(500_000);
+
+    const debtRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/debt`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(debtRes.body.data.adjustmentDebt).toBe(500_000);
+    expect(debtRes.body.data.totalDebt).toBe(500_000);
+  });
+
+  it('preserves financial/audit traceability — previousBalance/newBalance/delta/actor/reason all recorded, without overwriting the Adjustment/LedgerEntry rows a manual correctAdjustment call already produces', async () => {
+    const adjustment = await prisma.adjustment.findFirst({
+      where: { unitId, sourceType: 'OPENING_BALANCE_CORRECTION' },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(adjustment).toBeTruthy();
+    expect(adjustment?.amount).toBe(500_000);
+    expect(adjustment?.reason).toBe('Initial ledger migration');
+
+    const ledgerEntry = await prisma.ledgerEntry.findFirst({
+      where: { referenceType: 'Adjustment', referenceId: adjustment!.id },
+    });
+    expect(ledgerEntry).toBeTruthy();
+    expect(ledgerEntry?.entryType).toBe('ADJUSTMENT');
+    expect(ledgerEntry?.amount).toBe(500_000);
+
+    const auditEntry = await prisma.auditLog.findFirst({
+      where: {
+        entityType: 'Adjustment',
+        entityId: adjustment!.id,
+        action: 'UnitOpeningBalanceCorrected',
+      },
+    });
+    expect(auditEntry).toBeTruthy();
+    expect(auditEntry?.actorId).toBe(manager.personId);
+    expect(auditEntry?.buildingId).toBe(buildingId);
+    expect(auditEntry?.reason).toBe('Initial ledger migration');
+    expect(auditEntry?.metadata).toEqual({
+      unitId,
+      previousBalance: 0,
+      newBalance: 500_000,
+      delta: 500_000,
+    });
+  });
+
+  it('Accountant can correct the opening balance — a second correction computes delta against the running total, not from zero', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/opening-balance-correction`)
+      .set('Authorization', `Bearer ${accountant.accessToken}`)
+      .send({ targetBalance: 300_000, reason: 'Correcting an overstated figure' })
+      .expect(201);
+
+    expect(res.body.data.previousBalance).toBe(500_000);
+    expect(res.body.data.newBalance).toBe(300_000);
+    expect(res.body.data.delta).toBe(-200_000);
+
+    const debtRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/debt`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(debtRes.body.data.adjustmentDebt).toBe(300_000);
+    expect(debtRes.body.data.totalDebt).toBe(300_000);
+  });
+
+  it('Manager remains authorized even though an Accountant now exists on this building (RolesGuard is OR-based, not first-role-wins)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/opening-balance-correction`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ targetBalance: 350_000, reason: 'One more correction' })
+      .expect(201);
+
+    expect(res.body.data.previousBalance).toBe(300_000);
+    expect(res.body.data.newBalance).toBe(350_000);
+    expect(res.body.data.delta).toBe(50_000);
+  });
+
+  it('rejects a no-op correction (target matches the current effective opening balance) with 422', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/opening-balance-correction`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ targetBalance: 350_000, reason: 'No actual change' })
+      .expect(422);
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('blocks an Owner (non-ACCOUNTANT/non-MANAGER member) from correcting the opening balance (403)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/opening-balance-correction`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ targetBalance: 999, reason: 'Not allowed' })
+      .expect(403);
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+
+  it('an Owner may still read the effective opening balance — the read route is MembershipGuard-only, not role-gated', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/opening-balance`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .expect(200);
+    expect(res.body.data.effectiveOpeningBalance).toBe(350_000);
+  });
+
+  it('existing payment/credit behavior remains intact: a payment against the corrected debt still allocates and settles it, exactly like an ordinary positive Adjustment', async () => {
+    const paymentId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.accessToken,
+      350_000,
+    );
+
+    const debtRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/debt`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(debtRes.body.data.totalDebt).toBe(0);
+
+    // The unit's 350_000 running effective opening balance is actually
+    // spread across TWO positive Adjustment rows by this point — the
+    // original +500_000 correction (partially pre-waived down to a
+    // 300_000 outstanding balance by the earlier -200_000 correction) and
+    // the later +50_000 correction — so `approvePayment`'s oldest-first
+    // allocation settles both rather than one single row. What's actually
+    // promised is the AGGREGATE: every positive OPENING_BALANCE_CORRECTION
+    // Adjustment for this unit is fully paid down, and the payment's
+    // allocations sum to the full amount, not that any one specific row
+    // absorbs the whole thing.
+    const positiveCorrections = await prisma.adjustment.findMany({
+      where: { unitId, sourceType: 'OPENING_BALANCE_CORRECTION', amount: { gt: 0 } },
+    });
+    expect(positiveCorrections.length).toBeGreaterThan(0);
+    expect(
+      positiveCorrections.every((a) => a.paidAmount === a.amount),
+    ).toBe(true);
+
+    const allocations = await prisma.paymentAllocation.findMany({ where: { paymentId } });
+    const correctionAdjustmentIds = new Set(positiveCorrections.map((a) => a.id));
+    const totalAllocatedToCorrections = allocations
+      .filter((a) => a.adjustmentId && correctionAdjustmentIds.has(a.adjustmentId))
+      .reduce((sum, a) => sum + a.amount, 0);
+    expect(totalAllocatedToCorrections).toBe(350_000);
+  });
+
+  it('a downward correction with no prior corrections to waive against becomes a real CreditBalance, not a silently-discarded waiver — and the debt aggregate reflects it', async () => {
+    // `creditUnitId` has never had a correction before, so there is
+    // nothing for the waiver to absorb — the full amount must land in
+    // CreditBalance (see `FinanceRepository.applyOpeningBalanceCorrection`'s
+    // own doc comment on why this differs from `createAdjustment`'s
+    // "excess is simply discarded" rule).
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${creditUnitId}/opening-balance-correction`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ targetBalance: -75_000, reason: 'Unit overpaid before onboarding' })
+      .expect(201);
+
+    expect(res.body.data.previousBalance).toBe(0);
+    expect(res.body.data.newBalance).toBe(-75_000);
+    expect(res.body.data.delta).toBe(-75_000);
+
+    const debtRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${creditUnitId}/debt`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(debtRes.body.data.adjustmentDebt).toBe(0);
+    expect(debtRes.body.data.totalDebt).toBe(0);
+    expect(debtRes.body.data.creditBalance).toBe(75_000);
+
+    const balanceRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${creditUnitId}/opening-balance`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(balanceRes.body.data.effectiveOpeningBalance).toBe(-75_000);
+  });
+});
+
 describe('Finance (e2e) — Charge Generation Phase 2 (ADR-095)', () => {
   // Budget: 4 calls to POST /auth/otp/request (manager + owner1 + owner2 + tenant).
   let app: INestApplication;
@@ -1490,7 +1798,20 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
   });
 
   it('rejects reversing a still-PENDING payment (BUSINESS_RULE_VIOLATION)', async () => {
-    paymentBId = await reportPayment(app, buildingId, unitId, manager.accessToken, 1_000_000);
+    // Finance QA correction: paymentA above already fully settled this
+    // unit's only ChargeItem, so remaining payable is genuinely 0 here —
+    // this describe is testing reversal semantics, not debt validation,
+    // so it reports manually (matching the same "voluntary payment while
+    // remaining payable is already zero" intent the zero-debt/credit
+    // Mobile flow explicitly allows).
+    paymentBId = await reportPayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      1_000_000,
+      true,
+    );
 
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/payments/${paymentBId}/reverse`)
@@ -1586,6 +1907,15 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
   let paymentCId: string;
 
   it('rejects a refund amount greater than the original payment', async () => {
+    // Finance QA correction: `createRefund` deliberately never touches
+    // `ChargeItem.paidAmount`/`PaymentAllocation` (08.06 Rule 015 — see
+    // that method's own doc comment on the disclosed reconciliation gap),
+    // so refunding paymentB above did NOT restore this unit's confirmed
+    // debt — `chargeItemDebt` is still 0 here, meaning remainingPayable is
+    // genuinely 0 at this point in the describe. This report is testing
+    // refund-amount validation, not debt/remainingPayable correctness, so
+    // it reports manually — the same "unrelated to remainingPayable"
+    // intent `isManualAmount` exists for.
     paymentCId = await reportAndApprovePayment(
       app,
       buildingId,
@@ -1593,6 +1923,7 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
       manager.accessToken,
       manager.accessToken,
       200_000,
+      true,
     );
 
     // Round-1 finding (ADR-077's own toolchain round, surfaced only once a
@@ -2176,5 +2507,1112 @@ describe('Finance (e2e) — Regression Hardening: Cross-Building Isolation (Fina
       .set('Authorization', `Bearer ${managerB.accessToken}`)
       .expect(403);
     expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finance Hardening Pass (post-audit) — new coverage below this line.
+// ---------------------------------------------------------------------------
+
+describe('Finance (e2e) — Fund Inactive Restriction Enforcement (Finance Hardening Pass)', () => {
+  // Budget: 1 call to POST /auth/otp/request (manager only — no cross-role
+  // assertion needed here, the write-blocking behavior itself is the point).
+  //
+  // Pre-hardening, `FundPolicy.assertActive` was only ever invoked by
+  // `updateFund` — `createChargeBatch`/`previewChargeBatch`/`createPayment`/
+  // `createAdjustment` could all still write against a fund an operator had
+  // just deactivated, silently defeating the point of deactivating it. This
+  // describe proves the fix across all four write paths, using an explicit
+  // `fundId` (never the lazily-created default, which cannot be deactivated
+  // at all per `FundPolicy.assertDeactivatable` — already covered above) and
+  // then proves historical reads of that same fund's prior activity are
+  // untouched by deactivation (12_Finance_Architecture: "An inactive fund
+  // keeps its full history but cannot receive new activity").
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+  let fundId: string;
+  let priorChargeBatchId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+
+    const fundRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/funds`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ name: 'Hardening Fund', type: 'CUSTOM' })
+      .expect(201);
+    fundId = fundRes.body.data.id;
+
+    // Real activity while the fund is still active, so the "historical
+    // reads survive deactivation" assertions below have something real to
+    // read back.
+    const batchRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ fundId, title: 'Pre-deactivation charge', calculationMethod: 'FIXED', amountPerUnit: 10_000 })
+      .expect(201);
+    priorChargeBatchId = batchRes.body.data.id;
+
+    // Issuing (not just creating) is what writes the CHARGE ledger entry
+    // the "preserves historical reads" assertion below checks for — a
+    // DRAFT batch has ChargeItems but no ledger row yet (see the Funds &
+    // Charge Batches describe's own "issues the DRAFT batch" test).
+    // `issueChargeBatch` never checks `Fund.isActive` (out of scope for
+    // this hardening pass — only the four write paths named in item 1 do),
+    // so this succeeds even though the fund is deactivated next.
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${priorChargeBatchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/funds/${fundId}/deactivate`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects previewChargeBatch against an inactive fund (422 BUSINESS_RULE_VIOLATION)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ fundId, title: 'Should not preview', calculationMethod: 'FIXED', amountPerUnit: 5_000 })
+      .expect(422);
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('rejects createChargeBatch against an inactive fund (422 BUSINESS_RULE_VIOLATION)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ fundId, title: 'Should not create', calculationMethod: 'FIXED', amountPerUnit: 5_000 })
+      .expect(422);
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('rejects createPayment against an inactive fund (422 BUSINESS_RULE_VIOLATION)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ fundId, amount: 5_000, method: 'CASH' })
+      .expect(422);
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('rejects createAdjustment against an inactive fund (422 BUSINESS_RULE_VIOLATION)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/adjustments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ fundId, amount: 5_000, reason: 'Should not apply' })
+      .expect(422);
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('preserves historical reads of the deactivated fund\'s prior activity', async () => {
+    const fundRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/funds/${fundId}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(fundRes.body.data.isActive).toBe(false);
+
+    const batchRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charges/${priorChargeBatchId}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(batchRes.body.data.id).toBe(priorChargeBatchId);
+    expect(batchRes.body.data.totalAmount).toBe(10_000);
+
+    const ledgerRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/ledger`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(
+      ledgerRes.body.data.some(
+        (e: { referenceId: string }) => e.referenceId === priorChargeBatchId,
+      ),
+    ).toBe(true);
+  });
+
+  it('reactivating the fund restores all four write paths (regression sanity)', async () => {
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/funds/${fundId}/reactivate`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/adjustments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ fundId, amount: 1_000, reason: 'Fund reactivated' })
+      .expect(201);
+    expect(res.body.data.amount).toBe(1_000);
+  });
+});
+
+describe('Finance (e2e) — Pagination (ADR-072, Finance Hardening Pass)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (buildingA manager + buildingB
+  // manager, for the isolation assertion).
+  //
+  // Exercises `listFunds` as the representative endpoint for all 7 of the
+  // paginated Finance list routes (`listFunds`/`listChargeBatches`/
+  // `listUnitChargeItems`/`listUnitPayments`/`listUnitAdjustments`/
+  // `listPayments`/`listLedger` all share the exact same
+  // `parsePagination`/`toSkipTake`/`buildPaginationMeta` plumbing — see
+  // `pagination.util.ts` — so this is a real, non-duplicated assertion of
+  // the shared mechanism, not endpoint-specific business logic). Funds are
+  // the cheapest fixture to create in bulk (a single POST per fund, no OTP
+  // budget cost), which is why this describe — uniquely among this file —
+  // creates dozens of them.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let managerA: RegisteredPerson;
+  let managerB: RegisteredPerson;
+  let buildingAId: string;
+  let buildingBId: string;
+  const TOTAL_FUNDS = 25;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    managerA = await registerPerson(app);
+    createdPhones.push(managerA.phone);
+    managerB = await registerPerson(app);
+    createdPhones.push(managerB.phone);
+
+    buildingAId = await createBuilding(app, managerA.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingAId);
+    buildingBId = await createBuilding(app, managerB.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingBId);
+
+    // Sequential, not Promise.all — `listFunds` orders by `createdAt: 'asc'`
+    // and Postgres timestamp resolution/creation order must stay
+    // deterministic for the ordering assertion below.
+    for (let i = 1; i <= TOTAL_FUNDS; i += 1) {
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingAId}/funds`)
+        .set('Authorization', `Bearer ${managerA.accessToken}`)
+        .send({ name: `e2e Fund ${i.toString().padStart(2, '0')}`, type: 'CUSTOM' })
+        .expect(201);
+    }
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingBId}/funds`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .send({ name: 'Building B Fund', type: 'CUSTOM' })
+      .expect(201);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('defaults to page 1 / limit 20 when no query params are sent', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/funds`)
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data).toHaveLength(20);
+    expect(res.body.metadata.pagination).toEqual({
+      page: 1,
+      limit: 20,
+      total: TOTAL_FUNDS,
+      totalPages: 2,
+    });
+  });
+
+  it('honors explicit page/limit query params', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/funds`)
+      .query({ page: 2, limit: 10 })
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data).toHaveLength(10);
+    expect(res.body.data[0].name).toBe('e2e Fund 11');
+    expect(res.body.data[9].name).toBe('e2e Fund 20');
+    expect(res.body.metadata.pagination).toEqual({
+      page: 2,
+      limit: 10,
+      total: TOTAL_FUNDS,
+      totalPages: 3,
+    });
+  });
+
+  it('clamps a limit above MAX_PAGE_LIMIT (100) down to 100', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/funds`)
+      .query({ page: 1, limit: 500 })
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data).toHaveLength(TOTAL_FUNDS);
+    expect(res.body.metadata.pagination.limit).toBe(100);
+    expect(res.body.metadata.pagination.total).toBe(TOTAL_FUNDS);
+  });
+
+  it('orders deterministically by createdAt ascending across the full set', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/funds`)
+      .query({ page: 1, limit: 100 })
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .expect(200);
+
+    const names = res.body.data.map((f: { name: string }) => f.name);
+    const expected = Array.from(
+      { length: TOTAL_FUNDS },
+      (_, i) => `e2e Fund ${(i + 1).toString().padStart(2, '0')}`,
+    );
+    expect(names).toEqual(expected);
+  });
+
+  it('returns an empty data array (not an error) for a page past the end', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/funds`)
+      .query({ page: 99, limit: 20 })
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data).toEqual([]);
+    expect(res.body.metadata.pagination.total).toBe(TOTAL_FUNDS);
+    expect(res.body.metadata.pagination.page).toBe(99);
+  });
+
+  it('falls back to defaults (not a 400/500) on invalid page/limit values', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingAId}/funds`)
+      .query({ page: 'not-a-number', limit: '-5' })
+      .set('Authorization', `Bearer ${managerA.accessToken}`)
+      .expect(200);
+
+    expect(res.body.metadata.pagination.page).toBe(1);
+    expect(res.body.metadata.pagination.limit).toBe(20);
+    expect(res.body.data).toHaveLength(20);
+  });
+
+  it('never mixes Building A\'s funds into Building B\'s paginated list (isolation)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingBId}/funds`)
+      .set('Authorization', `Bearer ${managerB.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].name).toBe('Building B Fund');
+    expect(res.body.metadata.pagination.total).toBe(1);
+  });
+});
+
+describe('Finance (e2e) — DTO Amount Validation: Int vs Decimal (Finance Hardening Pass)', () => {
+  // Budget: 1 call to POST /auth/otp/request (manager only).
+  //
+  // Pre-hardening, `ChargeBatchItemDto.amount`/`CreateChargeBatchDto.
+  // amountPerUnit`/`ratePerSqm`/`CreatePaymentDto.amount` were all
+  // `@IsNumber()`, which class-validator accepts fractional values under —
+  // a decimal amount then reached Prisma's `Int` column write and failed
+  // there instead, surfacing as an opaque 500 `UNEXPECTED_ERROR` rather than
+  // a clean 400 `VALIDATION_ERROR`. These assert the fixed `@IsInt()`
+  // constraint rejects each one at the DTO boundary, before any DB write is
+  // attempted.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('rejects a decimal amountPerUnit on a FIXED charge batch (400 VALIDATION_ERROR, not 500)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ title: 'Decimal FIXED', calculationMethod: 'FIXED', amountPerUnit: 100.5 })
+      .expect(400);
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects a decimal ratePerSqm on an AREA_BASED charge batch (400 VALIDATION_ERROR, not 500)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ title: 'Decimal AREA_BASED', calculationMethod: 'AREA_BASED', ratePerSqm: 15.75 })
+      .expect(400);
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects a decimal per-item amount on a MIXED charge batch (400 VALIDATION_ERROR, not 500)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Decimal MIXED',
+        calculationMethod: 'MIXED',
+        items: [{ unitId, amount: 50_000.25 }],
+      })
+      .expect(400);
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects a decimal payment amount (400 VALIDATION_ERROR, not 500)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ amount: 99.99, method: 'CASH' })
+      .expect(400);
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  it('still accepts a whole-Toman integer amountPerUnit (control — the fix did not break the happy path)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ title: 'Integer FIXED control', calculationMethod: 'FIXED', amountPerUnit: 100_000 })
+      .expect(201);
+    expect(res.body.data.totalAmount).toBe(100_000);
+  });
+});
+
+describe('Finance (e2e) — Payment Status Filter (Backend ↔ Mobile Contract Alignment)', () => {
+  // Budget: 1 call to POST /auth/otp/request (manager + reporter share one
+  // registration each — 2 total; see beforeAll).
+  //
+  // Closes the exact gap the pagination-mobile-review found: `GET :id/
+  // payments` had no server-side status filter, so the mobile Pending
+  // Payments reviewer queue fetched a single unfiltered page (any status,
+  // most recent first) and filtered to PENDING_APPROVAL client-side — a
+  // still-pending payment could fall off page 1 once ~20 payments of *any*
+  // status had been reported more recently, and `PaymentDetailScreen`
+  // (which re-reads that same list by id, there being no single-payment
+  // GET route) would then show "already reviewed" for a payment that had
+  // never been touched. This describe seeds a deliberate mix of statuses
+  // and asserts `?status=` narrows the paginated window itself — not a
+  // client-side filter over an already-truncated page.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let reporter: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+
+  let pendingPaymentId: string;
+  let approvedPaymentId: string;
+  let rejectedPaymentId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    reporter = await registerPerson(app);
+    createdPhones.push(reporter.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+    await joinBuildingAsApprovedMember(app, buildingId, reporter.accessToken, manager.accessToken);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+
+    // One of each status this filter needs to distinguish between —
+    // deliberately NOT all PENDING_APPROVAL, so a status-blind query would
+    // return all three and a correctly-filtered one would return exactly
+    // one. This describe never issues a ChargeBatch for `unitId` — every
+    // payment here is un-backed by real debt on purpose (this describe
+    // tests status filtering, not debt math), so all three report
+    // manually.
+    approvedPaymentId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      reporter.accessToken,
+      manager.accessToken,
+      10_000,
+      true,
+    );
+
+    const toReject = await reportPayment(
+      app,
+      buildingId,
+      unitId,
+      reporter.accessToken,
+      20_000,
+      true,
+    );
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/payments/${toReject}/reject`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    rejectedPaymentId = toReject;
+
+    pendingPaymentId = await reportPayment(
+      app,
+      buildingId,
+      unitId,
+      reporter.accessToken,
+      30_000,
+      true,
+    );
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('with no status filter, returns all three payments regardless of status (unchanged pre-existing behavior)', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/payments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const ids = res.body.data.map((p: { id: string }) => p.id);
+    expect(ids).toEqual(
+      expect.arrayContaining([pendingPaymentId, approvedPaymentId, rejectedPaymentId]),
+    );
+  });
+
+  it('status=PENDING_APPROVAL returns only the pending payment, not the approved/rejected ones', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/payments`)
+      .query({ status: 'PENDING_APPROVAL' })
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const ids = res.body.data.map((p: { id: string }) => p.id);
+    expect(ids).toEqual([pendingPaymentId]);
+    expect(res.body.metadata.pagination.total).toBe(1);
+  });
+
+  it('status=APPROVED returns only the approved payment', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/payments`)
+      .query({ status: 'APPROVED' })
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const ids = res.body.data.map((p: { id: string }) => p.id);
+    expect(ids).toEqual([approvedPaymentId]);
+  });
+
+  it('rejects an unrecognized status value (400 VALIDATION_ERROR), not a silent no-op filter', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/payments`)
+      .query({ status: 'NOT_A_REAL_STATUS' })
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(400);
+
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  it('combines status filtering with pagination metadata correctly', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/payments`)
+      .query({ status: 'PENDING_APPROVAL', page: 1, limit: 20 })
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    expect(res.body.metadata.pagination).toEqual({
+      page: 1,
+      limit: 20,
+      total: 1,
+      totalPages: 1,
+    });
+  });
+});
+
+// --- Remaining Payable & Duplicate-Pending-Payment Prevention (Finance QA --
+// Correction, 2026-08) --------------------------------------------------------
+//
+// Physical-device QA found: a unit with Charge debt 35,000,000 +
+// Adjustment debt 3,000 (totalDebt 35,003,000) let its resident submit a
+// full-debt payment, and because it stayed PENDING_APPROVAL the displayed
+// debt never moved — so the resident could (and did) tap "Report Payment"
+// repeatedly, creating several duplicate PENDING_APPROVAL Payments for the
+// same debt. `FinanceRepository.computeDebtSnapshot` (used by both
+// `getUnitDebt` and `createPayment`'s own validation — see that method's
+// doc comment) now distinguishes:
+//   - `totalDebt` / `creditBalance` — the pre-existing *confirmed/
+//     accounting* debt, unchanged math, never mutated by a pending Payment
+//     (only by `approvePayment`'s real ledger/ChargeItem/Adjustment
+//     allocation).
+//   - `pendingPaymentAmount` — sum of the unit's own PENDING_APPROVAL
+//     Payment.amount (rejected/approved/reversed/refunded Payments never
+//     count — excluded by the `status: 'PENDING_APPROVAL'` filter itself).
+//   - `remainingPayable` — `max(totalDebt - creditBalance -
+//     pendingPaymentAmount, 0)` — what a *new, non-manual* Payment is still
+//     allowed to report.
+// `CreatePaymentDto.isManualAmount` (default `false`) is the explicit,
+// never-inferred-from-amount escape hatch for a deliberate partial payment,
+// a deliberate overpayment/credit, or a voluntary payment while remaining
+// payable is already zero.
+//
+// **Isolation, round 2**: the first version of this correction shared ONE
+// 6-unit building across every scenario below and called
+// `issueFixedChargeBatch` once per scenario — but that helper charges
+// *every unit in the building*, not just the one a given `it` reads (see
+// its own doc comment: "covering every unit in the building"). Calling it
+// repeatedly against the same building therefore silently piled up debt on
+// units earlier scenarios had already asserted against (e.g. a unit read
+// by scenario 1 quietly gained a second 35,003,000 ChargeItem the moment
+// scenario 2's own `issueFixedChargeBatch` call ran) — real local
+// verification caught this as `expected totalDebt 35,003,000, received
+// 70,006,000` (two batches) and later `105,009,000` (three). Every
+// scenario below now gets its OWN fresh building (`bootstrapTestApp` +
+// `registerPerson` + `createBuilding`, the same fresh-app-per-describe
+// discipline every other describe in this file already uses) and calls
+// `issueFixedChargeBatch` **at most once**, so no scenario can ever observe
+// debt contributed by another. Where a worked example needs more than one
+// assertion step (report → duplicate-rejected → reject → re-report →
+// approve), those steps are one single `it` rather than several `it`s
+// depending on each other's mutations — a `beforeAll` may still do
+// multi-step fixture setup (that's what `beforeAll` is for), but no `it`
+// here depends on a *sibling* `it` having already run.
+
+describe('Finance (e2e) — Remaining Payable: no pending payment (Finance QA Correction, 2026-08)', () => {
+  // Budget: 1 call to POST /auth/otp/request.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+  let manager: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+    // Exactly one `issueFixedChargeBatch` call against a single-unit,
+    // freshly-created building — the unit's confirmed debt is
+    // deterministically 35,003,000 (the same total the reported bug's
+    // Charge 35,000,000 + Adjustment 3,000 summed to), nothing else can
+    // have touched it. `Adjustments & Unit Debt` above already covers the
+    // Charge/Adjustment composition of `totalDebt` in isolation, so this
+    // describe uses one plain ChargeItem rather than re-proving that split.
+    await issueFixedChargeBatch(app, buildingId, manager.accessToken, 35_003_000);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('remainingPayable equals confirmed totalDebt (35,003,000) when nothing is pending', async () => {
+    const debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.totalDebt).toBe(35_003_000);
+    expect(debt.pendingPaymentAmount).toBe(0);
+    expect(debt.remainingPayable).toBe(35_003_000);
+  });
+});
+
+describe('Finance (e2e) — Remaining Payable: Example A, full payment pending (Finance QA Correction, 2026-08)', () => {
+  // Budget: 1 call to POST /auth/otp/request.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+  let manager: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+    await issueFixedChargeBatch(app, buildingId, manager.accessToken, 35_003_000);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('confirmed debt stays put while pending, a duplicate full-amount report is rejected, rejection restores remainingPayable with no compensating entries, and re-reporting + approving zeroes both with no double counting', async () => {
+    // Fixture state, asserted before anything happens: exactly 35,003,000
+    // confirmed, nothing pending.
+    let debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.totalDebt).toBe(35_003_000);
+    expect(debt.pendingPaymentAmount).toBe(0);
+    expect(debt.remainingPayable).toBe(35_003_000);
+
+    const paymentId = await reportPayment(app, buildingId, unitId, manager.accessToken, 35_003_000);
+
+    // Pending: totalDebt unchanged, pendingPaymentAmount increases,
+    // remainingPayable decreases.
+    debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.totalDebt).toBe(35_003_000);
+    expect(debt.pendingPaymentAmount).toBe(35_003_000);
+    expect(debt.remainingPayable).toBe(0);
+
+    // The exact reported bug: a second, non-manual full-debt report against
+    // the same unit must be rejected, not silently accepted as a duplicate.
+    const dup = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ amount: 35_003_000, method: 'CASH', isManualAmount: false })
+      .expect(422);
+    expect(dup.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+
+    const item = await prisma.chargeItem.findFirst({ where: { unitId } });
+    expect(item?.status).toBe('UNPAID');
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/payments/${paymentId}/reject`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ reason: 'e2e: exercising rejection restores remainingPayable' })
+      .expect(200);
+
+    // Rejected: totalDebt unchanged, pendingPaymentAmount returns to zero,
+    // remainingPayable restores, no compensating ledger/adjustment entry —
+    // the ChargeItem below is asserted byte-for-byte identical to its
+    // pre-payment state (UNPAID, paidAmount 0), proving nothing was ever
+    // written to compensate.
+    debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.totalDebt).toBe(35_003_000);
+    expect(debt.pendingPaymentAmount).toBe(0);
+    expect(debt.remainingPayable).toBe(35_003_000);
+
+    const itemAfterReject = await prisma.chargeItem.findFirst({ where: { unitId } });
+    expect(itemAfterReject?.status).toBe('UNPAID');
+    expect(itemAfterReject?.paidAmount).toBe(0);
+
+    // Re-report (now valid again) and approve.
+    const secondPaymentId = await reportPayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      35_003_000,
+    );
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/payments/${secondPaymentId}/approve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    // Approved: pendingPaymentAmount returns to zero, confirmed debt
+    // decreases through the existing accounting path, remainingPayable
+    // must not double-count the payment.
+    debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.totalDebt).toBe(0);
+    expect(debt.pendingPaymentAmount).toBe(0);
+    expect(debt.remainingPayable).toBe(0);
+  });
+});
+
+describe('Finance (e2e) — Remaining Payable: Example B, partial payment pending (Finance QA Correction, 2026-08)', () => {
+  // Budget: 1 call to POST /auth/otp/request. Two units, ONE
+  // `issueFixedChargeBatch` call in `beforeAll` (it charges every unit in
+  // the building identically — see this file's own doc comment on that
+  // helper) so both units start at exactly 35,003,000 confirmed debt with
+  // zero cross-scenario leakage; each `it` below then works entirely
+  // within its own unit.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+  let manager: RegisteredPerson;
+  let buildingId: string;
+  let unitAId: string;
+  let unitBId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 2 });
+    createdBuildingIds.push(buildingId);
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitAId = unitsRes.body.data[0].id;
+    unitBId = unitsRes.body.data[1].id;
+    await issueFixedChargeBatch(app, buildingId, manager.accessToken, 35_003_000);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('a 10,000,000 pending payment leaves remainingPayable at 25,003,000; a report exceeding it is rejected; a report for exactly the remainder is accepted', async () => {
+    let debt = await getUnitDebtSnapshot(app, buildingId, unitAId, manager.accessToken);
+    expect(debt.totalDebt).toBe(35_003_000);
+    expect(debt.remainingPayable).toBe(35_003_000);
+
+    await reportPayment(app, buildingId, unitAId, manager.accessToken, 10_000_000);
+
+    debt = await getUnitDebtSnapshot(app, buildingId, unitAId, manager.accessToken);
+    expect(debt.totalDebt).toBe(35_003_000);
+    expect(debt.pendingPaymentAmount).toBe(10_000_000);
+    expect(debt.remainingPayable).toBe(25_003_000);
+
+    // A non-manual report for the ORIGINAL 35,003,000 must be rejected —
+    // it exceeds the now-lower remainingPayable, not just totalDebt.
+    const rejected = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitAId}/payments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ amount: 35_003_000, method: 'CASH', isManualAmount: false })
+      .expect(422);
+    expect(rejected.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+
+    // A non-manual report for exactly the remaining 25,003,000 is accepted.
+    await reportPayment(app, buildingId, unitAId, manager.accessToken, 25_003_000);
+
+    const afterBoth = await getUnitDebtSnapshot(app, buildingId, unitAId, manager.accessToken);
+    expect(afterBoth.pendingPaymentAmount).toBe(35_003_000);
+    expect(afterBoth.remainingPayable).toBe(0);
+  });
+
+  it('approving the partial pending payment reduces confirmed debt by exactly that amount; remainingPayable is unaffected by the approval', async () => {
+    let debt = await getUnitDebtSnapshot(app, buildingId, unitBId, manager.accessToken);
+    expect(debt.totalDebt).toBe(35_003_000);
+
+    const partialId = await reportPayment(app, buildingId, unitBId, manager.accessToken, 10_000_000);
+
+    debt = await getUnitDebtSnapshot(app, buildingId, unitBId, manager.accessToken);
+    expect(debt.remainingPayable).toBe(25_003_000);
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/payments/${partialId}/approve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    // Approved: confirmed debt decreases through the existing accounting
+    // path, pendingPaymentAmount returns to zero, remainingPayable must
+    // not double-count the payment (it was already 25,003,000 while
+    // pending — the approval is not a second reservation).
+    debt = await getUnitDebtSnapshot(app, buildingId, unitBId, manager.accessToken);
+    expect(debt.totalDebt).toBe(25_003_000);
+    expect(debt.pendingPaymentAmount).toBe(0);
+    expect(debt.remainingPayable).toBe(25_003_000);
+  });
+});
+
+describe('Finance (e2e) — Remaining Payable: multiple pending payments sum correctly (Finance QA Correction, 2026-08)', () => {
+  // Budget: 1 call to POST /auth/otp/request.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+  let manager: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+    await issueFixedChargeBatch(app, buildingId, manager.accessToken, 1_000_000);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('several legitimate pending payments sum correctly against a known 1,000,000 confirmed debt', async () => {
+    await reportPayment(app, buildingId, unitId, manager.accessToken, 200_000);
+    await reportPayment(app, buildingId, unitId, manager.accessToken, 300_000);
+
+    let debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.totalDebt).toBe(1_000_000);
+    expect(debt.pendingPaymentAmount).toBe(500_000);
+    expect(debt.remainingPayable).toBe(500_000);
+
+    // A third non-manual report for exactly the remainder succeeds...
+    await reportPayment(app, buildingId, unitId, manager.accessToken, 500_000);
+    // ...and now remainingPayable is fully reserved.
+    debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.pendingPaymentAmount).toBe(1_000_000);
+    expect(debt.remainingPayable).toBe(0);
+  });
+});
+
+describe('Finance (e2e) — Remaining Payable: concurrency (Finance QA Correction, 2026-08)', () => {
+  // Budget: 1 call to POST /auth/otp/request.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+  let manager: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+    // Exactly one charge batch on a fresh, dedicated single-unit building —
+    // remainingPayable is known and exact: 1,000,000, zero pending.
+    await issueFixedChargeBatch(app, buildingId, manager.accessToken, 1_000_000);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('two near-simultaneous non-manual reports, each for the full 1,000,000 remainingPayable — exactly one 201, exactly one 422 BUSINESS_RULE_VIOLATION', async () => {
+    const before = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(before.remainingPayable).toBe(1_000_000);
+    expect(before.pendingPaymentAmount).toBe(0);
+
+    // Fired together (not awaited sequentially) so both requests reach
+    // `FinanceRepository.createPayment` with the same stale "remaining
+    // payable is 1,000,000" view — proving the per-unit
+    // `pg_advisory_xact_lock` (not just a pre-transaction read) is what
+    // actually prevents the double-spend, since a naive read-then-write
+    // race would let both of these slip through.
+    const [first, second] = await Promise.allSettled([
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ amount: 1_000_000, method: 'CASH', isManualAmount: false }),
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ amount: 1_000_000, method: 'CASH', isManualAmount: false }),
+    ]);
+
+    const results = [first, second].map((r) => (r.status === 'fulfilled' ? r.value : null));
+    const successes = results.filter((r) => r?.status === 201);
+    const failures = results.filter((r) => r?.status === 422);
+
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+
+    // Exactly one payment landed, not two.
+    const debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.pendingPaymentAmount).toBe(1_000_000);
+    expect(debt.remainingPayable).toBe(0);
+
+    const pending = await prisma.payment.findMany({ where: { unitId, status: 'PENDING_APPROVAL' } });
+    expect(pending).toHaveLength(1);
+  });
+});
+
+describe('Finance (e2e) — Remaining Payable: zero-debt / manual-extra-payment (Finance QA Correction, 2026-08)', () => {
+  // Budget: 1 call to POST /auth/otp/request. `beforeAll` fully settles the
+  // unit's debt as fixture setup (report + approve, both inside `beforeAll`
+  // — not a dependency on a sibling `it`), so the `it` below starts from an
+  // exact, deterministic confirmed-zero state, per the required invariant.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+  let manager: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+    await issueFixedChargeBatch(app, buildingId, manager.accessToken, 35_003_000);
+    await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.accessToken,
+      35_003_000,
+    );
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('remainingPayable is exactly 0 with no pending payment; a non-manual report is rejected; a manual report is still accepted (preserving the existing manual/credit UX)', async () => {
+    let debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.totalDebt).toBe(0);
+    expect(debt.pendingPaymentAmount).toBe(0);
+    expect(debt.remainingPayable).toBe(0);
+
+    // A non-manual report against zero remainingPayable is rejected — this
+    // is the same "duplicate submission" guard, not a special case.
+    const rejected = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ amount: 50_000, method: 'CASH', isManualAmount: false })
+      .expect(422);
+    expect(rejected.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+
+    // A manual report (the existing "I'll enter the amount myself" /
+    // zero-debt-confirmation path) is still accepted — the pre-existing
+    // voluntary-extra-payment UX this pass must not break.
+    const manualPaymentId = await reportPayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      50_000,
+      true,
+    );
+    expect(manualPaymentId).toBeTruthy();
+
+    debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.pendingPaymentAmount).toBe(50_000); // the manual payment still reserves remainingPayable like any other pending payment once reported...
+    expect(debt.remainingPayable).toBe(0); // ...floored at 0, not negative.
+  });
+});
+
+describe('Finance (e2e) — Remaining Payable: existing credit behavior (Finance QA Correction, 2026-08)', () => {
+  // Budget: 1 call to POST /auth/otp/request. Constructs its own
+  // confirmed-zero-debt state from scratch in `beforeAll` (issue + report +
+  // approve), independent of every other describe in this file.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+  let manager: RegisteredPerson;
+  let buildingId: string;
+  let unitId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitId = unitsRes.body.data[0].id;
+    await issueFixedChargeBatch(app, buildingId, manager.accessToken, 35_003_000);
+    await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.accessToken,
+      35_003_000,
+    );
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('a manual overpayment that becomes CreditBalance is netted out of remainingPayable', async () => {
+    const settled = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(settled.totalDebt).toBe(0);
+    expect(settled.remainingPayable).toBe(0);
+
+    // A deliberate manual overpayment beyond zero debt.
+    const overpaymentId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.accessToken,
+      20_000,
+      true,
+    );
+    expect(overpaymentId).toBeTruthy();
+
+    const credit = await prisma.creditBalance.findUnique({ where: { unitId } });
+    expect(credit?.balance).toBe(20_000);
+
+    const afterCredit = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(afterCredit.creditBalance).toBe(20_000);
+    expect(afterCredit.totalDebt).toBe(0);
+    expect(afterCredit.remainingPayable).toBe(0); // netting existing credit never pushes remainingPayable negative.
   });
 });

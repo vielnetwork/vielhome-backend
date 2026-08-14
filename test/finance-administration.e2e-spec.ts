@@ -348,18 +348,29 @@ async function issueFixedChargeBatch(
 /** Reports and immediately approves a payment on `unitId` — the shortest
  * real path to an APPROVED, allocated `Payment`, same helper shape
  * `finance.e2e-spec.ts` itself uses (a single `MANAGER` founder can both
- * report and approve). */
+ * report and approve).
+ *
+ * Finance QA correction (physical-device duplicate-payment bug, 2026-08)
+ * — `POST .../payments` now validates a non-manual `amount` against the
+ * unit's current remaining payable (`FinanceRepository.computeDebtSnapshot`
+ * 's own doc comment on the backend). [isManualAmount] defaults to `false`
+ * to match this helper's prior behavior for a payment that fits within
+ * real remaining debt; call sites that intentionally report a second/extra
+ * payment un-backed by further real debt (this file's own `paymentBId`
+ * fixture below) pass `true` — the same explicit, never-inferred-from-
+ * amount signal Mobile's "I'll enter the amount myself" checkbox sends. */
 async function reportAndApprovePayment(
   app: INestApplication,
   buildingId: string,
   unitId: string,
   accessToken: string,
   amount: number,
+  isManualAmount = false,
 ): Promise<string> {
   const reportRes = await request(app.getHttpServer())
     .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
     .set('Authorization', `Bearer ${accessToken}`)
-    .send({ amount, method: 'CASH' })
+    .send({ amount, method: 'CASH', isManualAmount })
     .expect(201);
   const paymentId = reportRes.body.data.id as string;
 
@@ -431,12 +442,21 @@ describe('Financial Administration (e2e) — Backoffice Payment List/Detail/Reve
       manager.accessToken,
       1_000_000,
     );
+    // Finance QA correction: paymentA above already fully settled this
+    // unit's only ChargeItem (1,000,000 debt, exactly consumed), so
+    // remaining payable is genuinely 0 by the time this second payment is
+    // reported. This fixture deliberately wants TWO real, approved
+    // payments on the same unit for list/detail/reverse/refund coverage
+    // below — a second payment un-backed by further real debt, reported
+    // manually (same "voluntary extra payment" intent the zero-debt/credit
+    // Mobile flow already allows).
     paymentBId = await reportAndApprovePayment(
       app,
       buildingId,
       unitId,
       manager.accessToken,
       1_000_000,
+      true,
     );
 
     const viewPermission =
@@ -585,7 +605,11 @@ describe('Financial Administration (e2e) — Backoffice Payment List/Detail/Reve
         .get('/api/v1/backoffice/payments?status=PAID')
         .set('Authorization', `Bearer ${reviewer.accessToken}`)
         .expect(400);
-      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      // `AllExceptionsFilter` writes the canonical `{ errors: ApiErrorItem[] }`
+      // envelope (08_API_Architecture > Error Standard) — `res.body.error`
+      // (singular) was a stale pre-envelope assertion; every other
+      // assertion in this file already uses the `errors[0]` array shape.
+      expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
     });
 
     it('freezes building filter, tolerant pagination, nested payer, and unchanged Rial amount', async () => {
@@ -619,7 +643,9 @@ describe('Financial Administration (e2e) — Backoffice Payment List/Detail/Reve
         .get('/api/v1/backoffice/payments/does-not-exist')
         .set('Authorization', `Bearer ${reviewer.accessToken}`)
         .expect(404);
-      expect(res.body.error.code).toBe('NOT_FOUND');
+      // Same stale singular-`error` shape as the VALIDATION_ERROR case
+      // above — see that assertion's comment.
+      expect(res.body.errors[0].code).toBe('NOT_FOUND');
     });
 
     it('21_ADRs > ADR-115 — /export rejects an unauthenticated caller (401)', async () => {

@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsInt, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsPositive, IsString } from 'class-validator';
 
 const PAYMENT_METHODS = ['CASH', 'BANK_TRANSFER'] as const;
 
@@ -37,4 +37,25 @@ export class CreatePaymentDto {
   @IsOptional()
   @IsString()
   note?: string;
+
+  /**
+   * Finance QA correction (physical-device duplicate-payment bug, 2026-08)
+   * — explicit contract for "this amount was deliberately chosen by the
+   * reporter," not auto-filled from the unit's current remaining payable.
+   * Defaults to `false`. When `false`, `FinanceService.createPayment`
+   * rejects an `amount` greater than the unit's current `remainingPayable`
+   * (`FinanceRepository.computeDebtSnapshot`'s own doc comment) — closing
+   * the bug where repeated taps on an auto-filled amount created multiple
+   * PENDING_APPROVAL payments for the same debt. When `true`, that ceiling
+   * is bypassed — a manual entry may legitimately exceed remaining payable
+   * (a partial payment, a deliberate overpayment that becomes
+   * `CreditBalance`, or a voluntary payment while remaining payable is
+   * already zero — Mobile's "I'll enter the amount myself" checkbox and
+   * its zero-debt/credit confirmation "Yes" both set this to `true`).
+   * Never inferred from the amount itself — always this explicit flag.
+   */
+  @ApiProperty({ required: false, default: false })
+  @IsOptional()
+  @IsBoolean()
+  isManualAmount?: boolean;
 }

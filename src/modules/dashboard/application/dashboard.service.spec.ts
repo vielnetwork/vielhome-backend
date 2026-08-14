@@ -217,6 +217,67 @@ describe('DashboardService', () => {
     });
   });
 
+  describe('CRITICAL_AUDIT_ACTIONS reconciliation (Finance Hardening Pass, post-audit)', () => {
+    /**
+     * ADR-111's own prose incorrectly claimed `PersonSuspendedByAdmin`/
+     * `PersonReinstatedByAdmin` were already in this allowlist; ADR-112
+     * and ADR-113 both correctly flagged that discrepancy (plus their own
+     * two/two action pairs) as tracked residual debt rather than fixing
+     * it in-stage. These tests prove all six are now genuinely present —
+     * not just that the source file "mentions" them in a comment.
+     */
+    it.each([
+      'PersonSuspendedByAdmin',
+      'PersonReinstatedByAdmin',
+      'BuildingLockedByAdmin',
+      'BuildingReinstatedByAdmin',
+      'PaymentReversedByAdmin',
+      'PaymentRefundedByAdmin',
+    ])('includes %s in CRITICAL_AUDIT_ACTIONS', (action) => {
+      expect(CRITICAL_AUDIT_ACTIONS).toContain(action);
+    });
+
+    it('does not duplicate any reconciled action already present under another name', () => {
+      const seen = new Set<string>();
+      for (const action of CRITICAL_AUDIT_ACTIONS) {
+        expect(seen.has(action)).toBe(false);
+        seen.add(action);
+      }
+    });
+
+    it('surfaces a PaymentReversedByAdmin audit row in recentCriticalAuditEvents, proving the allowlist change actually drives the dashboard query, not just the constant', async () => {
+      const createdAt = new Date('2026-08-01T12:00:00.000Z');
+      prisma.auditLog.findMany.mockResolvedValue([
+        {
+          id: 'log-admin-reversal',
+          action: 'PaymentReversedByAdmin',
+          entityType: 'Payment',
+          entityId: 'pay-1',
+          actorId: 'staff-1',
+          reason: 'Confirmed duplicate charge.',
+          createdAt,
+        },
+      ]);
+
+      const result = await service.getOverview();
+
+      expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { action: { in: CRITICAL_AUDIT_ACTIONS } } }),
+      );
+      expect(result.recentCriticalAuditEvents).toEqual([
+        {
+          id: 'log-admin-reversal',
+          action: 'PaymentReversedByAdmin',
+          entityType: 'Payment',
+          entityId: 'pay-1',
+          actorId: 'staff-1',
+          reason: 'Confirmed duplicate charge.',
+          createdAt: createdAt.toISOString(),
+        },
+      ]);
+    });
+  });
+
   describe('partial-failure isolation (Promise.allSettled contract)', () => {
     it('falls back to the documented empty shape for one rejected section, and still returns 200-shaped data for the rest', async () => {
       prisma.person.count.mockRejectedValue(new Error('db down'));

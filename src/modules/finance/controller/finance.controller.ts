@@ -7,6 +7,7 @@ import { CreateChargeBatchDto } from '../application/dto/create-charge-batch.dto
 import { CreatePaymentDto } from '../application/dto/create-payment.dto';
 import { RejectPaymentDto } from '../application/dto/reject-payment.dto';
 import { CreateAdjustmentDto } from '../application/dto/create-adjustment.dto';
+import { CorrectOpeningBalanceDto } from '../application/dto/correct-opening-balance.dto';
 import { ReversePaymentDto } from '../application/dto/reverse-payment.dto';
 import { RefundPaymentDto } from '../application/dto/refund-payment.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
@@ -15,7 +16,14 @@ import { RolesGuard } from '../../../common/guards/roles.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
+import { parsePagination } from '../../../common/pagination/pagination.util';
+import { ValidationError } from '../../../common/errors/app-error';
+import { PaymentStatus } from '@prisma/client';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
+
+/** Backend ↔ Mobile Contract Alignment — every legal `Payment.status` value, for validating the optional `?status=` filter on `GET :id/payments` below. */
+const VALID_PAYMENT_STATUSES: string[] = Object.values(PaymentStatus);
 
 /**
  * Finance MVP (12_Finance_Architecture > ADR — Finance MVP; reconciled from
@@ -60,10 +68,16 @@ export class FinanceController {
     return this.finance.createFund(id, dto, user.sub, requestId);
   }
 
+  /** Finance Hardening Pass (post-audit) — `page`/`limit` (ADR-072 convention), same pattern `FinanceAdministrationController.list`/`MarketplaceController.listApproved` already established. */
   @Get(':id/funds')
   @UseGuards(MembershipGuard)
-  listFunds(@Param('id') id: string) {
-    return this.finance.listFunds(id);
+  async listFunds(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.finance.listFunds(id, parsePagination(page, limit));
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Get(':id/funds/:fundId')
@@ -139,10 +153,16 @@ export class FinanceController {
     return this.finance.previewChargeBatch(id, dto);
   }
 
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/charges')
   @UseGuards(MembershipGuard)
-  listChargeBatches(@Param('id') id: string) {
-    return this.finance.listChargeBatches(id);
+  async listChargeBatches(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.finance.listChargeBatches(id, parsePagination(page, limit));
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Get(':id/charges/:chargeBatchId')
@@ -177,16 +197,38 @@ export class FinanceController {
 
   // --- Per-unit views ------------------------------------------------------------
 
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/units/:unitId/charge-items')
   @UseGuards(MembershipGuard)
-  listUnitChargeItems(@Param('id') id: string, @Param('unitId') unitId: string) {
-    return this.finance.listUnitChargeItems(id, unitId);
+  async listUnitChargeItems(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.finance.listUnitChargeItems(
+      id,
+      unitId,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/units/:unitId/payments')
   @UseGuards(MembershipGuard)
-  listUnitPayments(@Param('id') id: string, @Param('unitId') unitId: string) {
-    return this.finance.listUnitPayments(id, unitId);
+  async listUnitPayments(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.finance.listUnitPayments(
+      id,
+      unitId,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Post(':id/units/:unitId/payments')
@@ -209,10 +251,48 @@ export class FinanceController {
     return this.finance.getUnitDebt(id, unitId);
   }
 
+  /** Finance Correction Pass — read-side companion to `correctOpeningBalance` below; see `FinanceService.getUnitOpeningBalance`'s own doc comment. */
+  @Get(':id/units/:unitId/opening-balance')
+  @UseGuards(MembershipGuard)
+  getUnitOpeningBalance(@Param('id') id: string, @Param('unitId') unitId: string) {
+    return this.finance.getUnitOpeningBalance(id, unitId);
+  }
+
+  /**
+   * Finance Correction Pass — corrects a unit's effective opening balance.
+   * Same role gate and same underlying Adjustment/Ledger mechanism as
+   * manual Adjustment creation — see `FinanceService.correctOpeningBalance`'s
+   * own doc comment for the full design and for why an Accountant existing
+   * on the building never revokes the Manager's own authority.
+   */
+  @Post(':id/units/:unitId/opening-balance-correction')
+  @UseGuards(RolesGuard)
+  @Roles('ACCOUNTANT', 'MANAGER')
+  correctOpeningBalance(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CorrectOpeningBalanceDto,
+    @RequestId() requestId: string,
+  ) {
+    return this.finance.correctOpeningBalance(id, unitId, dto, user.sub, requestId);
+  }
+
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/units/:unitId/adjustments')
   @UseGuards(MembershipGuard)
-  listUnitAdjustments(@Param('id') id: string, @Param('unitId') unitId: string) {
-    return this.finance.listUnitAdjustments(id, unitId);
+  async listUnitAdjustments(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.finance.listUnitAdjustments(
+      id,
+      unitId,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Post(':id/units/:unitId/adjustments')
@@ -250,10 +330,40 @@ export class FinanceController {
 
   // --- Payments --------------------------------------------------------------------
 
+  /**
+   * Finance Hardening Pass — paginated, see `listFunds`'s own doc comment.
+   * Backend ↔ Mobile Contract Alignment — optional `?status=` filter added
+   * so the mobile Pending Payments reviewer queue (`pendingPaymentsProvider`
+   * → this route with `status=PENDING_APPROVAL`) gets a paginated window
+   * that actually contains only pending payments, instead of a window of
+   * "any status, most recent first" that a client-side filter then dilutes
+   * — the exact gap that let a still-pending payment fall off page 1 once
+   * ~20 payments of *any* status had been reported more recently. An
+   * unrecognized `status` value 400s rather than silently falling back to
+   * "no filter" (unlike `page`/`limit`, which are display-only and safe to
+   * default): silently ignoring a typo'd status filter here would return
+   * to exactly the dilution bug this filter exists to close. No new
+   * migration — `Payment` already carries `@@index([buildingId, status])`.
+   */
   @Get(':id/payments')
   @UseGuards(MembershipGuard)
-  listPayments(@Param('id') id: string) {
-    return this.finance.listPayments(id);
+  async listPayments(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+  ) {
+    if (status !== undefined && !VALID_PAYMENT_STATUSES.includes(status)) {
+      throw new ValidationError(
+        `Invalid status filter. Valid values: ${VALID_PAYMENT_STATUSES.join(', ')}`,
+      );
+    }
+    const { items, meta } = await this.finance.listPayments(
+      id,
+      parsePagination(page, limit),
+      status as PaymentStatus | undefined,
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   @Patch(':id/payments/:paymentId/approve')
@@ -309,10 +419,21 @@ export class FinanceController {
     return this.finance.refundPayment(id, paymentId, dto, user.sub, requestId);
   }
 
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/payments/:paymentId/refunds')
   @UseGuards(MembershipGuard)
-  listPaymentRefunds(@Param('id') id: string, @Param('paymentId') paymentId: string) {
-    return this.finance.listPaymentRefunds(id, paymentId);
+  async listPaymentRefunds(
+    @Param('id') id: string,
+    @Param('paymentId') paymentId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.finance.listPaymentRefunds(
+      id,
+      paymentId,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   // --- Reporting -----------------------------------------------------------------
@@ -323,10 +444,17 @@ export class FinanceController {
     return this.finance.getFinancialSummary(id);
   }
 
+  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/ledger')
   @UseGuards(MembershipGuard)
-  listLedger(@Param('id') id: string, @Query('fundId') fundId?: string) {
-    return this.finance.listLedger(id, fundId);
+  async listLedger(
+    @Param('id') id: string,
+    @Query('fundId') fundId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.finance.listLedger(id, fundId, parsePagination(page, limit));
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   /** 21_ADRs > ADR-055 — Collection Rate, same `MembershipGuard` tier as `financial-summary`/`ledger` (any current member may read it). */

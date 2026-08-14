@@ -113,6 +113,24 @@ export const CRITICAL_AUDIT_ACTIONS: string[] = [
   'StaffRoleRevoked',
   // Account-level access gate
   'PersonBackofficeApprovalChanged',
+  // Finance Hardening Pass (post-audit) — staff-direct administrative
+  // overrides (ADR-111 User Administration, ADR-112 Building
+  // Administration, ADR-113 Financial Administration). Each of these six
+  // actions was named at the time of its own ADR as a real, already-
+  // recorded audit action absent from this allowlist despite being a
+  // consequential, staff-initiated override of another domain's own
+  // state — ADR-111's own text incorrectly claimed the first two were
+  // already included; ADR-112 and ADR-113 both correctly flagged the
+  // discrepancy and left it as tracked residual debt rather than fixing
+  // it outside their own stage's scope. Reconciled here as one batch, per
+  // ADR-113's own suggestion ("a single small, separately reviewed change
+  // to dashboard.service.ts could reconcile all six at once").
+  'PersonSuspendedByAdmin',
+  'PersonReinstatedByAdmin',
+  'BuildingLockedByAdmin',
+  'BuildingReinstatedByAdmin',
+  'PaymentReversedByAdmin',
+  'PaymentRefundedByAdmin',
 ];
 
 const RECENT_CRITICAL_AUDIT_EVENTS_LIMIT = 20;

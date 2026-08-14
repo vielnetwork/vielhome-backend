@@ -1004,11 +1004,23 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
       .expect(200);
     unitId = unitsRes.body.data[0].id;
 
+    // Finance QA correction (physical-device duplicate-payment bug,
+    // 2026-08): `POST .../payments` now validates a non-manual `amount`
+    // against the unit's confirmed-debt-derived `remainingPayable`
+    // (`FinanceRepository.computeDebtSnapshot`'s own doc comment). This
+    // fixture never issues a ChargeBatch for `unitId` — there is no real
+    // debt here at all, on purpose. Its only purpose is to build 3
+    // rejected-payment audit events for the FINANCIAL_ANOMALY heuristic
+    // (`findActorsWithRepeatedRejectedPayments`, which counts rejected
+    // payments by actor and has no notion of debt/amount correctness), so
+    // these reports are arbitrary/manual by design — same intent
+    // `isManualAmount` exists to signal explicitly, not something to
+    // manufacture real debt for.
     for (let i = 0; i < 3; i += 1) {
       const reportRes = await request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
         .set('Authorization', `Bearer ${founder.accessToken}`)
-        .send({ amount: 100_000 * (i + 1), method: 'CASH' })
+        .send({ amount: 100_000 * (i + 1), method: 'CASH', isManualAmount: true })
         .expect(201);
 
       const paymentId = reportRes.body.data.id as string;
