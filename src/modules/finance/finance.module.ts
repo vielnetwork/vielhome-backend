@@ -5,6 +5,7 @@ import { FinanceRepository } from './infrastructure/repositories/finance.reposit
 import { ChargePolicy } from './domain/policies/charge.policy';
 import { PaymentPolicy } from './domain/policies/payment.policy';
 import { FundPolicy } from './domain/policies/fund.policy';
+import { ExpensePolicy } from './domain/policies/expense.policy';
 import { MembershipGuard } from '../../common/guards/membership.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { BuildingModule } from '../building/building.module';
@@ -21,6 +22,7 @@ import { BuildingModule } from '../building/building.module';
     ChargePolicy,
     PaymentPolicy,
     FundPolicy,
+    ExpensePolicy,
     MembershipGuard,
     RolesGuard,
   ],

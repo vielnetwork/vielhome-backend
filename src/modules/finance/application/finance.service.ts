@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma, PaymentStatus } from '@prisma/client';
+import { Prisma, PaymentStatus, ExpenseCategory, ExpenseStatus } from '@prisma/client';
 import { FinanceRepository } from '../infrastructure/repositories/finance.repository';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { ChargePolicy } from '../domain/policies/charge.policy';
@@ -15,6 +15,9 @@ import { CreateAdjustmentDto } from './dto/create-adjustment.dto';
 import { CorrectOpeningBalanceDto } from './dto/correct-opening-balance.dto';
 import { ReversePaymentDto } from './dto/reverse-payment.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
+import { CreateExpenseDto } from './dto/create-expense.dto';
+import { VoidExpenseDto } from './dto/void-expense.dto';
+import { ExpensePolicy } from '../domain/policies/expense.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import {
   BusinessRuleViolationError,
@@ -39,6 +42,7 @@ import {
   PaymentReversedEvent,
 } from '../events/payment.events';
 import { AdjustmentCreatedEvent } from '../events/adjustment.events';
+import { ExpenseCreatedEvent, ExpenseVoidedEvent } from '../events/expense.events';
 
 @Injectable()
 export class FinanceService {
@@ -48,6 +52,7 @@ export class FinanceService {
     private readonly chargePolicy: ChargePolicy,
     private readonly paymentPolicy: PaymentPolicy,
     private readonly fundPolicy: FundPolicy,
+    private readonly expensePolicy: ExpensePolicy,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
   ) {}
@@ -1187,6 +1192,159 @@ export class FinanceService {
     const { items, total } = await this.finance.listRefundsByPayment(
       paymentId,
       toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
+  }
+
+  // --- Expenses / Disbursements (FIN-EXP-01/FIN-EXP-02 -- see 21_ADRs > ADR-126) ---
+
+  private async getOwnExpense(buildingId: string, expenseId: string) {
+    const expense = await this.finance.findExpenseById(expenseId);
+    if (!expense || expense.buildingId !== buildingId) {
+      throw new NotFoundAppError('Expense not found.');
+    }
+    return expense;
+  }
+
+  /**
+   * Records money the building SPENT (FIN-EXP-01 design doc). RolesGuard
+   * already enforced MANAGER|ACCOUNTANT before this method runs -- no
+   * in-method role re-check needed, same as `createAdjustment`.
+   * `ExpensePolicy.assertSufficientFundBalance` here is the fast, friendly
+   * pre-check for the common (non-racy) case; `FinanceRepository.
+   * createExpense`'s own re-read of `fund.balance` inside its transaction
+   * is the authoritative check for a concurrent write shrinking the
+   * balance in the gap between this pre-check and that transaction (same
+   * split `resolveFundForWrite`'s callers already rely on for
+   * `FundPolicy.assertActive`).
+   */
+  async createExpense(
+    buildingId: string,
+    dto: CreateExpenseDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    await this.getBuilding(buildingId);
+    this.expensePolicy.assertValidAmount(dto.amount);
+
+    const fund = await this.resolveFundForWrite(buildingId, dto.fundId);
+    this.expensePolicy.assertSufficientFundBalance(fund.balance, dto.amount);
+
+    let expense;
+    try {
+      expense = await this.finance.createExpense({
+        buildingId,
+        fundId: fund.id,
+        title: dto.title,
+        description: dto.description,
+        category: dto.category,
+        amount: dto.amount,
+        occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
+        createdById: actorPersonId,
+        idempotencyKey: dto.idempotencyKey,
+        requestId,
+      });
+    } catch (error) {
+      // A genuine retry of the same request (same idempotencyKey) -- return
+      // the original Expense instead of raising, same
+      // isUniqueConstraintViolation pattern `applyLateFee` already uses for
+      // Adjustment's sourceType/sourceId race.
+      if (dto.idempotencyKey && isUniqueConstraintViolation(error)) {
+        const existing = await this.finance.findExpenseByIdempotencyKey(dto.idempotencyKey);
+        if (existing) return existing;
+      }
+      throw error;
+    }
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      buildingId,
+      action: 'ExpenseCreated',
+      entityType: 'Expense',
+      entityId: expense.id,
+      requestId,
+      metadata: { fundId: fund.id, amount: dto.amount, category: dto.category },
+    });
+
+    this.events.emit(
+      'ExpenseCreated',
+      new ExpenseCreatedEvent(expense.id, buildingId, fund.id, dto.amount, actorPersonId),
+    );
+
+    return expense;
+  }
+
+  /**
+   * VOIDs a POSTED Expense -- the only correction path (no edit endpoint).
+   * `ExpensePolicy.assertVoidable` here is the fast, friendly pre-check
+   * for the common (non-racy) already-voided case, giving the familiar
+   * 422; `FinanceRepository.voidExpense`'s own CAS
+   * (`updateMany({ where: { status: 'POSTED' } })`) is the authoritative
+   * safety net for a genuinely-concurrent double-void this pre-check
+   * cannot see, and throws a distinct 409 `ConflictError` only in that
+   * rare case -- the same fast-pre-check / authoritative-CAS split
+   * `VotingService.closeVote`/`cancelVote` already establish.
+   */
+  async voidExpense(
+    buildingId: string,
+    expenseId: string,
+    dto: VoidExpenseDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    const expense = await this.getOwnExpense(buildingId, expenseId);
+    this.expensePolicy.assertVoidable(expense.status);
+
+    const voided = await this.finance.voidExpense({
+      expenseId,
+      buildingId,
+      fundId: expense.fundId,
+      amount: expense.amount,
+      voidReason: dto.voidReason,
+      actorId: actorPersonId,
+      requestId,
+    });
+
+    await this.audit.record({
+      actorId: actorPersonId,
+      buildingId,
+      action: 'ExpenseVoided',
+      entityType: 'Expense',
+      entityId: expenseId,
+      requestId,
+      reason: dto.voidReason,
+      metadata: { amount: expense.amount },
+    });
+
+    this.events.emit(
+      'ExpenseVoided',
+      new ExpenseVoidedEvent(expenseId, buildingId, expense.fundId, expense.amount, actorPersonId),
+    );
+
+    return voided;
+  }
+
+  async getExpense(buildingId: string, expenseId: string) {
+    return this.getOwnExpense(buildingId, expenseId);
+  }
+
+  /** Finance Hardening Pass style pagination, see `FinanceRepository.listFunds`'s own doc comment. */
+  async listExpenses(
+    buildingId: string,
+    pagination: PaginationParams,
+    filters?: {
+      fundId?: string;
+      category?: ExpenseCategory;
+      status?: ExpenseStatus;
+      fromDate?: Date;
+      toDate?: Date;
+    },
+  ) {
+    await this.getBuilding(buildingId);
+    const { items, total } = await this.finance.listExpenses(
+      buildingId,
+      toSkipTake(pagination),
+      filters,
     );
     return { items, meta: buildPaginationMeta(pagination, total) };
   }

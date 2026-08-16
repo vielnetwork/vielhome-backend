@@ -79,6 +79,10 @@ model Person {
   // Adjustment/Refund API (08.05/08.06 — see 21_ADRs > ADR-037)
   adjustmentsCreated   Adjustment[]      @relation("AdjustmentCreatedBy")
   refundsCreated       Refund[]          @relation("RefundCreatedBy")
+  // Building Expense / Disbursement (FIN-EXP-01/FIN-EXP-02 — see 21_ADRs >
+  // ADR-126)
+  expensesCreated      Expense[]         @relation("ExpenseCreatedBy")
+  expensesVoided       Expense[]         @relation("ExpenseVoidedBy")
 
   createdVotes       Vote[]                    @relation("VoteCreatedBy")
   voteEligibilities  VoteEligibilitySnapshot[] @relation("VoteEligiblePerson")
@@ -329,6 +333,7 @@ model Building {
   ledgerEntries  LedgerEntry[]
   adjustments    Adjustment[]
   refunds        Refund[]
+  expenses       Expense[]
 
   votes       Vote[]
   meetings    Meeting[]
@@ -780,6 +785,7 @@ model Fund {
   payments      Payment[]
   ledgerEntries LedgerEntry[]
   adjustments   Adjustment[]
+  expenses      Expense[]
 
   @@unique([buildingId, name])
   @@index([buildingId])
@@ -1061,6 +1067,14 @@ enum LedgerEntryType {
   // ledger entry like every other cash movement, keeping the Ledger the
   // actual source of truth (12_Finance_Architecture > "Ledger").
   OPENING_BALANCE
+  // Added for FIN-EXP-02 (see 21_ADRs > ADR-126) — a building operating
+  // expense/disbursement (money the building SPENT, e.g. a cleaning
+  // contractor or utility bill). DEBIT + Fund.balance decrement on
+  // create, mirroring REFUND/REVERSAL's outflow convention; voiding posts
+  // a CREDIT counter-entry that restores the balance, mirroring how every
+  // other correction in this enum is a new offsetting entry rather than
+  // an edit/delete of the original.
+  EXPENSE
 }
 
 enum LedgerDirection {
@@ -1152,6 +1166,82 @@ model Adjustment {
   @@index([unitId])
   @@index([buildingId])
   @@map("adjustments")
+}
+
+// Building Expense / Disbursement (FIN-EXP-01/FIN-EXP-02 — see 21_ADRs >
+// ADR-126). Money the building SPENT (e.g. paying a cleaning contractor,
+// a utility bill, elevator maintenance) — distinct from Charge (money
+// units OWE) and Payment (money RECEIVED). Recording an Expense never
+// creates a Charge, never changes any unit's debt, and is never
+// represented as a Payment (ADR-126's product contract). It affects
+// Fund.balance only through a real EXPENSE LedgerEntry (DEBIT, decrement)
+// — the same append-only mechanism every other cash movement uses, never
+// a direct Fund.balance write.
+//
+// Two-state lifecycle only (POSTED/VOIDED, no DRAFT/approval workflow):
+// unlike ChargeBatch or Payment, an Expense has no per-unit consequence to
+// preview before commit and no third-party assertion to verify before
+// trusting it, so the extra states those models need don't apply here.
+// Corrections use VOID, never edit or delete — matching every other
+// posted Finance record's immutability rule (05_Business_Rules > Finance
+// Rules: "Corrections generate adjustment records").
+model Expense {
+  id          String          @id @default(cuid())
+  buildingId  String
+  building    Building        @relation(fields: [buildingId], references: [id])
+  fundId      String
+  fund        Fund            @relation(fields: [fundId], references: [id])
+  title       String
+  description String?
+  category    ExpenseCategory
+  // Iranian Rial, integer, no floats — same convention as every other
+  // amount field in this schema (ADR-125).
+  amount      Int
+  // When the cost actually occurred in the real world (e.g. the utility
+  // bill's date), distinct from `createdAt` (when it was entered into
+  // VielHome).
+  occurredAt  DateTime        @default(now())
+  status      ExpenseStatus   @default(POSTED)
+
+  createdById String
+  createdBy   Person   @relation("ExpenseCreatedBy", fields: [createdById], references: [id])
+
+  voidedAt   DateTime?
+  voidedById String?
+  voidedBy   Person?   @relation("ExpenseVoidedBy", fields: [voidedById], references: [id])
+  voidReason String?
+
+  // Client-supplied idempotency token — same `String? @unique` shape as
+  // the Fraud module's `EnforcementAction.idempotencyKey`, the codebase's
+  // only existing DB-level idempotency precedent (LedgerEntry/AuditLog's
+  // own `requestId` is a plain nullable tracing field, not unique-enforced
+  // anywhere in Finance).
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([buildingId])
+  @@index([fundId])
+  @@index([buildingId, status])
+  @@index([buildingId, category])
+  @@map("expenses")
+}
+
+enum ExpenseCategory {
+  UTILITIES
+  CLEANING
+  MAINTENANCE
+  REPAIR
+  ELEVATOR
+  SECURITY
+  INSURANCE
+  ADMINISTRATION
+  OTHER
+}
+
+enum ExpenseStatus {
+  POSTED
+  VOIDED
 }
 
 // Refund (08.06_Payment_API_v1.0 Rules 010/013/015 — see 21_ADRs > ADR-037).
@@ -1784,6 +1874,11 @@ enum DocumentReferenceEntityType {
   // cross-checked against the target domain (keeps DocumentsModule from
   // needing to import GovernanceModule/CasesModule/etc.).
   MEETING
+  // FIN-EXP-02 (see 21_ADRs > ADR-126) — optional receipt/invoice
+  // attachment for a building Expense, reusing this same generic,
+  // decoupled reference mechanism (no FinanceModule/DocumentsModule
+  // coupling, same as every other value here).
+  EXPENSE
 }
 
 // Documents Phase 1a Hardening (post-audit) — what a `DocumentUploadIntent`

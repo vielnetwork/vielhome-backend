@@ -4,6 +4,8 @@ import {
   ChargeItemStatus,
   ChargePayerType,
   ChargeUnitScope,
+  ExpenseCategory,
+  ExpenseStatus,
   FundAccountLinkType,
   FundType,
   LateFeeType,
@@ -13,7 +15,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
-import { BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import { BusinessRuleViolationError, ConflictError } from '../../../../common/errors/app-error';
 
 /**
  * Entry types whose ledger write actually moves `Fund.balance` (the
@@ -36,9 +38,20 @@ import { BusinessRuleViolationError } from '../../../../common/errors/app-error'
  *  - CREDIT_APPLIED reallocates cash that was already counted into the
  *    cache at the time the original overpayment's PAYMENT entry was
  *    written — writing it again here would double-count, so it does NOT.
+ *  - EXPENSE (added for FIN-EXP-02 — see 21_ADRs > ADR-126) is real cash
+ *    LEAVING the fund for a building operating cost — it DOES update the
+ *    cache, as a decrement, the mirror image of PAYMENT. A void posts a
+ *    second EXPENSE entry (CREDIT, increment) that restores the balance,
+ *    the same "reversal creates counter entry" convention REVERSAL
+ *    already established for a wrongly-approved Payment.
  */
 function affectsFundBalance(entryType: LedgerEntryType): boolean {
-  return entryType === 'PAYMENT' || entryType === 'REFUND' || entryType === 'REVERSAL';
+  return (
+    entryType === 'PAYMENT' ||
+    entryType === 'REFUND' ||
+    entryType === 'REVERSAL' ||
+    entryType === 'EXPENSE'
+  );
 }
 
 function computeItemStatus(paidAmount: number, amount: number): ChargeItemStatus {
@@ -1230,39 +1243,248 @@ export class FinanceRepository {
     return { items, total };
   }
 
+  // --- Expenses / Disbursements (FIN-EXP-01/FIN-EXP-02 -- see 21_ADRs > ADR-126) ---
+
+  /**
+   * Fund-sufficiency is re-checked HERE, inside the transaction, against
+   * a fresh `tx.fund` read -- not the pre-fetched copy the service layer's
+   * `ExpensePolicy.assertSufficientFundBalance` pre-check used -- so a
+   * concurrent write that shrinks the balance in the gap between that
+   * pre-check and this transaction can never drive `Fund.balance`
+   * negative (same fast-pre-check / authoritative-check split
+   * `VotingService.closeVote` already establishes for a different race).
+   *
+   * Idempotency: if `params.idempotencyKey` is set and the `tx.expense.
+   * create` below hits a `P2002` unique violation (a genuine retry of the
+   * same request), this method lets that error propagate out of the
+   * transaction (which rolls back atomically -- no LedgerEntry or Fund
+   * balance change survives a rolled-back transaction). The SERVICE layer
+   * catches that `P2002` outside the transaction and re-fetches the
+   * original Expense by `idempotencyKey` instead of raising -- the exact
+   * same `isUniqueConstraintViolation` pattern already used for
+   * Adjustment's `sourceType`/`sourceId` race (see
+   * `FinanceService.applyLateFee`).
+   */
+  createExpense(params: {
+    buildingId: string;
+    fundId: string;
+    title: string;
+    description?: string;
+    category: ExpenseCategory;
+    amount: number;
+    occurredAt: Date;
+    createdById: string;
+    idempotencyKey?: string;
+    requestId?: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      const fund = await tx.fund.findUniqueOrThrow({ where: { id: params.fundId } });
+      if (fund.balance < params.amount) {
+        throw new BusinessRuleViolationError(
+          "This expense's amount exceeds the fund's current balance.",
+        );
+      }
+
+      const expense = await tx.expense.create({
+        data: {
+          buildingId: params.buildingId,
+          fundId: params.fundId,
+          title: params.title,
+          description: params.description,
+          category: params.category,
+          amount: params.amount,
+          occurredAt: params.occurredAt,
+          createdById: params.createdById,
+          idempotencyKey: params.idempotencyKey,
+        },
+      });
+
+      await tx.ledgerEntry.create({
+        data: {
+          buildingId: params.buildingId,
+          fundId: params.fundId,
+          entryType: 'EXPENSE',
+          direction: 'DEBIT',
+          amount: params.amount,
+          referenceType: 'Expense',
+          referenceId: expense.id,
+          actorId: params.createdById,
+          requestId: params.requestId,
+        },
+      });
+
+      await tx.fund.update({
+        where: { id: params.fundId },
+        data: { balance: { decrement: params.amount } },
+      });
+
+      return expense;
+    });
+  }
+
+  findExpenseById(id: string) {
+    return this.prisma.expense.findUnique({ where: { id } });
+  }
+
+  findExpenseByIdempotencyKey(idempotencyKey: string) {
+    return this.prisma.expense.findUnique({ where: { idempotencyKey } });
+  }
+
+  /**
+   * Concurrency-safe against two simultaneous voids of the same Expense --
+   * the `updateMany({ where: { id, status: 'POSTED' } })` CAS below is the
+   * same "expected-status" pattern `VotingRepository.closeVote`/
+   * `CaseRepository.resolveCase`/`closeCase` already establish. Only ONE
+   * of two racing void calls can ever win the `count === 1` check; the
+   * loser gets a clean `ConflictError` (409) instead of both silently
+   * posting a second CREDIT counter-entry and double-crediting
+   * `Fund.balance`. This is deliberately the same primitive those
+   * repositories use, not the simpler read-then-conditionally-write shape
+   * a plain application-level status check would use elsewhere in this
+   * file (e.g. `FundPolicy.assertActive`) -- Expense void needs the
+   * stronger guarantee because, unlike those checks, a lost race here
+   * would corrupt real money, not just an inactive-fund UX message.
+   */
+  voidExpense(params: {
+    expenseId: string;
+    buildingId: string;
+    fundId: string;
+    amount: number;
+    voidReason: string;
+    actorId: string;
+    requestId?: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.expense.updateMany({
+        where: { id: params.expenseId, status: 'POSTED' },
+        data: {
+          status: 'VOIDED',
+          voidedAt: new Date(),
+          voidedById: params.actorId,
+          voidReason: params.voidReason,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictError(
+          'This expense is no longer POSTED (it may have already been voided). Reload and retry.',
+        );
+      }
+
+      await tx.ledgerEntry.create({
+        data: {
+          buildingId: params.buildingId,
+          fundId: params.fundId,
+          entryType: 'EXPENSE',
+          direction: 'CREDIT',
+          amount: params.amount,
+          referenceType: 'Expense',
+          referenceId: params.expenseId,
+          description: 'Expense voided',
+          actorId: params.actorId,
+          requestId: params.requestId,
+        },
+      });
+
+      await tx.fund.update({
+        where: { id: params.fundId },
+        data: { balance: { increment: params.amount } },
+      });
+
+      return tx.expense.findUniqueOrThrow({ where: { id: params.expenseId } });
+    });
+  }
+
+  /**
+   * Finance Hardening Pass style pagination (see `listFunds`'s own doc
+   * comment). `status` defaults to excluding VOIDED unless explicitly
+   * requested, matching how `listPayments` accepts an optional
+   * `?status=` filter; both are backed by the new `@@index([buildingId,
+   * status])`/`@@index([buildingId, category])` on `Expense`.
+   */
+  async listExpenses(
+    buildingId: string,
+    pagination: { skip: number; take: number },
+    filters?: {
+      fundId?: string;
+      category?: ExpenseCategory;
+      status?: ExpenseStatus;
+      fromDate?: Date;
+      toDate?: Date;
+    },
+  ) {
+    const where: Prisma.ExpenseWhereInput = {
+      buildingId,
+      ...(filters?.fundId ? { fundId: filters.fundId } : {}),
+      ...(filters?.category ? { category: filters.category } : {}),
+      status: filters?.status ?? 'POSTED',
+      ...(filters?.fromDate || filters?.toDate
+        ? {
+            occurredAt: {
+              ...(filters?.fromDate ? { gte: filters.fromDate } : {}),
+              ...(filters?.toDate ? { lte: filters.toDate } : {}),
+            },
+          }
+        : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.expense.findMany({
+        where,
+        orderBy: { occurredAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.expense.count({ where }),
+    ]);
+    return { items, total };
+  }
+
   // --- Reporting ---------------------------------------------------------------
 
   async getFinancialSummary(buildingId: string) {
-    const [funds, outstandingItems, positiveAdjustments, collected, refunded, chargeBatchCount] =
-      await Promise.all([
-        this.prisma.fund.findMany({ where: { buildingId } }),
-        this.prisma.chargeItem.findMany({
-          where: { chargeBatch: { buildingId }, status: { not: 'PAID' } },
-          select: { amount: true, paidAmount: true },
-        }),
-        this.prisma.adjustment.aggregate({
-          where: { buildingId, amount: { gt: 0 } },
-          _sum: { amount: true },
-        }),
-        this.prisma.payment.aggregate({
-          where: { buildingId, status: 'APPROVED' },
-          _sum: { amount: true },
-        }),
-        // A payment's `amount` field only ever reflects the ORIGINAL amount
-        // (never edited — 08.06 Rule 015), so an APPROVED-and-partially-
-        // refunded payment (status stays APPROVED — see `createRefund`'s own
-        // comment) still counts its full original amount above; subtracting
-        // ITS refund here is what makes `totalCollected` net-accurate. A
-        // FULLY-refunded payment's status is REFUNDED, not APPROVED, so it's
-        // already excluded by the aggregate above — filtering this second
-        // aggregate to `payment.status: 'APPROVED'` too avoids subtracting
-        // that refund a second time (which would double-count it).
-        this.prisma.refund.aggregate({
-          where: { buildingId, payment: { status: 'APPROVED' } },
-          _sum: { amount: true },
-        }),
-        this.prisma.chargeBatch.count({ where: { buildingId } }),
-      ]);
+    const [
+      funds,
+      outstandingItems,
+      positiveAdjustments,
+      collected,
+      refunded,
+      chargeBatchCount,
+      expensed,
+    ] = await Promise.all([
+      this.prisma.fund.findMany({ where: { buildingId } }),
+      this.prisma.chargeItem.findMany({
+        where: { chargeBatch: { buildingId }, status: { not: 'PAID' } },
+        select: { amount: true, paidAmount: true },
+      }),
+      this.prisma.adjustment.aggregate({
+        where: { buildingId, amount: { gt: 0 } },
+        _sum: { amount: true },
+      }),
+      this.prisma.payment.aggregate({
+        where: { buildingId, status: 'APPROVED' },
+        _sum: { amount: true },
+      }),
+      // A payment's `amount` field only ever reflects the ORIGINAL amount
+      // (never edited — 08.06 Rule 015), so an APPROVED-and-partially-
+      // refunded payment (status stays APPROVED — see `createRefund`'s own
+      // comment) still counts its full original amount above; subtracting
+      // ITS refund here is what makes `totalCollected` net-accurate. A
+      // FULLY-refunded payment's status is REFUNDED, not APPROVED, so it's
+      // already excluded by the aggregate above — filtering this second
+      // aggregate to `payment.status: 'APPROVED'` too avoids subtracting
+      // that refund a second time (which would double-count it).
+      this.prisma.refund.aggregate({
+        where: { buildingId, payment: { status: 'APPROVED' } },
+        _sum: { amount: true },
+      }),
+      this.prisma.chargeBatch.count({ where: { buildingId } }),
+      // FIN-EXP-02 — only POSTED Expenses count; a VOIDED one's cash
+      // effect was already reversed by its own counter LedgerEntry, so
+      // including it here would double-subtract.
+      this.prisma.expense.aggregate({
+        where: { buildingId, status: 'POSTED' },
+        _sum: { amount: true },
+      }),
+    ]);
 
     const chargeItemOutstanding = outstandingItems.reduce(
       (sum, i) => sum + (i.amount - i.paidAmount),
@@ -1274,6 +1496,7 @@ export class FinanceRepository {
       funds,
       totalOutstanding,
       totalCollected: (collected._sum.amount ?? 0) - (refunded._sum.amount ?? 0),
+      totalExpenses: expensed._sum.amount ?? 0,
       chargeBatchCount,
     };
   }

@@ -5,9 +5,11 @@ import { BuildingRepository } from '../../building/infrastructure/repositories/b
 import { ChargePolicy } from '../domain/policies/charge.policy';
 import { PaymentPolicy } from '../domain/policies/payment.policy';
 import { FundPolicy } from '../domain/policies/fund.policy';
+import { ExpensePolicy } from '../domain/policies/expense.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import {
   BusinessRuleViolationError,
+  ConflictError,
   DuplicateError,
   NotFoundAppError,
 } from '../../../common/errors/app-error';
@@ -86,6 +88,11 @@ describe('FinanceService', () => {
       listLedger: jest.fn(),
       getCollectionRate: jest.fn(),
       getPaymentRegistrationRate: jest.fn(),
+      createExpense: jest.fn(),
+      findExpenseById: jest.fn(),
+      findExpenseByIdempotencyKey: jest.fn(),
+      voidExpense: jest.fn(),
+      listExpenses: jest.fn(),
     };
     buildings = {
       findById: jest.fn().mockResolvedValue({ id: 'b1' }),
@@ -103,6 +110,7 @@ describe('FinanceService', () => {
       new ChargePolicy(),
       new PaymentPolicy(),
       new FundPolicy(),
+      new ExpensePolicy(),
       audit as unknown as AuditService,
       events as unknown as EventEmitter2,
     );
@@ -1146,6 +1154,214 @@ describe('FinanceService', () => {
       expect(result.items).toHaveLength(1);
       expect(result.items[0].lateFee).toBeNull();
       expect(result.meta.total).toBe(57);
+    });
+  });
+
+  describe('createExpense — Fund resolution, sufficiency, and idempotency (FIN-EXP-02)', () => {
+    const dto = {
+      title: 'Elevator repair',
+      category: 'MAINTENANCE' as const,
+      amount: 200_000,
+    };
+
+    it('resolves an explicit dto.fundId, asserts sufficiency against its balance, and delegates to the repository', async () => {
+      finance.findFundById.mockResolvedValue({ ...ACTIVE_FUND, balance: 1_000_000 });
+      finance.createExpense.mockResolvedValue({ id: 'exp-1', ...dto, status: 'POSTED' });
+
+      const result = await service.createExpense(
+        'b1',
+        { ...dto, fundId: 'fund-1' },
+        'actor-1',
+        'req-1',
+      );
+
+      expect(finance.findFundById).toHaveBeenCalledWith('fund-1');
+      expect(finance.createExpense).toHaveBeenCalledWith(
+        expect.objectContaining({ buildingId: 'b1', fundId: 'fund-1', amount: 200_000 }),
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'ExpenseCreated', entityType: 'Expense' }),
+      );
+      expect(events.emit).toHaveBeenCalledWith('ExpenseCreated', expect.anything());
+      expect(result).toEqual({ id: 'exp-1', ...dto, status: 'POSTED' });
+    });
+
+    it('falls back to getOrCreateDefaultFund when dto.fundId is omitted', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue({ ...DEFAULT_FUND, balance: 1_000_000 });
+      finance.createExpense.mockResolvedValue({ id: 'exp-2' });
+
+      await service.createExpense('b1', dto, 'actor-1', 'req-1');
+
+      expect(finance.getOrCreateDefaultFund).toHaveBeenCalledWith('b1');
+      expect(finance.createExpense).toHaveBeenCalledWith(
+        expect.objectContaining({ fundId: 'fund-default' }),
+      );
+    });
+
+    it('rejects on an inactive fund via FundPolicy.assertActive, never calling the repository', async () => {
+      finance.findFundById.mockResolvedValue({ ...INACTIVE_FUND, balance: 1_000_000 });
+
+      await expect(
+        service.createExpense('b1', { ...dto, fundId: 'fund-2' }, 'actor-1', 'req-1'),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+      expect(finance.createExpense).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-positive amount via ExpensePolicy.assertValidAmount before resolving any fund', async () => {
+      await expect(
+        service.createExpense('b1', { ...dto, amount: 0 }, 'actor-1', 'req-1'),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+      expect(finance.findFundById).not.toHaveBeenCalled();
+      expect(finance.createExpense).not.toHaveBeenCalled();
+    });
+
+    it('rejects an amount exceeding the fund balance via ExpensePolicy.assertSufficientFundBalance, never calling the repository', async () => {
+      finance.findFundById.mockResolvedValue({ ...ACTIVE_FUND, balance: 100 });
+
+      await expect(
+        service.createExpense('b1', { ...dto, fundId: 'fund-1', amount: 200 }, 'actor-1', 'req-1'),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+      expect(finance.createExpense).not.toHaveBeenCalled();
+    });
+
+    it('on a concurrent P2002 idempotencyKey race, returns the original Expense instead of raising', async () => {
+      finance.findFundById.mockResolvedValue({ ...ACTIVE_FUND, balance: 1_000_000 });
+      const { Prisma } = jest.requireActual('@prisma/client');
+      const raceError = Object.create(Prisma.PrismaClientKnownRequestError.prototype);
+      raceError.code = 'P2002';
+      finance.createExpense.mockRejectedValue(raceError);
+      finance.findExpenseByIdempotencyKey.mockResolvedValue({ id: 'exp-original' });
+
+      const result = await service.createExpense(
+        'b1',
+        { ...dto, fundId: 'fund-1', idempotencyKey: 'key-1' },
+        'actor-1',
+        'req-1',
+      );
+
+      expect(finance.findExpenseByIdempotencyKey).toHaveBeenCalledWith('key-1');
+      expect(result).toEqual({ id: 'exp-original' });
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(events.emit).not.toHaveBeenCalled();
+    });
+
+    it('re-throws a P2002 error when no idempotencyKey was supplied (a real, unexpected constraint violation)', async () => {
+      finance.findFundById.mockResolvedValue({ ...ACTIVE_FUND, balance: 1_000_000 });
+      const { Prisma } = jest.requireActual('@prisma/client');
+      const raceError = Object.create(Prisma.PrismaClientKnownRequestError.prototype);
+      raceError.code = 'P2002';
+      finance.createExpense.mockRejectedValue(raceError);
+
+      await expect(
+        service.createExpense('b1', { ...dto, fundId: 'fund-1' }, 'actor-1', 'req-1'),
+      ).rejects.toBe(raceError);
+      expect(finance.findExpenseByIdempotencyKey).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('voidExpense — 404 scoping, VOIDED pre-check, and CAS-conflict propagation (FIN-EXP-02)', () => {
+    it('404s when the expense does not belong to the given building', async () => {
+      finance.findExpenseById.mockResolvedValue({ id: 'exp-1', buildingId: 'other-building' });
+
+      await expect(
+        service.voidExpense('b1', 'exp-1', { voidReason: 'oops' }, 'actor-1', 'req-1'),
+      ).rejects.toBeInstanceOf(NotFoundAppError);
+      expect(finance.voidExpense).not.toHaveBeenCalled();
+    });
+
+    it('rejects an already-VOIDED expense via ExpensePolicy.assertVoidable, never calling the repository', async () => {
+      finance.findExpenseById.mockResolvedValue({
+        id: 'exp-1',
+        buildingId: 'b1',
+        status: 'VOIDED',
+      });
+
+      await expect(
+        service.voidExpense('b1', 'exp-1', { voidReason: 'oops' }, 'actor-1', 'req-1'),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+      expect(finance.voidExpense).not.toHaveBeenCalled();
+    });
+
+    it('voids a POSTED expense, records audit, and emits ExpenseVoidedEvent', async () => {
+      finance.findExpenseById.mockResolvedValue({
+        id: 'exp-1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: 200_000,
+        status: 'POSTED',
+      });
+      finance.voidExpense.mockResolvedValue({ id: 'exp-1', status: 'VOIDED' });
+
+      const result = await service.voidExpense(
+        'b1',
+        'exp-1',
+        { voidReason: 'entered wrong amount' },
+        'actor-1',
+        'req-1',
+      );
+
+      expect(finance.voidExpense).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expenseId: 'exp-1',
+          fundId: 'fund-1',
+          amount: 200_000,
+          voidReason: 'entered wrong amount',
+        }),
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'ExpenseVoided', entityType: 'Expense' }),
+      );
+      expect(events.emit).toHaveBeenCalledWith('ExpenseVoided', expect.anything());
+      expect(result).toEqual({ id: 'exp-1', status: 'VOIDED' });
+    });
+
+    it('propagates a ConflictError from a lost double-void race without swallowing it', async () => {
+      finance.findExpenseById.mockResolvedValue({
+        id: 'exp-1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: 200_000,
+        status: 'POSTED',
+      });
+      finance.voidExpense.mockRejectedValue(new ConflictError('This expense is no longer POSTED.'));
+
+      await expect(
+        service.voidExpense('b1', 'exp-1', { voidReason: 'dup' }, 'actor-1', 'req-1'),
+      ).rejects.toBeInstanceOf(ConflictError);
+    });
+  });
+
+  describe('listExpenses / getExpense (FIN-EXP-02)', () => {
+    it('passes filters through to the repository and returns paginated meta', async () => {
+      finance.listExpenses.mockResolvedValue({ items: [{ id: 'exp-1' }], total: 1 });
+
+      const result = await service.listExpenses(
+        'b1',
+        { page: 1, limit: 20 },
+        { category: 'UTILITIES' as const },
+      );
+
+      expect(finance.listExpenses).toHaveBeenCalledWith(
+        'b1',
+        { skip: 0, take: 20 },
+        { category: 'UTILITIES' },
+      );
+      expect(result.items).toEqual([{ id: 'exp-1' }]);
+      expect(result.meta.total).toBe(1);
+    });
+
+    it('404s when the expense does not belong to the given building', async () => {
+      finance.findExpenseById.mockResolvedValue({ id: 'exp-1', buildingId: 'other-building' });
+
+      await expect(service.getExpense('b1', 'exp-1')).rejects.toBeInstanceOf(NotFoundAppError);
+    });
+
+    it('returns the expense when it belongs to the given building', async () => {
+      finance.findExpenseById.mockResolvedValue({ id: 'exp-1', buildingId: 'b1' });
+
+      const result = await service.getExpense('b1', 'exp-1');
+
+      expect(result).toEqual({ id: 'exp-1', buildingId: 'b1' });
     });
   });
 });

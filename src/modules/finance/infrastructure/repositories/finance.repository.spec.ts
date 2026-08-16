@@ -1,6 +1,6 @@
 import { FinanceRepository } from './finance.repository';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
-import { BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import { BusinessRuleViolationError, ConflictError } from '../../../../common/errors/app-error';
 
 /**
  * Finance Hardening Pass (post-audit) — `FinanceRepository` unit tests.
@@ -25,13 +25,41 @@ describe('FinanceRepository', () => {
   let prisma: {
     $transaction: jest.Mock;
     $executeRaw: jest.Mock;
-    fund: { findUnique: jest.Mock; update: jest.Mock };
+    fund: {
+      findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+      findMany: jest.Mock;
+      update: jest.Mock;
+    };
     chargeItem: { findMany: jest.Mock; findUnique: jest.Mock; update: jest.Mock };
-    adjustment: { findMany: jest.Mock; findUnique: jest.Mock; update: jest.Mock; create: jest.Mock };
+    adjustment: {
+      findMany: jest.Mock;
+      findUnique: jest.Mock;
+      update: jest.Mock;
+      create: jest.Mock;
+      aggregate: jest.Mock;
+    };
     creditBalance: { findUnique: jest.Mock; update: jest.Mock; upsert: jest.Mock };
     paymentAllocation: { create: jest.Mock; findMany: jest.Mock };
-    payment: { create: jest.Mock; update: jest.Mock; findMany: jest.Mock; count: jest.Mock };
+    payment: {
+      create: jest.Mock;
+      update: jest.Mock;
+      findMany: jest.Mock;
+      count: jest.Mock;
+      aggregate: jest.Mock;
+    };
+    refund: { aggregate: jest.Mock };
+    chargeBatch: { count: jest.Mock };
     ledgerEntry: { create: jest.Mock };
+    expense: {
+      create: jest.Mock;
+      findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+      updateMany: jest.Mock;
+      findMany: jest.Mock;
+      count: jest.Mock;
+      aggregate: jest.Mock;
+    };
   };
   let repo: FinanceRepository;
 
@@ -42,13 +70,19 @@ describe('FinanceRepository', () => {
       // `tx.$executeRaw\`...\`` (tagged template form, not a function call
       // with a query object), so this must accept that call shape.
       $executeRaw: jest.fn().mockResolvedValue(undefined),
-      fund: { findUnique: jest.fn(), update: jest.fn() },
+      fund: {
+        findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
+        findMany: jest.fn(),
+        update: jest.fn(),
+      },
       chargeItem: { findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
       adjustment: {
         findMany: jest.fn(),
         findUnique: jest.fn(),
         update: jest.fn(),
         create: jest.fn(),
+        aggregate: jest.fn(),
       },
       creditBalance: { findUnique: jest.fn(), update: jest.fn(), upsert: jest.fn() },
       paymentAllocation: { create: jest.fn(), findMany: jest.fn() },
@@ -57,8 +91,20 @@ describe('FinanceRepository', () => {
         update: jest.fn(),
         findMany: jest.fn().mockResolvedValue([]),
         count: jest.fn(),
+        aggregate: jest.fn(),
       },
+      refund: { aggregate: jest.fn() },
+      chargeBatch: { count: jest.fn() },
       ledgerEntry: { create: jest.fn() },
+      expense: {
+        create: jest.fn(),
+        findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
+        updateMany: jest.fn(),
+        findMany: jest.fn(),
+        count: jest.fn(),
+        aggregate: jest.fn(),
+      },
     };
     repo = new FinanceRepository(prisma as unknown as PrismaService);
   });
@@ -857,6 +903,230 @@ describe('FinanceRepository', () => {
       expect(prisma.payment.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ orderBy: { createdAt: 'desc' }, skip: 40, take: 20 }),
       );
+    });
+  });
+
+  describe('createExpense — Fund-sufficiency + Ledger/Fund-balance effect (FIN-EXP-02)', () => {
+    it('creates the Expense, writes a DEBIT EXPENSE LedgerEntry, and decrements Fund.balance, all inside one transaction', async () => {
+      prisma.fund.findUniqueOrThrow.mockResolvedValue({ id: 'fund-1', balance: 1_000_000 });
+      prisma.expense.create.mockResolvedValue({ id: 'exp-1', amount: 200_000, status: 'POSTED' });
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      const result = await repo.createExpense({
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        title: 'Elevator repair',
+        category: 'MAINTENANCE',
+        amount: 200_000,
+        occurredAt: new Date('2026-08-01'),
+        createdById: 'actor-1',
+      });
+
+      expect(prisma.expense.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          title: 'Elevator repair',
+          category: 'MAINTENANCE',
+          amount: 200_000,
+          createdById: 'actor-1',
+        }),
+      });
+      expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          entryType: 'EXPENSE',
+          direction: 'DEBIT',
+          amount: 200_000,
+          referenceType: 'Expense',
+          referenceId: 'exp-1',
+        }),
+      });
+      expect(prisma.fund.update).toHaveBeenCalledWith({
+        where: { id: 'fund-1' },
+        data: { balance: { decrement: 200_000 } },
+      });
+      expect(result).toEqual({ id: 'exp-1', amount: 200_000, status: 'POSTED' });
+    });
+
+    it('rejects when the amount exceeds the fund balance read fresh inside the transaction, writing nothing', async () => {
+      prisma.fund.findUniqueOrThrow.mockResolvedValue({ id: 'fund-1', balance: 100 });
+
+      await expect(
+        repo.createExpense({
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          title: 'Too expensive',
+          category: 'OTHER',
+          amount: 200,
+          occurredAt: new Date(),
+          createdById: 'actor-1',
+        }),
+      ).rejects.toThrow(BusinessRuleViolationError);
+
+      expect(prisma.expense.create).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+      expect(prisma.fund.update).not.toHaveBeenCalled();
+    });
+
+    it('allows an amount exactly equal to the fund balance (boundary)', async () => {
+      prisma.fund.findUniqueOrThrow.mockResolvedValue({ id: 'fund-1', balance: 500 });
+      prisma.expense.create.mockResolvedValue({ id: 'exp-2', amount: 500, status: 'POSTED' });
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await expect(
+        repo.createExpense({
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          title: 'Exact balance',
+          category: 'OTHER',
+          amount: 500,
+          occurredAt: new Date(),
+          createdById: 'actor-1',
+        }),
+      ).resolves.toEqual(expect.objectContaining({ id: 'exp-2' }));
+    });
+  });
+
+  describe('voidExpense — concurrency-safe CAS against a double void (FIN-EXP-02)', () => {
+    it('voids a POSTED expense, writes a CREDIT counter-entry, and increments Fund.balance back', async () => {
+      prisma.expense.updateMany.mockResolvedValue({ count: 1 });
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+      prisma.expense.findUniqueOrThrow.mockResolvedValue({ id: 'exp-1', status: 'VOIDED' });
+
+      const result = await repo.voidExpense({
+        expenseId: 'exp-1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: 200_000,
+        voidReason: 'entered wrong amount',
+        actorId: 'actor-1',
+      });
+
+      expect(prisma.expense.updateMany).toHaveBeenCalledWith({
+        where: { id: 'exp-1', status: 'POSTED' },
+        data: expect.objectContaining({
+          status: 'VOIDED',
+          voidedById: 'actor-1',
+          voidReason: 'entered wrong amount',
+        }),
+      });
+      expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          entryType: 'EXPENSE',
+          direction: 'CREDIT',
+          amount: 200_000,
+          referenceType: 'Expense',
+          referenceId: 'exp-1',
+        }),
+      });
+      expect(prisma.fund.update).toHaveBeenCalledWith({
+        where: { id: 'fund-1' },
+        data: { balance: { increment: 200_000 } },
+      });
+      expect(result).toEqual({ id: 'exp-1', status: 'VOIDED' });
+    });
+
+    it('throws ConflictError and writes nothing when the CAS updateMany claims zero rows (already voided / lost the race)', async () => {
+      prisma.expense.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        repo.voidExpense({
+          expenseId: 'exp-1',
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          amount: 200_000,
+          voidReason: 'dup',
+          actorId: 'actor-1',
+        }),
+      ).rejects.toThrow(ConflictError);
+
+      expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+      expect(prisma.fund.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listExpenses — default excludes VOIDED, filters compose (FIN-EXP-02)', () => {
+    it('defaults to status POSTED when no status filter is given', async () => {
+      prisma.expense.findMany.mockResolvedValue([]);
+      prisma.expense.count.mockResolvedValue(0);
+
+      await repo.listExpenses('b1', { skip: 0, take: 20 });
+
+      expect(prisma.expense.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { buildingId: 'b1', status: 'POSTED' } }),
+      );
+    });
+
+    it('honors an explicit status filter (e.g. VOIDED) instead of the default', async () => {
+      prisma.expense.findMany.mockResolvedValue([]);
+      prisma.expense.count.mockResolvedValue(0);
+
+      await repo.listExpenses('b1', { skip: 0, take: 20 }, { status: 'VOIDED' });
+
+      expect(prisma.expense.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { buildingId: 'b1', status: 'VOIDED' } }),
+      );
+    });
+
+    it('composes fundId/category/date-range filters alongside the default status', async () => {
+      prisma.expense.findMany.mockResolvedValue([]);
+      prisma.expense.count.mockResolvedValue(0);
+
+      const fromDate = new Date('2026-01-01');
+      const toDate = new Date('2026-02-01');
+      await repo.listExpenses(
+        'b1',
+        { skip: 0, take: 20 },
+        { fundId: 'fund-1', category: 'UTILITIES', fromDate, toDate },
+      );
+
+      expect(prisma.expense.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            buildingId: 'b1',
+            fundId: 'fund-1',
+            category: 'UTILITIES',
+            status: 'POSTED',
+            occurredAt: { gte: fromDate, lte: toDate },
+          },
+        }),
+      );
+    });
+
+    it('orders by occurredAt desc and honors skip/take', async () => {
+      prisma.expense.findMany.mockResolvedValue([]);
+      prisma.expense.count.mockResolvedValue(0);
+
+      await repo.listExpenses('b1', { skip: 40, take: 20 });
+
+      expect(prisma.expense.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { occurredAt: 'desc' }, skip: 40, take: 20 }),
+      );
+    });
+  });
+
+  describe('getFinancialSummary — totalExpenses (FIN-EXP-02)', () => {
+    it('includes totalExpenses, summing only POSTED expenses', async () => {
+      prisma.fund.findMany.mockResolvedValue([]);
+      prisma.chargeItem.findMany.mockResolvedValue([]);
+      prisma.adjustment.aggregate.mockResolvedValue({ _sum: { amount: 0 } });
+      prisma.payment.aggregate.mockResolvedValue({ _sum: { amount: 0 } });
+      prisma.refund.aggregate.mockResolvedValue({ _sum: { amount: 0 } });
+      prisma.chargeBatch.count.mockResolvedValue(0);
+      prisma.expense.aggregate.mockResolvedValue({ _sum: { amount: 350_000 } });
+
+      const summary = await repo.getFinancialSummary('b1');
+
+      expect(prisma.expense.aggregate).toHaveBeenCalledWith({
+        where: { buildingId: 'b1', status: 'POSTED' },
+        _sum: { amount: true },
+      });
+      expect(summary.totalExpenses).toBe(350_000);
     });
   });
 });

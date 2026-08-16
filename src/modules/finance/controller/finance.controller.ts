@@ -10,6 +10,8 @@ import { CreateAdjustmentDto } from '../application/dto/create-adjustment.dto';
 import { CorrectOpeningBalanceDto } from '../application/dto/correct-opening-balance.dto';
 import { ReversePaymentDto } from '../application/dto/reverse-payment.dto';
 import { RefundPaymentDto } from '../application/dto/refund-payment.dto';
+import { CreateExpenseDto } from '../application/dto/create-expense.dto';
+import { VoidExpenseDto } from '../application/dto/void-expense.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
@@ -19,11 +21,15 @@ import { RequestId } from '../../../common/decorators/request-id.decorator';
 import { withEnvelope } from '../../../common/interceptors/response.interceptor';
 import { parsePagination } from '../../../common/pagination/pagination.util';
 import { ValidationError } from '../../../common/errors/app-error';
-import { PaymentStatus } from '@prisma/client';
+import { PaymentStatus, ExpenseCategory, ExpenseStatus } from '@prisma/client';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
 
 /** Backend ↔ Mobile Contract Alignment — every legal `Payment.status` value, for validating the optional `?status=` filter on `GET :id/payments` below. */
 const VALID_PAYMENT_STATUSES: string[] = Object.values(PaymentStatus);
+
+/** FIN-EXP-02 — every legal `Expense.category`/`.status` value, for validating the optional `?category=`/`?status=` filters on `GET :id/expenses` below (same defensive pattern as `VALID_PAYMENT_STATUSES` above). */
+const VALID_EXPENSE_CATEGORIES: string[] = Object.values(ExpenseCategory);
+const VALID_EXPENSE_STATUSES: string[] = Object.values(ExpenseStatus);
 
 /**
  * Finance MVP (12_Finance_Architecture > ADR — Finance MVP; reconciled from
@@ -434,6 +440,75 @@ export class FinanceController {
       parsePagination(page, limit),
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
+  }
+
+  // --- Expenses / Disbursements (FIN-EXP-01/FIN-EXP-02 -- see 21_ADRs > ADR-126) ---
+  // Money the building SPENT -- distinct from Charge (money units owe) and
+  // Payment (money received). Same write/read role split as Adjustment
+  // create and Payment reverse/refund: MANAGER and ACCOUNTANT write,
+  // any current member reads.
+
+  @Post(':id/expenses')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
+  createExpense(
+    @Param('id') id: string,
+    @Body() dto: CreateExpenseDto,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.finance.createExpense(id, dto, user.sub, requestId);
+  }
+
+  @Get(':id/expenses')
+  @UseGuards(MembershipGuard)
+  async listExpenses(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('fundId') fundId?: string,
+    @Query('category') category?: string,
+    @Query('status') status?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+  ) {
+    if (category !== undefined && !VALID_EXPENSE_CATEGORIES.includes(category)) {
+      throw new ValidationError(
+        `Invalid category filter. Valid values: ${VALID_EXPENSE_CATEGORIES.join(', ')}`,
+      );
+    }
+    if (status !== undefined && !VALID_EXPENSE_STATUSES.includes(status)) {
+      throw new ValidationError(
+        `Invalid status filter. Valid values: ${VALID_EXPENSE_STATUSES.join(', ')}`,
+      );
+    }
+    const { items, meta } = await this.finance.listExpenses(id, parsePagination(page, limit), {
+      fundId,
+      category: category as ExpenseCategory | undefined,
+      status: status as ExpenseStatus | undefined,
+      fromDate: fromDate ? new Date(fromDate) : undefined,
+      toDate: toDate ? new Date(toDate) : undefined,
+    });
+    return withEnvelope(items, { metadata: { pagination: meta } });
+  }
+
+  @Get(':id/expenses/:expenseId')
+  @UseGuards(MembershipGuard)
+  getExpense(@Param('id') id: string, @Param('expenseId') expenseId: string) {
+    return this.finance.getExpense(id, expenseId);
+  }
+
+  @Post(':id/expenses/:expenseId/void')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
+  voidExpense(
+    @Param('id') id: string,
+    @Param('expenseId') expenseId: string,
+    @Body() dto: VoidExpenseDto,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.finance.voidExpense(id, expenseId, dto, user.sub, requestId);
   }
 
   // --- Reporting -----------------------------------------------------------------
