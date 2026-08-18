@@ -24,6 +24,11 @@ import { UnitCreatedEvent } from '../events/unit-created.event';
 import { ManagerChangedEvent } from '../events/manager-changed.event';
 import { OwnershipTransferInitiatedEvent } from '../events/ownership-transferred.event';
 import { TenancyCreatedEvent, TenancyEndedEvent } from '../events/tenancy.events';
+import {
+  buildPaginationMeta,
+  type PaginationParams,
+  toSkipTake,
+} from '../../../common/pagination/pagination.util';
 
 @Injectable()
 export class BuildingService {
@@ -248,6 +253,19 @@ export class BuildingService {
       this.buildings.getRoles(personId, buildingId),
     ]);
     return this.shapeUnitsForCaller(units, buildingId, personId, roles);
+  }
+
+  async listUnitMetadataPage(
+    buildingId: string,
+    personId: string,
+    pagination: PaginationParams,
+  ) {
+    const [{ items, total }, roles] = await Promise.all([
+      this.buildings.listUnitMetadataPage(buildingId, toSkipTake(pagination)),
+      this.buildings.getRoles(personId, buildingId),
+    ]);
+    const shaped = await this.shapeUnitsForCaller(items, buildingId, personId, roles);
+    return { items: shaped, meta: buildPaginationMeta(pagination, total) };
   }
 
   private async getOwnUnit(buildingId: string, unitId: string) {

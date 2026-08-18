@@ -53,6 +53,20 @@ export class BuildingRepository {
     return this.prisma.unit.findMany({ where: { buildingId }, orderBy: { unitNumber: 'asc' } });
   }
 
+  async listUnitMetadataPage(buildingId: string, pagination: { skip: number; take: number }) {
+    const where = { buildingId };
+    const [items, total] = await Promise.all([
+      this.prisma.unit.findMany({
+        where,
+        orderBy: [{ unitNumber: 'asc' }, { id: 'asc' }],
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.unit.count({ where }),
+    ]);
+    return { items, total };
+  }
+
   findUnitById(unitId: string) {
     return this.prisma.unit.findUnique({ where: { id: unitId } });
   }

@@ -23,6 +23,8 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
+import { parsePagination } from '../../../common/pagination/pagination.util';
+import { withEnvelope } from '../../../common/interceptors/response.interceptor';
 
 @ApiTags('building')
 @ApiBearerAuth()
@@ -79,6 +81,22 @@ export class BuildingController {
   @UseGuards(MembershipGuard)
   listUnits(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
     return this.buildings.listUnits(id, user.sub);
+  }
+
+  @Get(':id/unit-metadata')
+  @UseGuards(MembershipGuard)
+  async listUnitMetadata(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.buildings.listUnitMetadataPage(
+      id,
+      user.sub,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
   // Building Setup Refinement Phase 3 (Owner Self-Claim) — this route uses
