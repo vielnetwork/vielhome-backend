@@ -905,6 +905,15 @@ export class FinanceService {
     };
   }
 
+  async listUnitDebtSummaries(buildingId: string, pagination: PaginationParams) {
+    await this.getBuilding(buildingId);
+    const { items, total } = await this.finance.listUnitDebtSummaries(
+      buildingId,
+      toSkipTake(pagination),
+    );
+    return { items, meta: buildPaginationMeta(pagination, total) };
+  }
+
   // --- Payments ----------------------------------------------------------------
 
   /**

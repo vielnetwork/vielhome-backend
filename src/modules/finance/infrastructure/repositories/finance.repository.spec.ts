@@ -25,6 +25,7 @@ describe('FinanceRepository', () => {
   let prisma: {
     $transaction: jest.Mock;
     $executeRaw: jest.Mock;
+    unit: { findMany: jest.Mock; count: jest.Mock };
     fund: {
       findUnique: jest.Mock;
       findUniqueOrThrow: jest.Mock;
@@ -39,7 +40,12 @@ describe('FinanceRepository', () => {
       create: jest.Mock;
       aggregate: jest.Mock;
     };
-    creditBalance: { findUnique: jest.Mock; update: jest.Mock; upsert: jest.Mock };
+    creditBalance: {
+      findUnique: jest.Mock;
+      findMany: jest.Mock;
+      update: jest.Mock;
+      upsert: jest.Mock;
+    };
     paymentAllocation: { create: jest.Mock; findMany: jest.Mock };
     payment: {
       create: jest.Mock;
@@ -70,6 +76,7 @@ describe('FinanceRepository', () => {
       // `tx.$executeRaw\`...\`` (tagged template form, not a function call
       // with a query object), so this must accept that call shape.
       $executeRaw: jest.fn().mockResolvedValue(undefined),
+      unit: { findMany: jest.fn(), count: jest.fn() },
       fund: {
         findUnique: jest.fn(),
         findUniqueOrThrow: jest.fn(),
@@ -84,7 +91,12 @@ describe('FinanceRepository', () => {
         create: jest.fn(),
         aggregate: jest.fn(),
       },
-      creditBalance: { findUnique: jest.fn(), update: jest.fn(), upsert: jest.fn() },
+      creditBalance: {
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        update: jest.fn(),
+        upsert: jest.fn(),
+      },
       paymentAllocation: { create: jest.fn(), findMany: jest.fn() },
       payment: {
         create: jest.fn(),
@@ -629,6 +641,78 @@ describe('FinanceRepository', () => {
       expect(debt.totalDebt).toBe(0);
       expect(debt.creditBalance).toBe(50_000);
       expect(debt.remainingPayable).toBe(0);
+    });
+  });
+
+  describe('listUnitDebtSummaries — bounded set-based parity', () => {
+    it('matches the single-unit snapshot for the same finance state', async () => {
+      const chargeItems = [{ unitId: 'u1', amount: 1000, paidAmount: 200 }];
+      const adjustments = [{ unitId: 'u1', amount: 100, paidAmount: 0 }];
+      const pendingPayments = [{ unitId: 'u1', amount: 250 }];
+      prisma.chargeItem.findMany.mockResolvedValue(chargeItems);
+      prisma.adjustment.findMany.mockResolvedValue(adjustments);
+      prisma.creditBalance.findUnique.mockResolvedValue({ balance: 50 });
+      prisma.creditBalance.findMany.mockResolvedValue([
+        { unitId: 'u1', balance: 50 },
+      ]);
+      prisma.payment.findMany.mockResolvedValue(pendingPayments);
+      prisma.unit.findMany.mockResolvedValue([{ id: 'u1' }]);
+      prisma.unit.count.mockResolvedValue(1);
+
+      const single = await repo.getUnitDebt('u1');
+      const bulk = await repo.listUnitDebtSummaries('b1', {
+        skip: 0,
+        take: 20,
+      });
+
+      expect(bulk.items[0]).toEqual({
+        unitId: 'u1',
+        remainingPayable: single.remainingPayable,
+      });
+    });
+
+    it('preserves snapshot semantics for multiple units with fixed query count', async () => {
+      prisma.unit.findMany.mockResolvedValue([{ id: 'u1' }, { id: 'u2' }, { id: 'u3' }]);
+      prisma.unit.count.mockResolvedValue(3);
+      prisma.chargeItem.findMany.mockResolvedValue([
+        { unitId: 'u1', amount: 1000, paidAmount: 200 },
+        { unitId: 'u2', amount: 500, paidAmount: 500 },
+      ]);
+      prisma.adjustment.findMany.mockResolvedValue([
+        { unitId: 'u1', amount: 100, paidAmount: 0 },
+        { unitId: 'u2', amount: 300, paidAmount: 50 },
+      ]);
+      prisma.creditBalance.findMany.mockResolvedValue([
+        { unitId: 'u1', balance: 50 },
+        { unitId: 'u2', balance: 1000 },
+      ]);
+      prisma.payment.findMany.mockResolvedValue([{ unitId: 'u1', amount: 250 }]);
+
+      await expect(repo.listUnitDebtSummaries('b1', { skip: 0, take: 20 })).resolves.toEqual({
+        items: [
+          { unitId: 'u1', remainingPayable: 600 },
+          { unitId: 'u2', remainingPayable: 0 },
+          { unitId: 'u3', remainingPayable: 0 },
+        ],
+        total: 3,
+      });
+      expect(prisma.chargeItem.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.adjustment.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.creditBalance.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.payment.findMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not issue debt queries for an empty page', async () => {
+      prisma.unit.findMany.mockResolvedValue([]);
+      prisma.unit.count.mockResolvedValue(0);
+      await expect(repo.listUnitDebtSummaries('b1', { skip: 0, take: 20 })).resolves.toEqual({
+        items: [],
+        total: 0,
+      });
+      expect(prisma.chargeItem.findMany).not.toHaveBeenCalled();
+      expect(prisma.adjustment.findMany).not.toHaveBeenCalled();
+      expect(prisma.creditBalance.findMany).not.toHaveBeenCalled();
+      expect(prisma.payment.findMany).not.toHaveBeenCalled();
     });
   });
 

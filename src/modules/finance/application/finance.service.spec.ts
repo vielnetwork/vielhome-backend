@@ -71,6 +71,7 @@ describe('FinanceService', () => {
       createAdjustment: jest.fn(),
       listAdjustmentsByUnit: jest.fn(),
       getUnitDebt: jest.fn(),
+      listUnitDebtSummaries: jest.fn(),
       getUnitOpeningBalanceCorrectionTotal: jest.fn(),
       applyOpeningBalanceCorrection: jest.fn(),
       createPayment: jest.fn(),
@@ -1080,6 +1081,26 @@ describe('FinanceService', () => {
   });
 
   describe('pagination pass-through (Finance Hardening Pass)', () => {
+    it('paginates unit debt summaries without changing values', async () => {
+      buildings.findById.mockResolvedValue({ id: 'b1' });
+      finance.listUnitDebtSummaries.mockResolvedValue({
+        items: [{ unitId: 'u1', remainingPayable: 25_003_000 }],
+        total: 101,
+      });
+      const result = await service.listUnitDebtSummaries('b1', {
+        page: 2,
+        limit: 100,
+      });
+      expect(finance.listUnitDebtSummaries).toHaveBeenCalledWith('b1', {
+        skip: 100,
+        take: 100,
+      });
+      expect(result.meta).toEqual({ page: 2, limit: 100, total: 101, totalPages: 2 });
+      expect(result.items).toEqual([
+        { unitId: 'u1', remainingPayable: 25_003_000 },
+      ]);
+    });
+
     it('listFunds converts page/limit into skip/take and returns { items, meta } built from the repository total', async () => {
       finance.listFunds.mockResolvedValue({ items: [{ id: 'f1' }, { id: 'f2' }], total: 45 });
 

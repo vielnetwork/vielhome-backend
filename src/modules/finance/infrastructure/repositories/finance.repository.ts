@@ -60,6 +60,31 @@ function computeItemStatus(paidAmount: number, amount: number): ChargeItemStatus
   return 'PARTIALLY_PAID';
 }
 
+type DebtRow = { amount: number; paidAmount: number };
+
+function buildDebtSnapshot(
+  outstandingItems: DebtRow[],
+  positiveAdjustments: DebtRow[],
+  creditBalance: number,
+  pendingPayments: { amount: number }[],
+) {
+  const chargeItemDebt = outstandingItems.reduce((sum, i) => sum + (i.amount - i.paidAmount), 0);
+  const adjustmentDebt = positiveAdjustments.reduce(
+    (sum, a) => sum + Math.max(0, a.amount - a.paidAmount),
+    0,
+  );
+  const totalDebt = chargeItemDebt + adjustmentDebt;
+  const pendingPaymentAmount = pendingPayments.reduce((sum, p) => sum + p.amount, 0);
+  return {
+    chargeItemDebt,
+    adjustmentDebt,
+    totalDebt,
+    creditBalance,
+    pendingPaymentAmount,
+    remainingPayable: Math.max(totalDebt - creditBalance - pendingPaymentAmount, 0),
+  };
+}
+
 @Injectable()
 export class FinanceRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -987,6 +1012,65 @@ export class FinanceRepository {
     return this.computeDebtSnapshot(this.prisma, unitId);
   }
 
+  /** Fixed query count per bounded page; never calls the single-unit query loop. */
+  async listUnitDebtSummaries(buildingId: string, pagination: { skip: number; take: number }) {
+    const where = { buildingId };
+    const [units, total] = await Promise.all([
+      this.prisma.unit.findMany({
+        where,
+        select: { id: true },
+        orderBy: [{ unitNumber: 'asc' }, { id: 'asc' }],
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.unit.count({ where }),
+    ]);
+    const unitIds = units.map((unit) => unit.id);
+    if (unitIds.length === 0) return { items: [], total };
+
+    const [chargeItems, adjustments, credits, pendingPayments] = await Promise.all([
+      this.prisma.chargeItem.findMany({
+        where: { unitId: { in: unitIds }, status: { not: 'PAID' } },
+        select: { unitId: true, amount: true, paidAmount: true },
+      }),
+      this.prisma.adjustment.findMany({
+        where: { unitId: { in: unitIds }, amount: { gt: 0 } },
+        select: { unitId: true, amount: true, paidAmount: true },
+      }),
+      this.prisma.creditBalance.findMany({
+        where: { unitId: { in: unitIds } },
+        select: { unitId: true, balance: true },
+      }),
+      this.prisma.payment.findMany({
+        where: { unitId: { in: unitIds }, status: 'PENDING_APPROVAL' },
+        select: { unitId: true, amount: true },
+      }),
+    ]);
+
+    const groupByUnit = <T extends { unitId: string }>(rows: T[]) => {
+      const grouped = new Map<string, T[]>();
+      for (const row of rows) grouped.set(row.unitId, [...(grouped.get(row.unitId) ?? []), row]);
+      return grouped;
+    };
+    const chargesByUnit = groupByUnit(chargeItems);
+    const adjustmentsByUnit = groupByUnit(adjustments);
+    const paymentsByUnit = groupByUnit(pendingPayments);
+    const creditByUnit = new Map(credits.map((credit) => [credit.unitId, credit.balance]));
+
+    return {
+      items: unitIds.map((unitId) => ({
+        unitId,
+        remainingPayable: buildDebtSnapshot(
+          chargesByUnit.get(unitId) ?? [],
+          adjustmentsByUnit.get(unitId) ?? [],
+          creditByUnit.get(unitId) ?? 0,
+          paymentsByUnit.get(unitId) ?? [],
+        ).remainingPayable,
+      })),
+      total,
+    };
+  }
+
   /**
    * Shared by `getUnitDebt` (read, outside any transaction) and
    * `createPayment` (write, computed INSIDE the same transaction that
@@ -1016,24 +1100,12 @@ export class FinanceRepository {
       }),
     ]);
 
-    const chargeItemDebt = outstandingItems.reduce((sum, i) => sum + (i.amount - i.paidAmount), 0);
-    const adjustmentDebt = positiveAdjustments.reduce(
-      (sum, a) => sum + Math.max(0, a.amount - a.paidAmount),
-      0,
+    return buildDebtSnapshot(
+      outstandingItems,
+      positiveAdjustments,
+      credit?.balance ?? 0,
+      pendingPayments,
     );
-    const totalDebt = chargeItemDebt + adjustmentDebt;
-    const creditBalance = credit?.balance ?? 0;
-    const pendingPaymentAmount = pendingPayments.reduce((sum, p) => sum + p.amount, 0);
-    const remainingPayable = Math.max(totalDebt - creditBalance - pendingPaymentAmount, 0);
-
-    return {
-      chargeItemDebt,
-      adjustmentDebt,
-      totalDebt,
-      creditBalance,
-      pendingPaymentAmount,
-      remainingPayable,
-    };
   }
 
   /**

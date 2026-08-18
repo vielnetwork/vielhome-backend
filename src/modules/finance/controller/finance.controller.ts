@@ -60,6 +60,20 @@ const VALID_EXPENSE_STATUSES: string[] = Object.values(ExpenseStatus);
 export class FinanceController {
   constructor(private readonly finance: FinanceService) {}
 
+  @Get(':id/finance/unit-debts')
+  @UseGuards(MembershipGuard)
+  async listUnitDebtSummaries(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.finance.listUnitDebtSummaries(
+      id,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
+  }
+
   // --- Funds -----------------------------------------------------------------
 
   @Post(':id/funds')

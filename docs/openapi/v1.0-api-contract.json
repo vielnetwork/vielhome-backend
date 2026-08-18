@@ -955,6 +955,50 @@
         ]
       }
     },
+    "/api/v1/buildings/{id}/finance/unit-debts": {
+      "get": {
+        "operationId": "FinanceController_listUnitDebtSummaries_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "finance"
+        ]
+      }
+    },
     "/api/v1/buildings/{id}/funds": {
       "post": {
         "operationId": "FinanceController_createFund_v1",
