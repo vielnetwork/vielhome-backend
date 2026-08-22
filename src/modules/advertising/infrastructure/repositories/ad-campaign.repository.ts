@@ -24,7 +24,10 @@ export interface AdminCampaignFilters {
   source?: AdCampaignSource;
   placement?: AdPlacement;
   buildingId?: string;
+  adSlotId?: string;
 }
+
+export type AdCampaignWithSlot = Prisma.AdCampaignGetPayload<{ include: { adSlot: true } }>;
 
 /**
  * Monetization & Advertising — Phase 3/4. Thin Prisma wrapper for
@@ -36,12 +39,23 @@ export interface AdminCampaignFilters {
 export class AdCampaignRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(data: Prisma.AdCampaignCreateInput): Promise<AdCampaign> {
-    return this.prisma.adCampaign.create({ data });
+  create(data: Prisma.AdCampaignCreateInput): Promise<AdCampaignWithSlot> {
+    return this.prisma.adCampaign.create({ data, include: { adSlot: true } });
   }
 
-  findById(id: string): Promise<AdCampaign | null> {
-    return this.prisma.adCampaign.findUnique({ where: { id } });
+  findById(id: string): Promise<AdCampaignWithSlot | null> {
+    return this.prisma.adCampaign.findUnique({ where: { id }, include: { adSlot: true } });
+  }
+
+  listSlots(filters: { page?: string; zone?: string; active?: boolean }) {
+    return this.prisma.adSlot.findMany({
+      where: { page: filters.page, zone: filters.zone, isActive: filters.active },
+      orderBy: [{ page: 'asc' }, { zone: 'asc' }, { position: 'asc' }, { code: 'asc' }],
+    });
+  }
+
+  findSlotById(id: string) {
+    return this.prisma.adSlot.findUnique({ where: { id } });
   }
 
   async listAdmin(filters: AdminCampaignFilters, pagination: PaginationParams) {
@@ -50,6 +64,7 @@ export class AdCampaignRepository {
       source: filters.source,
       placement: filters.placement,
       buildingId: filters.buildingId,
+      adSlotId: filters.adSlotId,
     };
     const { skip, take } = toSkipTake(pagination);
     const [items, total] = await this.prisma.$transaction([
@@ -58,18 +73,37 @@ export class AdCampaignRepository {
         orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
         skip,
         take,
+        include: { adSlot: true },
       }),
       this.prisma.adCampaign.count({ where }),
     ]);
     return { items, meta: buildPaginationMeta(pagination, total) };
   }
 
-  update(id: string, data: Prisma.AdCampaignUpdateInput): Promise<AdCampaign> {
-    return this.prisma.adCampaign.update({ where: { id }, data });
+  update(id: string, data: Prisma.AdCampaignUpdateInput): Promise<AdCampaignWithSlot> {
+    return this.prisma.adCampaign.update({ where: { id }, data, include: { adSlot: true } });
   }
 
-  updateStatus(id: string, status: AdCampaignStatus): Promise<AdCampaign> {
-    return this.prisma.adCampaign.update({ where: { id }, data: { status } });
+  updateStatus(id: string, status: AdCampaignStatus): Promise<AdCampaignWithSlot> {
+    return this.prisma.adCampaign.update({
+      where: { id },
+      data: { status },
+      include: { adSlot: true },
+    });
+  }
+
+  findObviousSlotConflict(campaign: AdCampaign) {
+    return this.prisma.adCampaign.findFirst({
+      where: {
+        id: { not: campaign.id },
+        adSlotId: campaign.adSlotId,
+        buildingId: campaign.buildingId,
+        status: 'ACTIVE',
+        startsAt: { lt: campaign.endsAt },
+        endsAt: { gt: campaign.startsAt },
+      },
+      select: { id: true },
+    });
   }
 
   buildingExists(buildingId: string): Promise<{ id: string } | null> {
@@ -98,10 +132,11 @@ export class AdCampaignRepository {
    * the result). Ordered `priority DESC` then a fully deterministic
    * `createdAt ASC, id ASC` tie-breaker, capped at `limit`.
    */
-  findEligibleForPlacement(query: EligibleCampaignQuery): Promise<AdCampaign[]> {
+  findEligibleForPlacement(query: EligibleCampaignQuery): Promise<AdCampaignWithSlot[]> {
     return this.prisma.adCampaign.findMany({
       where: {
         placement: query.placement,
+        adSlotId: { not: null },
         status: 'ACTIVE',
         startsAt: { lte: query.now },
         endsAt: { gte: query.now },
@@ -111,8 +146,14 @@ export class AdCampaignRepository {
           { OR: [{ buildingId: null }, { buildingId: query.buildingId }] },
         ],
       },
-      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      orderBy: [
+        { adSlot: { position: 'asc' } },
+        { adSlot: { code: 'asc' } },
+        { createdAt: 'asc' },
+        { id: 'asc' },
+      ],
       take: query.limit,
+      include: { adSlot: true },
     });
   }
 }

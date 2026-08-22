@@ -1,11 +1,12 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { AdCampaignSource, AdCampaignStatus, AdPlacement } from '@prisma/client';
-import { IsDateString, IsEnum, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class CreateAdminAdCampaignDto {
   @IsString() name!: string;
   @IsEnum(AdCampaignSource) source!: AdCampaignSource;
   @IsEnum(AdPlacement) placement!: AdPlacement;
+  @IsString() adSlotId!: string;
   @IsOptional() @IsInt() @Min(0) priority?: number;
   @IsDateString() startsAt!: string;
   @IsDateString() endsAt!: string;
@@ -23,6 +24,7 @@ export class UpdateAdminAdCampaignDto {
   @IsOptional() @IsString() name?: string;
   @IsOptional() @IsEnum(AdCampaignSource) source?: AdCampaignSource;
   @IsOptional() @IsEnum(AdPlacement) placement?: AdPlacement;
+  @IsOptional() @IsString() adSlotId?: string;
   @IsOptional() @IsInt() @Min(0) priority?: number;
   @IsOptional() @IsDateString() startsAt?: string;
   @IsOptional() @IsDateString() endsAt?: string;
@@ -50,6 +52,13 @@ export class ListAdminAdCampaignsDto {
   @IsEnum(AdPlacement)
   placement?: AdPlacement;
   @IsOptional() @IsString() buildingId?: string;
+  @IsOptional() @IsString() adSlotId?: string;
   @IsOptional() @IsString() page?: string;
   @IsOptional() @IsString() limit?: string;
+}
+
+export class ListAdminAdSlotsDto {
+  @IsOptional() @IsString() page?: string;
+  @IsOptional() @IsString() zone?: string;
+  @IsOptional() @IsIn(['true', 'false']) active?: string;
 }

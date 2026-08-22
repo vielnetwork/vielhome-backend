@@ -18,7 +18,7 @@ describe('AdvertisingAdministrationController security contract', () => {
     ]);
   });
 
-  it.each(['list', 'detail'] as const)(
+  it.each(['list', 'detail', 'slots'] as const)(
     '%s requires ADVERTISING_VIEW and reviewer staff',
     (method) => {
       expect(Reflect.getMetadata(REQUIRES_PERMISSION_KEY, prototype[method])).toEqual([

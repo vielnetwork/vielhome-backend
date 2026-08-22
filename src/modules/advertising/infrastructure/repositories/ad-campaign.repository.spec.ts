@@ -4,13 +4,14 @@ import { PrismaService } from '../../../../common/prisma/prisma.service';
 function makePrisma() {
   return {
     adCampaign: { findMany: jest.fn().mockResolvedValue([]) },
+    adSlot: { findMany: jest.fn().mockResolvedValue([]) },
     building: { findUnique: jest.fn() },
   } as unknown as PrismaService;
 }
 
 describe('AdCampaignRepository', () => {
   describe('findEligibleForPlacement', () => {
-    it('builds status/placement/schedule/targeting filters, priority-first deterministic ordering, and the limit — in one query', async () => {
+    it('orders by explicit slot position and never by priority', async () => {
       const prisma = makePrisma();
       const repository = new AdCampaignRepository(prisma);
       const now = new Date('2026-08-15T00:00:00.000Z');
@@ -27,6 +28,7 @@ describe('AdCampaignRepository', () => {
       expect((prisma as any).adCampaign.findMany).toHaveBeenCalledWith({
         where: {
           placement: 'HOME_TODAY_OFFERS',
+          adSlotId: { not: null },
           status: 'ACTIVE',
           startsAt: { lte: now },
           endsAt: { gte: now },
@@ -36,9 +38,25 @@ describe('AdCampaignRepository', () => {
             { OR: [{ buildingId: null }, { buildingId: 'bldg-1' }] },
           ],
         },
-        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }],
+        orderBy: [
+          { adSlot: { position: 'asc' } },
+          { adSlot: { code: 'asc' } },
+          { createdAt: 'asc' },
+          { id: 'asc' },
+        ],
         take: 10,
+        include: { adSlot: true },
       });
+    });
+  });
+
+  it('lists slots in stable page/zone/position order', async () => {
+    const prisma = makePrisma();
+    const repository = new AdCampaignRepository(prisma);
+    await repository.listSlots({ page: 'HOME', active: true });
+    expect((prisma as any).adSlot.findMany).toHaveBeenCalledWith({
+      where: { page: 'HOME', zone: undefined, isActive: true },
+      orderBy: [{ page: 'asc' }, { zone: 'asc' }, { position: 'asc' }, { code: 'asc' }],
     });
   });
 

@@ -13,6 +13,19 @@ function makeRepository(overrides: Partial<Record<string, jest.Mock>> = {}) {
     create: jest.fn(),
     findById: jest.fn(),
     updateStatus: jest.fn(),
+    findSlotById: jest.fn().mockResolvedValue({
+      id: 'slot-n-01',
+      code: 'HOM-N-01',
+      page: 'HOME',
+      zone: 'N',
+      position: 1,
+      label: 'Home — Top Carousel — Slot 1',
+      description: null,
+      orientation: 'HORIZONTAL',
+      isActive: true,
+    }),
+    findObviousSlotConflict: jest.fn().mockResolvedValue(null),
+    listSlots: jest.fn(),
     buildingExists: jest.fn().mockResolvedValue(null),
     findBuildingGeography: jest.fn().mockResolvedValue(null),
     findEligibleForPlacement: jest.fn().mockResolvedValue([]),
@@ -31,6 +44,7 @@ function baseInput(overrides: Partial<CreateAdCampaignInput> = {}): CreateAdCamp
     name: 'Summer promo',
     source: 'DIRECT',
     placement: 'HOME_TODAY_OFFERS',
+    adSlotId: 'slot-n-01',
     startsAt: new Date('2026-08-01T00:00:00.000Z'),
     endsAt: new Date('2026-08-31T00:00:00.000Z'),
     title: 'Summer deals',
@@ -46,6 +60,20 @@ function campaignFixture(overrides: Partial<AdCampaign> = {}): AdCampaign {
     status: 'DRAFT',
     source: 'DIRECT',
     placement: 'HOME_TODAY_OFFERS',
+    adSlotId: 'slot-n-01',
+    adSlot: {
+      id: 'slot-n-01',
+      code: 'HOM-N-01',
+      page: 'HOME',
+      zone: 'N',
+      position: 1,
+      label: 'Home — Top Carousel — Slot 1',
+      description: null,
+      orientation: 'HORIZONTAL',
+      isActive: true,
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-07-01T00:00:00.000Z'),
+    },
     priority: 0,
     startsAt: new Date('2026-08-01T00:00:00.000Z'),
     endsAt: new Date('2026-08-31T00:00:00.000Z'),
@@ -87,6 +115,29 @@ describe('AdCampaignService', () => {
           actorId: 'staff-1',
         }),
       );
+    });
+
+    it('rejects an unknown or placement-incompatible slot', async () => {
+      const missing = makeRepository({ findSlotById: jest.fn().mockResolvedValue(null) });
+      await expect(
+        new AdCampaignService(missing, makeAudit()).createCampaign(baseInput(), 'staff-1', 'req'),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      const incompatible = makeRepository({
+        findSlotById: jest.fn().mockResolvedValue({
+          id: 'slot-s-01',
+          page: 'HOME',
+          zone: 'S',
+          isActive: true,
+        }),
+      });
+      await expect(
+        new AdCampaignService(incompatible, makeAudit()).createCampaign(
+          baseInput(),
+          'staff-1',
+          'req',
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
     });
 
     it('rejects an invalid date range (endsAt not after startsAt)', async () => {
@@ -178,6 +229,22 @@ describe('AdCampaignService', () => {
           metadata: { before: { status: 'DRAFT' }, after: { status: 'ACTIVE' } },
         }),
       );
+    });
+
+    it('rejects an obvious overlapping active campaign in the same slot and building scope', async () => {
+      const repository = makeRepository({
+        findById: jest.fn().mockResolvedValue(campaignFixture()),
+        findObviousSlotConflict: jest.fn().mockResolvedValue({ id: 'camp-2' }),
+      });
+      await expect(
+        new AdCampaignService(repository, makeAudit()).transitionStatus(
+          'camp-1',
+          'ACTIVE',
+          'staff-1',
+          'req-1',
+        ),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+      expect(repository.updateStatus).not.toHaveBeenCalled();
     });
 
     it('rejects ENDED -> ACTIVE (terminal state) without touching the repository update', async () => {
@@ -427,6 +494,14 @@ describe('AdCampaignService', () => {
             ctaLabel: 'Go',
             ctaUrl: 'https://a.example.com',
             sponsored: true,
+            slot: {
+              id: 'slot-n-01',
+              code: 'HOM-N-01',
+              label: 'Home — Top Carousel — Slot 1',
+              zone: 'N',
+              position: 1,
+              orientation: 'HORIZONTAL',
+            },
           },
         ],
       });

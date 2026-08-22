@@ -3875,6 +3875,31 @@ enum AdPlacement {
   HOME_FEATURED_LARGE
 }
 
+enum AdSlotOrientation {
+  HORIZONTAL
+  VERTICAL
+}
+
+model AdSlot {
+  id          String            @id @default(cuid())
+  code        String            @unique
+  page        String
+  zone        String
+  position    Int
+  label       String
+  description String?
+  orientation AdSlotOrientation
+  isActive    Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  campaigns AdCampaign[]
+
+  @@unique([page, zone, position])
+  @@index([page, zone, isActive, position])
+  @@map("ad_slots")
+}
+
 // A first-party advertising campaign. See this section's own header
 // comment for why this is one table rather than Campaign/Placement/
 // Source/Creative each as their own model.
@@ -3884,6 +3909,8 @@ model AdCampaign {
   status      AdCampaignStatus @default(DRAFT)
   source      AdCampaignSource
   placement   AdPlacement
+  adSlotId    String?
+  adSlot      AdSlot?          @relation(fields: [adSlotId], references: [id])
   // Higher runs first when multiple eligible campaigns compete for the
   // same placement. No enforced upper bound in this phase — ordering
   // semantics only, not a points/budget system.
@@ -3923,5 +3950,6 @@ model AdCampaign {
   @@index([placement, status, priority])
   @@index([status, startsAt, endsAt])
   @@index([buildingId])
+  @@index([adSlotId, status, startsAt, endsAt])
   @@map("ad_campaigns")
 }

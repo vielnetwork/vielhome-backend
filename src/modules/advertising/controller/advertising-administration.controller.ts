@@ -4,6 +4,7 @@ import { AdCampaignService } from '../application/ad-campaign.service';
 import {
   CreateAdminAdCampaignDto,
   ListAdminAdCampaignsDto,
+  ListAdminAdSlotsDto,
   UpdateAdminAdCampaignDto,
 } from '../application/dto/admin-ad-campaign.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
@@ -21,11 +22,11 @@ import type { AdCampaignStatus } from '@prisma/client';
 @ApiTags('backoffice')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
-@Controller({ path: 'backoffice/advertising/campaigns', version: '1' })
+@Controller({ path: 'backoffice/advertising', version: '1' })
 export class AdvertisingAdministrationController {
   constructor(private readonly service: AdCampaignService) {}
 
-  @Get()
+  @Get('campaigns')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('ADVERTISING_VIEW')
   async list(@Query() query: ListAdminAdCampaignsDto) {
@@ -36,14 +37,25 @@ export class AdvertisingAdministrationController {
     return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
-  @Get(':campaignId')
+  @Get('slots')
+  @PlatformRoles('REVIEWER')
+  @RequiresPermission('ADVERTISING_VIEW')
+  slots(@Query() query: ListAdminAdSlotsDto) {
+    return this.service.listSlots({
+      page: query.page,
+      zone: query.zone,
+      active: query.active === undefined ? undefined : query.active === 'true',
+    });
+  }
+
+  @Get('campaigns/:campaignId')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('ADVERTISING_VIEW')
   detail(@Param('campaignId') id: string) {
     return this.service.getCampaign(id);
   }
 
-  @Post()
+  @Post('campaigns')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('ADVERTISING_MANAGE')
   create(
@@ -58,7 +70,7 @@ export class AdvertisingAdministrationController {
     );
   }
 
-  @Patch(':campaignId')
+  @Patch('campaigns/:campaignId')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('ADVERTISING_MANAGE')
   update(
@@ -79,7 +91,7 @@ export class AdvertisingAdministrationController {
     );
   }
 
-  @Post(':campaignId/activate')
+  @Post('campaigns/:campaignId/activate')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('ADVERTISING_MANAGE')
   activate(
@@ -89,7 +101,7 @@ export class AdvertisingAdministrationController {
   ) {
     return this.transition(id, 'ACTIVE', user, requestId);
   }
-  @Post(':campaignId/pause')
+  @Post('campaigns/:campaignId/pause')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('ADVERTISING_MANAGE')
   pause(
@@ -99,7 +111,7 @@ export class AdvertisingAdministrationController {
   ) {
     return this.transition(id, 'PAUSED', user, requestId);
   }
-  @Post(':campaignId/end')
+  @Post('campaigns/:campaignId/end')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('ADVERTISING_MANAGE')
   end(
