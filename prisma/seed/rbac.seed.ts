@@ -59,6 +59,17 @@ const PERMISSIONS: Array<{ key: PermissionKey; label: string; description: strin
     description: 'Issue adjustments/refunds within the Finance module.',
   },
   {
+    key: 'ADVERTISING_VIEW',
+    label: 'View Advertising Campaigns',
+    description:
+      'View advertising campaigns and their targeting, placement, schedule, and lifecycle state.',
+  },
+  {
+    key: 'ADVERTISING_MANAGE',
+    label: 'Manage Advertising Campaigns',
+    description: 'Create, update, activate, pause, and end advertising campaigns.',
+  },
+  {
     key: 'AUDIT_VIEW',
     label: 'View Audit Log',
     description: 'View the platform-wide Audit Center.',
