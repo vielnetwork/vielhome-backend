@@ -58,6 +58,23 @@ export class AdCampaignRepository {
     return this.prisma.adSlot.findUnique({ where: { id } });
   }
 
+  updateSlotFill(
+    id: string,
+    data: Pick<
+      Prisma.AdSlotUpdateInput,
+      'fillStrategy' | 'externalProvider' | 'androidAdUnitId' | 'iosAdUnitId'
+    >,
+  ) {
+    return this.prisma.adSlot.update({ where: { id }, data });
+  }
+
+  findActiveSlots(page: string, zone: string) {
+    return this.prisma.adSlot.findMany({
+      where: { page, zone, isActive: true },
+      orderBy: [{ position: 'asc' }, { code: 'asc' }],
+    });
+  }
+
   async listAdmin(filters: AdminCampaignFilters, pagination: PaginationParams) {
     const where: Prisma.AdCampaignWhereInput = {
       status: filters.status,

@@ -6,6 +6,7 @@ import {
   ListAdminAdCampaignsDto,
   ListAdminAdSlotsDto,
   UpdateAdminAdCampaignDto,
+  UpdateAdminAdSlotDto,
 } from '../application/dto/admin-ad-campaign.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
@@ -46,6 +47,18 @@ export class AdvertisingAdministrationController {
       zone: query.zone,
       active: query.active === undefined ? undefined : query.active === 'true',
     });
+  }
+
+  @Patch('slots/:slotId')
+  @PlatformRoles('REVIEWER')
+  @RequiresPermission('ADVERTISING_MANAGE')
+  updateSlot(
+    @Param('slotId') id: string,
+    @Body() dto: UpdateAdminAdSlotDto,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.service.updateSlotFill(id, dto, user.sub, requestId);
   }
 
   @Get('campaigns/:campaignId')

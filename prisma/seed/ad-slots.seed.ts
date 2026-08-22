@@ -1,5 +1,10 @@
 import 'dotenv/config';
-import { AdSlotOrientation, PrismaClient } from '@prisma/client';
+import {
+  AdExternalProvider,
+  AdSlotFillStrategy,
+  AdSlotOrientation,
+  PrismaClient,
+} from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -12,6 +17,16 @@ export const HOME_AD_SLOTS = [
     label: `Home — Top Carousel — Slot ${index + 1}`,
     description: `Position ${index + 1} in the Home top horizontal carousel.`,
     orientation: AdSlotOrientation.HORIZONTAL,
+    fillStrategy:
+      index === 5
+        ? AdSlotFillStrategy.DIRECT_THEN_EXTERNAL
+        : AdSlotFillStrategy.DIRECT_ONLY,
+    externalProvider:
+      index === 5 ? AdExternalProvider.ADMOB : AdExternalProvider.NONE,
+    androidAdUnitId:
+      index === 5 ? 'ca-app-pub-3940256099942544/2247696110' : null,
+    iosAdUnitId:
+      index === 5 ? 'ca-app-pub-3940256099942544/3986624511' : null,
   })),
   ...Array.from({ length: 3 }, (_, index) => ({
     code: `HOM-S-0${index + 1}`,
@@ -21,6 +36,10 @@ export const HOME_AD_SLOTS = [
     label: `Home — Lower Ads — Slot ${index + 1}`,
     description: `Position ${index + 1} in the Home lower vertical advertising area.`,
     orientation: AdSlotOrientation.VERTICAL,
+    fillStrategy: AdSlotFillStrategy.DIRECT_ONLY,
+    externalProvider: AdExternalProvider.NONE,
+    androidAdUnitId: null,
+    iosAdUnitId: null,
   })),
 ];
 

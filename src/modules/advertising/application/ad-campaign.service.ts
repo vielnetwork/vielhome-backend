@@ -3,8 +3,10 @@ import type {
   AdCampaign,
   AdCampaignSource,
   AdCampaignStatus,
+  AdExternalProvider,
   AdPlacement,
   AdSlot,
+  AdSlotFillStrategy,
 } from '@prisma/client';
 import { AdCampaignRepository } from '../infrastructure/repositories/ad-campaign.repository';
 import type { AdminCampaignFilters } from '../infrastructure/repositories/ad-campaign.repository';
@@ -60,6 +62,17 @@ export interface PlacementInventoryItem {
 export interface PlacementInventoryResponse {
   placement: AdPlacement;
   items: PlacementInventoryItem[];
+  slots: Array<{
+    slot: AdSlot;
+    campaign: PlacementInventoryItem | null;
+  }>;
+}
+
+export interface UpdateAdSlotFillInput {
+  fillStrategy: AdSlotFillStrategy;
+  externalProvider: AdExternalProvider;
+  androidAdUnitId?: string | null;
+  iosAdUnitId?: string | null;
 }
 
 const SOURCES: AdCampaignSource[] = ['DIRECT', 'MARKETPLACE', 'EXTERNAL'];
@@ -114,6 +127,33 @@ export class AdCampaignService {
 
   listSlots(filters: { page?: string; zone?: string; active?: boolean }) {
     return this.repository.listSlots(filters);
+  }
+
+  async updateSlotFill(
+    id: string,
+    input: UpdateAdSlotFillInput,
+    actorId: string,
+    requestId: string,
+  ) {
+    const current = await this.repository.findSlotById(id);
+    if (!current) throw new NotFoundAppError('Advertising slot not found.');
+    this.assertValidSlotFill(input);
+    const updated = await this.repository.updateSlotFill(id, {
+      fillStrategy: input.fillStrategy,
+      externalProvider: input.externalProvider,
+      androidAdUnitId: this.normalizeAdUnitId(input.androidAdUnitId),
+      iosAdUnitId: this.normalizeAdUnitId(input.iosAdUnitId),
+    });
+    await this.audit.record({
+      actorId,
+      buildingId: null,
+      action: 'AdSlotFillUpdated',
+      entityType: 'AdSlot',
+      entityId: id,
+      requestId,
+      metadata: { before: current, after: updated },
+    });
+    return updated;
   }
 
   async getCampaign(id: string): Promise<AdCampaignWithSlot> {
@@ -342,27 +382,50 @@ export class AdCampaignService {
         }),
     );
 
+    const items = eligible.map((campaign) => ({
+      id: campaign.id,
+      source: campaign.source,
+      title: campaign.title,
+      description: campaign.description,
+      imageUrl: campaign.imageUrl,
+      ctaLabel: campaign.ctaLabel,
+      ctaUrl: campaign.ctaUrl,
+      sponsored: true as const,
+      slot: {
+        id: campaign.adSlot!.id,
+        code: campaign.adSlot!.code,
+        label: campaign.adSlot!.label,
+        zone: campaign.adSlot!.zone,
+        position: campaign.adSlot!.position,
+        orientation: campaign.adSlot!.orientation,
+      },
+    }));
+    const zone = SLOT_ZONE_BY_PLACEMENT[placement];
+    const slots = zone ? await this.repository.findActiveSlots('HOME', zone) : [];
+    const campaignBySlot = new Map(items.map((item) => [item.slot.id, item]));
+
     return {
       placement,
-      items: eligible.map((campaign) => ({
-        id: campaign.id,
-        source: campaign.source,
-        title: campaign.title,
-        description: campaign.description,
-        imageUrl: campaign.imageUrl,
-        ctaLabel: campaign.ctaLabel,
-        ctaUrl: campaign.ctaUrl,
-        sponsored: true as const,
-        slot: {
-          id: campaign.adSlot!.id,
-          code: campaign.adSlot!.code,
-          label: campaign.adSlot!.label,
-          zone: campaign.adSlot!.zone,
-          position: campaign.adSlot!.position,
-          orientation: campaign.adSlot!.orientation,
-        },
-      })),
+      items,
+      slots: slots.map((slot) => ({ slot, campaign: campaignBySlot.get(slot.id) ?? null })),
     };
+  }
+
+  private assertValidSlotFill(input: UpdateAdSlotFillInput): void {
+    if (input.fillStrategy === 'DIRECT_ONLY' && input.externalProvider !== 'NONE') {
+      throw new ValidationError('DIRECT_ONLY slots must use provider NONE.');
+    }
+    if (input.fillStrategy !== 'DIRECT_ONLY' && input.externalProvider === 'NONE') {
+      throw new ValidationError('External fill strategies require a provider.');
+    }
+    if (input.externalProvider !== 'ADMOB' && (input.androidAdUnitId || input.iosAdUnitId)) {
+      throw new ValidationError('Ad unit IDs require the ADMOB provider.');
+    }
+  }
+
+  private normalizeAdUnitId(value?: string | null): string | null {
+    const normalized = value?.trim();
+    return normalized ? normalized : null;
   }
 
   private async assertValidCampaignInput(input: CreateAdCampaignInput): Promise<void> {

@@ -3880,18 +3880,33 @@ enum AdSlotOrientation {
   VERTICAL
 }
 
+enum AdSlotFillStrategy {
+  DIRECT_ONLY
+  EXTERNAL_ONLY
+  DIRECT_THEN_EXTERNAL
+}
+
+enum AdExternalProvider {
+  NONE
+  ADMOB
+}
+
 model AdSlot {
-  id          String            @id @default(cuid())
-  code        String            @unique
-  page        String
-  zone        String
-  position    Int
-  label       String
-  description String?
-  orientation AdSlotOrientation
-  isActive    Boolean           @default(true)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  id               String             @id @default(cuid())
+  code             String             @unique
+  page             String
+  zone             String
+  position         Int
+  label            String
+  description      String?
+  orientation      AdSlotOrientation
+  fillStrategy     AdSlotFillStrategy @default(DIRECT_ONLY)
+  externalProvider AdExternalProvider @default(NONE)
+  androidAdUnitId  String?
+  iosAdUnitId      String?
+  isActive         Boolean            @default(true)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
 
   campaigns AdCampaign[]
 

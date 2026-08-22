@@ -1,5 +1,11 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { AdCampaignSource, AdCampaignStatus, AdPlacement } from '@prisma/client';
+import {
+  AdCampaignSource,
+  AdCampaignStatus,
+  AdExternalProvider,
+  AdPlacement,
+  AdSlotFillStrategy,
+} from '@prisma/client';
 import { IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class CreateAdminAdCampaignDto {
@@ -61,4 +67,11 @@ export class ListAdminAdSlotsDto {
   @IsOptional() @IsString() page?: string;
   @IsOptional() @IsString() zone?: string;
   @IsOptional() @IsIn(['true', 'false']) active?: string;
+}
+
+export class UpdateAdminAdSlotDto {
+  @IsEnum(AdSlotFillStrategy) fillStrategy!: AdSlotFillStrategy;
+  @IsEnum(AdExternalProvider) externalProvider!: AdExternalProvider;
+  @IsOptional() @IsString() androidAdUnitId?: string | null;
+  @IsOptional() @IsString() iosAdUnitId?: string | null;
 }

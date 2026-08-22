@@ -22,6 +22,10 @@ function makeRepository(overrides: Partial<Record<string, jest.Mock>> = {}) {
       label: 'Home — Top Carousel — Slot 1',
       description: null,
       orientation: 'HORIZONTAL',
+      fillStrategy: 'DIRECT_ONLY',
+      externalProvider: 'NONE',
+      androidAdUnitId: null,
+      iosAdUnitId: null,
       isActive: true,
     }),
     findObviousSlotConflict: jest.fn().mockResolvedValue(null),
@@ -29,8 +33,10 @@ function makeRepository(overrides: Partial<Record<string, jest.Mock>> = {}) {
     buildingExists: jest.fn().mockResolvedValue(null),
     findBuildingGeography: jest.fn().mockResolvedValue(null),
     findEligibleForPlacement: jest.fn().mockResolvedValue([]),
+    findActiveSlots: jest.fn().mockResolvedValue([]),
     listAdmin: jest.fn(),
     update: jest.fn(),
+    updateSlotFill: jest.fn(),
     ...overrides,
   } as unknown as AdCampaignRepository;
 }
@@ -70,6 +76,10 @@ function campaignFixture(overrides: Partial<AdCampaign> = {}): AdCampaign {
       label: 'Home — Top Carousel — Slot 1',
       description: null,
       orientation: 'HORIZONTAL',
+      fillStrategy: 'DIRECT_ONLY',
+      externalProvider: 'NONE',
+      androidAdUnitId: null,
+      iosAdUnitId: null,
       isActive: true,
       createdAt: new Date('2026-07-01T00:00:00.000Z'),
       updatedAt: new Date('2026-07-01T00:00:00.000Z'),
@@ -432,6 +442,63 @@ describe('AdCampaignService', () => {
     });
   });
 
+  describe('slot fill configuration', () => {
+    it('accepts platform-specific AdMob IDs and audits the fill-only mutation', async () => {
+      const updated = {
+        ...(await makeRepository().findSlotById('slot-n-01')),
+        fillStrategy: 'DIRECT_THEN_EXTERNAL',
+        externalProvider: 'ADMOB',
+        androidAdUnitId: 'android-test',
+        iosAdUnitId: null,
+      };
+      const repository = makeRepository({
+        updateSlotFill: jest.fn().mockResolvedValue(updated),
+      });
+      const audit = makeAudit();
+      const service = new AdCampaignService(repository, audit);
+
+      await service.updateSlotFill(
+        'slot-n-01',
+        {
+          fillStrategy: 'DIRECT_THEN_EXTERNAL',
+          externalProvider: 'ADMOB',
+          androidAdUnitId: ' android-test ',
+        },
+        'staff-1',
+        'req-1',
+      );
+
+      expect(repository.updateSlotFill).toHaveBeenCalledWith('slot-n-01', {
+        fillStrategy: 'DIRECT_THEN_EXTERNAL',
+        externalProvider: 'ADMOB',
+        androidAdUnitId: 'android-test',
+        iosAdUnitId: null,
+      });
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'AdSlotFillUpdated' }),
+      );
+    });
+
+    it.each([
+      ['DIRECT_ONLY', 'ADMOB'],
+      ['DIRECT_THEN_EXTERNAL', 'NONE'],
+      ['EXTERNAL_ONLY', 'NONE'],
+    ] as const)(
+      'rejects unsupported %s + %s combinations',
+      async (fillStrategy, externalProvider) => {
+        const service = new AdCampaignService(makeRepository(), makeAudit());
+        await expect(
+          service.updateSlotFill(
+            'slot-n-01',
+            { fillStrategy, externalProvider },
+            'staff-1',
+            'req-1',
+          ),
+        ).rejects.toBeInstanceOf(ValidationError);
+      },
+    );
+  });
+
   describe('getPlacementInventory (Phase 4 delivery)', () => {
     const now = new Date('2026-08-15T00:00:00.000Z');
 
@@ -484,6 +551,7 @@ describe('AdCampaignService', () => {
       });
       expect(result).toEqual({
         placement: 'HOME_TODAY_OFFERS',
+        slots: [],
         items: [
           {
             id: 'camp-a',
@@ -520,7 +588,7 @@ describe('AdCampaignService', () => {
 
       const result = await service.getPlacementInventory('bldg-1', 'HOME_TODAY_OFFERS', now);
 
-      expect(result).toEqual({ placement: 'HOME_TODAY_OFFERS', items: [] });
+      expect(result).toEqual({ placement: 'HOME_TODAY_OFFERS', items: [], slots: [] });
     });
 
     it('applies isEligibleNow as a safety net over the repository result (defense in depth)', async () => {
