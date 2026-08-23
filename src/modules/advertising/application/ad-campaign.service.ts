@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import type {
   AdCampaign,
   AdCampaignSource,
@@ -13,6 +13,7 @@ import type { AdminCampaignFilters } from '../infrastructure/repositories/ad-cam
 import type { AdCampaignWithSlot } from '../infrastructure/repositories/ad-campaign.repository';
 import type { PaginationParams } from '../../../common/pagination/pagination.util';
 import { AuditService } from '../../../common/audit/audit.service';
+import { StorageService } from '../../../common/storage/storage.service';
 import {
   BusinessRuleViolationError,
   NotFoundAppError,
@@ -119,7 +120,22 @@ export class AdCampaignService {
   constructor(
     private readonly repository: AdCampaignRepository,
     private readonly audit: AuditService,
+    @Optional() private readonly storage?: StorageService,
   ) {}
+
+  requestCampaignImageUpload(input: {
+    fileName: string;
+    contentType: string;
+    fileSize: number;
+    campaignId?: string;
+  }) {
+    const storageKey = this.storage!.buildAdvertisingCampaignObjectKey(
+      input.campaignId,
+      input.fileName,
+    );
+    const upload = this.storage!.getPresignedUploadUrl(storageKey);
+    return { ...upload, imageUrl: storageKey };
+  }
 
   listCampaigns(filters: AdminCampaignFilters, pagination: PaginationParams) {
     return this.repository.listAdmin(filters, pagination);
@@ -387,7 +403,7 @@ export class AdCampaignService {
       source: campaign.source,
       title: campaign.title,
       description: campaign.description,
-      imageUrl: campaign.imageUrl,
+      imageUrl: this.resolveCampaignImageUrl(campaign.imageUrl),
       ctaLabel: campaign.ctaLabel,
       ctaUrl: campaign.ctaUrl,
       sponsored: true as const,
@@ -421,6 +437,13 @@ export class AdCampaignService {
     if (input.externalProvider !== 'ADMOB' && (input.androidAdUnitId || input.iosAdUnitId)) {
       throw new ValidationError('Ad unit IDs require the ADMOB provider.');
     }
+  }
+
+  private resolveCampaignImageUrl(imageUrl: string): string {
+    if (!imageUrl.startsWith('advertising/campaigns/') || !this.storage?.isConfigured()) {
+      return imageUrl;
+    }
+    return this.storage.getPresignedDownloadUrl(imageUrl);
   }
 
   private normalizeAdUnitId(value?: string | null): string | null {

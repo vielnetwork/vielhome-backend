@@ -6,7 +6,17 @@ import {
   AdPlacement,
   AdSlotFillStrategy,
 } from '@prisma/client';
-import { IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+
+export const AD_CAMPAIGN_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+export const AD_CAMPAIGN_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+export class RequestAdminAdCampaignImageUploadDto {
+  @IsString() fileName!: string;
+  @IsIn(AD_CAMPAIGN_IMAGE_MIME_TYPES) contentType!: string;
+  @IsInt() @Min(1) @Max(AD_CAMPAIGN_IMAGE_MAX_BYTES) fileSize!: number;
+  @IsOptional() @IsString() campaignId?: string;
+}
 
 export class CreateAdminAdCampaignDto {
   @IsString() name!: string;

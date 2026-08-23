@@ -117,6 +117,20 @@ export class StorageService {
     return `documents/${buildingId}/${yyyy}/${mm}/${generateKeySuffix()}-${sanitized}`;
   }
 
+  buildAdvertisingCampaignObjectKey(campaignId: string | undefined, fileName: string): string {
+    const sanitized = fileName
+      .trim()
+      .replace(/[^a-zA-Z0-9._-]+/g, '_')
+      .replace(/_{2,}/g, '_')
+      .slice(-140);
+    const owner =
+      campaignId
+        ?.trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .slice(0, 100) || `draft-${generateKeySuffix()}`;
+    return `advertising/campaigns/${owner}/${generateKeySuffix()}-${sanitized}`;
+  }
+
   /**
    * Presigned PUT — the client uploads directly to storage, never
    * proxying file bytes through this API server (avoids the memory/

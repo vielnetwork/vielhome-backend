@@ -7,6 +7,7 @@ import {
   ValidationError,
 } from '../../../common/errors/app-error';
 import type { AdCampaign } from '@prisma/client';
+import { StorageService } from '../../../common/storage/storage.service';
 
 function makeRepository(overrides: Partial<Record<string, jest.Mock>> = {}) {
   return {
@@ -43,6 +44,19 @@ function makeRepository(overrides: Partial<Record<string, jest.Mock>> = {}) {
 
 function makeAudit(): AuditService {
   return { record: jest.fn().mockResolvedValue(undefined) } as unknown as AuditService;
+}
+
+function makeStorage(): StorageService {
+  return {
+    buildAdvertisingCampaignObjectKey: jest
+      .fn()
+      .mockReturnValue('advertising/campaigns/camp-1/abc-image.png'),
+    getPresignedUploadUrl: jest.fn().mockReturnValue({
+      uploadUrl: 'https://storage.example/upload',
+      storageKey: 'advertising/campaigns/camp-1/abc-image.png',
+      expiresAt: new Date('2026-08-23T12:15:00.000Z'),
+    }),
+  } as unknown as StorageService;
 }
 
 function baseInput(overrides: Partial<CreateAdCampaignInput> = {}): CreateAdCampaignInput {
@@ -103,13 +117,35 @@ function campaignFixture(overrides: Partial<AdCampaign> = {}): AdCampaign {
 }
 
 describe('AdCampaignService', () => {
+  describe('requestCampaignImageUpload', () => {
+    it('returns a scoped storage key and presigned upload URL', () => {
+      const storage = makeStorage();
+      const service = new AdCampaignService(makeRepository(), makeAudit(), storage);
+
+      expect(
+        service.requestCampaignImageUpload({
+          fileName: 'image.png',
+          contentType: 'image/png',
+          fileSize: 1024,
+          campaignId: 'camp-1',
+        }),
+      ).toEqual(
+        expect.objectContaining({
+          imageUrl: 'advertising/campaigns/camp-1/abc-image.png',
+          uploadUrl: 'https://storage.example/upload',
+        }),
+      );
+      expect(storage.buildAdvertisingCampaignObjectKey).toHaveBeenCalledWith('camp-1', 'image.png');
+    });
+  });
+
   describe('createCampaign', () => {
     it('creates a valid campaign, defaults priority to 0, and audits creation', async () => {
       const repository = makeRepository({
         create: jest.fn().mockResolvedValue(campaignFixture()),
       });
       const audit = makeAudit();
-      const service = new AdCampaignService(repository, audit);
+      const service = new AdCampaignService(repository, audit, makeStorage());
 
       const result = await service.createCampaign(baseInput(), 'staff-1', 'req-1');
 
@@ -589,6 +625,30 @@ describe('AdCampaignService', () => {
       const result = await service.getPlacementInventory('bldg-1', 'HOME_TODAY_OFFERS', now);
 
       expect(result).toEqual({ placement: 'HOME_TODAY_OFFERS', items: [], slots: [] });
+    });
+
+    it('resolves stored campaign image keys to short-lived delivery URLs', async () => {
+      const repository = makeRepository({
+        findBuildingGeography: jest.fn().mockResolvedValue({ country: 'DE', city: 'Berlin' }),
+        findEligibleForPlacement: jest.fn().mockResolvedValue([
+          campaignFixture({
+            status: 'ACTIVE',
+            imageUrl: 'advertising/campaigns/camp-1/abc-image.png',
+          }),
+        ]),
+      });
+      const storage = {
+        isConfigured: jest.fn().mockReturnValue(true),
+        getPresignedDownloadUrl: jest.fn().mockReturnValue('https://storage.example/download'),
+      } as unknown as StorageService;
+      const service = new AdCampaignService(repository, makeAudit(), storage);
+
+      const result = await service.getPlacementInventory('bldg-1', 'HOME_TODAY_OFFERS', now);
+
+      expect(result.items[0]?.imageUrl).toBe('https://storage.example/download');
+      expect(storage.getPresignedDownloadUrl).toHaveBeenCalledWith(
+        'advertising/campaigns/camp-1/abc-image.png',
+      );
     });
 
     it('applies isEligibleNow as a safety net over the repository result (defense in depth)', async () => {

@@ -6,6 +6,8 @@ import { PLATFORM_ROLES_KEY } from '../../../common/decorators/platform-roles.de
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { PlatformRolesGuard } from '../../../common/guards/platform-roles.guard';
 import { PermissionsGuard } from '../../../common/guards/permissions.guard';
+import { validate } from 'class-validator';
+import { RequestAdminAdCampaignImageUploadDto } from '../application/dto/admin-ad-campaign.dto';
 
 describe('AdvertisingAdministrationController security contract', () => {
   const prototype = AdvertisingAdministrationController.prototype;
@@ -28,15 +30,20 @@ describe('AdvertisingAdministrationController security contract', () => {
     },
   );
 
-  it.each(['create', 'update', 'updateSlot', 'activate', 'pause', 'end'] as const)(
-    '%s requires ADVERTISING_MANAGE and reviewer staff',
-    (method) => {
-      expect(Reflect.getMetadata(REQUIRES_PERMISSION_KEY, prototype[method])).toEqual([
-        'ADVERTISING_MANAGE',
-      ]);
-      expect(Reflect.getMetadata(PLATFORM_ROLES_KEY, prototype[method])).toEqual(['REVIEWER']);
-    },
-  );
+  it.each([
+    'create',
+    'update',
+    'updateSlot',
+    'requestCampaignImageUpload',
+    'activate',
+    'pause',
+    'end',
+  ] as const)('%s requires ADVERTISING_MANAGE and reviewer staff', (method) => {
+    expect(Reflect.getMetadata(REQUIRES_PERMISSION_KEY, prototype[method])).toEqual([
+      'ADVERTISING_MANAGE',
+    ]);
+    expect(Reflect.getMetadata(PLATFORM_ROLES_KEY, prototype[method])).toEqual(['REVIEWER']);
+  });
 
   it('maps lifecycle endpoints to the existing service transition method', async () => {
     const service = {
@@ -69,6 +76,17 @@ describe('AdvertisingAdministrationController security contract', () => {
       'ENDED',
       'staff-1',
       'req-3',
+    );
+  });
+
+  it('rejects non-image upload metadata before issuing an upload URL', async () => {
+    const dto = Object.assign(new RequestAdminAdCampaignImageUploadDto(), {
+      fileName: 'payload.exe',
+      contentType: 'application/octet-stream',
+      fileSize: 1024,
+    });
+    expect(await validate(dto)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ property: 'contentType' })]),
     );
   });
 });

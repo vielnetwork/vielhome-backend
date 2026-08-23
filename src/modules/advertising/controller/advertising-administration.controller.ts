@@ -5,6 +5,7 @@ import {
   CreateAdminAdCampaignDto,
   ListAdminAdCampaignsDto,
   ListAdminAdSlotsDto,
+  RequestAdminAdCampaignImageUploadDto,
   UpdateAdminAdCampaignDto,
   UpdateAdminAdSlotDto,
 } from '../application/dto/admin-ad-campaign.dto';
@@ -26,6 +27,13 @@ import type { AdCampaignStatus } from '@prisma/client';
 @Controller({ path: 'backoffice/advertising', version: '1' })
 export class AdvertisingAdministrationController {
   constructor(private readonly service: AdCampaignService) {}
+
+  @Post('campaign-images/upload-url')
+  @PlatformRoles('REVIEWER')
+  @RequiresPermission('ADVERTISING_MANAGE')
+  requestCampaignImageUpload(@Body() dto: RequestAdminAdCampaignImageUploadDto) {
+    return this.service.requestCampaignImageUpload(dto);
+  }
 
   @Get('campaigns')
   @PlatformRoles('REVIEWER')

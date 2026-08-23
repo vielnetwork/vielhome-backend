@@ -119,6 +119,12 @@ describe('StorageService', () => {
   describe('buildObjectKey', () => {
     const service = new StorageService(makeConfigService(CONFIGURED));
 
+    it('builds campaign-scoped advertising keys separately from documents', () => {
+      expect(service.buildAdvertisingCampaignObjectKey('camp-1', 'hero image.png')).toMatch(
+        /^advertising\/campaigns\/camp-1\/[a-z0-9]{12}-hero_image\.png$/,
+      );
+    });
+
     it('sanitizes unsafe characters out of the file name portion', () => {
       const key = service.buildObjectKey('b1', 'قرارداد اجاره (نهایی)!.pdf');
       expect(key).toMatch(/^documents\/b1\/\d{4}\/\d{2}\/[0-9a-z]{12}-.*\.pdf$/);
