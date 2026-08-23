@@ -179,6 +179,82 @@ describe('AdCampaignService', () => {
         ),
       ).rejects.toBeInstanceOf(ValidationError);
       expect(repository.create).not.toHaveBeenCalled();
+      expect(storage.deleteObject).toHaveBeenCalledWith('advertising/campaigns/draft-1/fake.png');
+    });
+
+    it.each([
+      ['JPEG', 'fake.jpg'],
+      ['PNG', 'fake.png'],
+      ['WebP', 'fake.webp'],
+    ])('rejects and deletes a fake %s upload', async (_format, fileName) => {
+      const repository = makeRepository();
+      const storage = makeStorage({
+        readObjectPrefix: jest.fn().mockResolvedValue(Uint8Array.from(Buffer.from('ASCII'))),
+      });
+      const imageUrl = `advertising/campaigns/draft-1/${fileName}`;
+
+      await expect(
+        new AdCampaignService(repository, makeAudit(), storage).createCampaign(
+          baseInput({ imageUrl }),
+          'staff-1',
+          'req-1',
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
+      expect(repository.create).not.toHaveBeenCalled();
+      expect(storage.deleteObject).toHaveBeenCalledWith(imageUrl);
+    });
+
+    it('rejects an invalid replacement, deletes only the new object, and preserves the current image', async () => {
+      const currentImage = 'advertising/campaigns/camp-1/current.jpg';
+      const invalidImage = 'advertising/campaigns/camp-1/fake.jpg';
+      const repository = makeRepository({
+        findById: jest.fn().mockResolvedValue(campaignFixture({ imageUrl: currentImage })),
+      });
+      const storage = makeStorage({
+        readObjectPrefix: jest.fn().mockResolvedValue(Uint8Array.from(Buffer.from('ASCII'))),
+      });
+
+      await expect(
+        new AdCampaignService(repository, makeAudit(), storage).updateCampaign(
+          'camp-1',
+          { imageUrl: invalidImage },
+          'staff-1',
+          'req-1',
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
+      expect(repository.update).not.toHaveBeenCalled();
+      expect(storage.deleteObject).toHaveBeenCalledTimes(1);
+      expect(storage.deleteObject).toHaveBeenCalledWith(invalidImage);
+      expect(storage.deleteObject).not.toHaveBeenCalledWith(currentImage);
+    });
+
+    it('never cleans up an invalid object outside the advertising prefix', async () => {
+      const storage = makeStorage();
+      const service = new AdCampaignService(makeRepository(), makeAudit(), storage);
+
+      await (
+        service as unknown as {
+          cleanupInvalidCampaignImage(imageUrl: string): Promise<void>;
+        }
+      ).cleanupInvalidCampaignImage('documents/building-1/fake.jpg');
+      expect(storage.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it('still rejects the mutation when invalid-image cleanup fails', async () => {
+      const repository = makeRepository();
+      const storage = makeStorage({
+        readObjectPrefix: jest.fn().mockResolvedValue(Uint8Array.from(Buffer.from('ASCII'))),
+        deleteObject: jest.fn().mockRejectedValue(new Error('storage unavailable')),
+      });
+
+      await expect(
+        new AdCampaignService(repository, makeAudit(), storage).createCampaign(
+          baseInput({ imageUrl: 'advertising/campaigns/draft-1/fake.jpg' }),
+          'staff-1',
+          'req-1',
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
+      expect(repository.create).not.toHaveBeenCalled();
     });
 
     it('deletes the old advertising object only after a successful replacement update', async () => {

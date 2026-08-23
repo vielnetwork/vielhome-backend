@@ -185,7 +185,7 @@ export class AdCampaignService {
     requestId: string,
   ): Promise<AdCampaignWithSlot> {
     await this.assertValidCampaignInput(input);
-    await this.assertValidCampaignImage(input.imageUrl);
+    await this.assertValidCampaignImageOrCleanup(input.imageUrl);
 
     const campaign = await this.repository.create({
       name: input.name,
@@ -291,7 +291,7 @@ export class AdCampaignService {
     };
     await this.assertValidCampaignInput(merged);
     if (input.imageUrl !== undefined && input.imageUrl !== current.imageUrl) {
-      await this.assertValidCampaignImage(input.imageUrl);
+      await this.assertValidCampaignImageOrCleanup(input.imageUrl);
     }
     if (current.status === 'ACTIVE') {
       const conflict = await this.repository.findObviousSlotConflict({
@@ -472,6 +472,26 @@ export class AdCampaignService {
       String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
     if (!jpeg && !png && !webp) {
       throw new ValidationError('Campaign image content is not a valid JPEG, PNG, or WebP file.');
+    }
+  }
+
+  private async assertValidCampaignImageOrCleanup(imageUrl: string): Promise<void> {
+    try {
+      await this.assertValidCampaignImage(imageUrl);
+    } catch (error) {
+      await this.cleanupInvalidCampaignImage(imageUrl);
+      throw error;
+    }
+  }
+
+  private async cleanupInvalidCampaignImage(imageUrl: string): Promise<void> {
+    if (!imageUrl.startsWith('advertising/campaigns/') || !this.storage) return;
+    try {
+      await this.storage.deleteObject(imageUrl);
+    } catch (error) {
+      this.logger.warn(
+        `Invalid advertising image cleanup failed: ${error instanceof Error ? error.name : 'unknown error'}`,
+      );
     }
   }
 
