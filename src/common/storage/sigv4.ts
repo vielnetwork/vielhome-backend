@@ -30,7 +30,7 @@ export interface SigV4Credentials {
 }
 
 export interface PresignInput {
-  method: 'GET' | 'PUT' | 'HEAD';
+  method: 'DELETE' | 'GET' | 'PUT' | 'HEAD';
   host: string;
   /** Already includes the bucket segment for path-style, or not, for virtual-hosted — see `StorageService.presign`. */
   canonicalUri: string;
@@ -85,7 +85,7 @@ export function buildCanonicalQueryString(params: Array<[string, string]>): stri
 }
 
 export function buildCanonicalRequest(params: {
-  method: 'GET' | 'PUT' | 'HEAD';
+  method: 'DELETE' | 'GET' | 'PUT' | 'HEAD';
   canonicalUri: string;
   canonicalQueryString: string;
   host: string;

@@ -46,7 +46,7 @@ function makeAudit(): AuditService {
   return { record: jest.fn().mockResolvedValue(undefined) } as unknown as AuditService;
 }
 
-function makeStorage(): StorageService {
+function makeStorage(overrides: Partial<Record<string, jest.Mock>> = {}): StorageService {
   return {
     buildAdvertisingCampaignObjectKey: jest
       .fn()
@@ -56,6 +56,10 @@ function makeStorage(): StorageService {
       storageKey: 'advertising/campaigns/camp-1/abc-image.png',
       expiresAt: new Date('2026-08-23T12:15:00.000Z'),
     }),
+    isConfigured: jest.fn().mockReturnValue(false),
+    readObjectPrefix: jest.fn(),
+    deleteObject: jest.fn().mockResolvedValue(undefined),
+    ...overrides,
   } as unknown as StorageService;
 }
 
@@ -136,6 +140,132 @@ describe('AdCampaignService', () => {
         }),
       );
       expect(storage.buildAdvertisingCampaignObjectKey).toHaveBeenCalledWith('camp-1', 'image.png');
+    });
+  });
+
+  describe('campaign image hardening', () => {
+    it.each([
+      ['JPEG', [0xff, 0xd8, 0xff, 0xe0]],
+      ['PNG', [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
+      ['WebP', [0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]],
+    ])('accepts a valid %s file signature', async (_format, signature) => {
+      const repository = makeRepository({ create: jest.fn().mockResolvedValue(campaignFixture()) });
+      const storage = makeStorage({
+        readObjectPrefix: jest.fn().mockResolvedValue(Uint8Array.from(signature as number[])),
+      });
+      const service = new AdCampaignService(repository, makeAudit(), storage);
+
+      await expect(
+        service.createCampaign(
+          baseInput({ imageUrl: 'advertising/campaigns/draft-1/image.bin' }),
+          'staff-1',
+          'req-1',
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('rejects spoofed image metadata with invalid magic bytes', async () => {
+      const repository = makeRepository();
+      const storage = makeStorage({
+        readObjectPrefix: jest.fn().mockResolvedValue(Uint8Array.from([0x4d, 0x5a, 0x90, 0x00])),
+      });
+      const service = new AdCampaignService(repository, makeAudit(), storage);
+
+      await expect(
+        service.createCampaign(
+          baseInput({ imageUrl: 'advertising/campaigns/draft-1/fake.png' }),
+          'staff-1',
+          'req-1',
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
+      expect(repository.create).not.toHaveBeenCalled();
+    });
+
+    it('deletes the old advertising object only after a successful replacement update', async () => {
+      const calls: string[] = [];
+      const repository = makeRepository({
+        findById: jest
+          .fn()
+          .mockResolvedValue(campaignFixture({ imageUrl: 'advertising/campaigns/camp-1/old.png' })),
+        update: jest.fn().mockImplementation(async () => {
+          calls.push('update');
+          return campaignFixture({ imageUrl: 'advertising/campaigns/camp-1/new.png' });
+        }),
+      });
+      const storage = makeStorage({
+        readObjectPrefix: jest.fn().mockResolvedValue(Uint8Array.from([0xff, 0xd8, 0xff])),
+        deleteObject: jest.fn().mockImplementation(async () => {
+          calls.push('delete');
+        }),
+      });
+
+      await new AdCampaignService(repository, makeAudit(), storage).updateCampaign(
+        'camp-1',
+        { imageUrl: 'advertising/campaigns/camp-1/new.png' },
+        'staff-1',
+        'req-1',
+      );
+
+      expect(calls).toEqual(['update', 'delete']);
+      expect(storage.deleteObject).toHaveBeenCalledWith('advertising/campaigns/camp-1/old.png');
+    });
+
+    it('does not delete the old object when campaign update fails', async () => {
+      const repository = makeRepository({
+        findById: jest
+          .fn()
+          .mockResolvedValue(campaignFixture({ imageUrl: 'advertising/campaigns/camp-1/old.png' })),
+        update: jest.fn().mockRejectedValue(new Error('database unavailable')),
+      });
+      const storage = makeStorage({
+        readObjectPrefix: jest.fn().mockResolvedValue(Uint8Array.from([0xff, 0xd8, 0xff])),
+      });
+      await expect(
+        new AdCampaignService(repository, makeAudit(), storage).updateCampaign(
+          'camp-1',
+          { imageUrl: 'advertising/campaigns/camp-1/new.png' },
+          'staff-1',
+          'req-1',
+        ),
+      ).rejects.toThrow('database unavailable');
+      expect(storage.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it('never deletes a non-advertising object and tolerates cleanup failure', async () => {
+      const repository = makeRepository({
+        findById: jest
+          .fn()
+          .mockResolvedValue(campaignFixture({ imageUrl: 'documents/b1/private.png' })),
+        update: jest
+          .fn()
+          .mockResolvedValue(campaignFixture({ imageUrl: 'advertising/campaigns/camp-1/new.png' })),
+      });
+      const storage = makeStorage({
+        readObjectPrefix: jest.fn().mockResolvedValue(Uint8Array.from([0xff, 0xd8, 0xff])),
+        deleteObject: jest.fn().mockRejectedValue(new Error('storage unavailable')),
+      });
+      await expect(
+        new AdCampaignService(repository, makeAudit(), storage).updateCampaign(
+          'camp-1',
+          { imageUrl: 'advertising/campaigns/camp-1/new.png' },
+          'staff-1',
+          'req-1',
+        ),
+      ).resolves.toBeDefined();
+      expect(storage.deleteObject).not.toHaveBeenCalled();
+
+      repository.findById = jest
+        .fn()
+        .mockResolvedValue(campaignFixture({ imageUrl: 'advertising/campaigns/camp-1/old.png' }));
+      await expect(
+        new AdCampaignService(repository, makeAudit(), storage).updateCampaign(
+          'camp-1',
+          { imageUrl: 'advertising/campaigns/camp-1/new.png' },
+          'staff-1',
+          'req-2',
+        ),
+      ).resolves.toBeDefined();
+      expect(storage.deleteObject).toHaveBeenCalledWith('advertising/campaigns/camp-1/old.png');
     });
   });
 

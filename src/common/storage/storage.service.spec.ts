@@ -139,6 +139,42 @@ describe('StorageService', () => {
     });
   });
 
+  describe('object content and cleanup operations', () => {
+    const originalFetch = global.fetch;
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('reads only the requested object prefix for signature validation', async () => {
+      const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+      const fetchSpy = jest.fn().mockResolvedValue(new Response(bytes, { status: 206 }));
+      global.fetch = fetchSpy as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      await expect(
+        service.readObjectPrefix('advertising/campaigns/c1/image.png', 4),
+      ).resolves.toEqual(bytes);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining('advertising/campaigns/c1/image.png'),
+        expect.objectContaining({ headers: { Range: 'bytes=0-3' } }),
+      );
+    });
+
+    it('deletes an object with a presigned DELETE request', async () => {
+      const fetchSpy = jest.fn().mockResolvedValue(new Response(null, { status: 204 }));
+      global.fetch = fetchSpy as unknown as typeof fetch;
+      const service = new StorageService(makeConfigService(CONFIGURED));
+
+      await expect(
+        service.deleteObject('advertising/campaigns/c1/old.png'),
+      ).resolves.toBeUndefined();
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining('X-Amz-Signature='),
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+    });
+  });
+
   // 21_ADRs > ADR-108 — real reachability check for the Monitoring
   // overview endpoint. `fetch` is mocked at the global level so these
   // tests never make a real network call.

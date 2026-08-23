@@ -174,6 +174,45 @@ export class StorageService {
     return this.presign('GET', storageKey, expiresInSeconds);
   }
 
+  async readObjectPrefix(
+    storageKey: string,
+    byteCount = 16,
+    timeoutMs = 5000,
+  ): Promise<Uint8Array> {
+    this.assertConfigured();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(this.presign('GET', storageKey, 30), {
+        headers: { Range: `bytes=0-${byteCount - 1}` },
+        signal: controller.signal,
+      });
+      if (response.status !== 206) {
+        throw new UnexpectedAppError('Stored image could not be read for validation.');
+      }
+      return new Uint8Array(await response.arrayBuffer()).slice(0, byteCount);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async deleteObject(storageKey: string, timeoutMs = 5000): Promise<void> {
+    this.assertConfigured();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(this.presign('DELETE', storageKey, 30), {
+        method: 'DELETE',
+        signal: controller.signal,
+      });
+      if (response.status !== 200 && response.status !== 204 && response.status !== 404) {
+        throw new UnexpectedAppError('Stored object cleanup failed.');
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   /**
    * 21_ADRs > ADR-108 — real reachability check for the Monitoring
    * overview endpoint, closing the gap this class's own `isConfigured()`
@@ -294,7 +333,11 @@ export class StorageService {
     }
   }
 
-  private presign(method: 'GET' | 'PUT' | 'HEAD', key: string, expiresInSeconds: number): string {
+  private presign(
+    method: 'DELETE' | 'GET' | 'PUT' | 'HEAD',
+    key: string,
+    expiresInSeconds: number,
+  ): string {
     const c = this.cfg;
     const host = c.forcePathStyle ? c.endpoint : `${c.bucket}.${c.endpoint}`;
     const canonicalUri = c.forcePathStyle

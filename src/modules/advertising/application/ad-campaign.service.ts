@@ -1,4 +1,4 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import type {
   AdCampaign,
   AdCampaignSource,
@@ -117,6 +117,7 @@ const SLOT_ZONE_BY_PLACEMENT: Partial<Record<AdPlacement, string>> = {
  */
 @Injectable()
 export class AdCampaignService {
+  private readonly logger = new Logger(AdCampaignService.name);
   constructor(
     private readonly repository: AdCampaignRepository,
     private readonly audit: AuditService,
@@ -172,10 +173,10 @@ export class AdCampaignService {
     return updated;
   }
 
-  async getCampaign(id: string): Promise<AdCampaignWithSlot> {
+  async getCampaign(id: string): Promise<AdCampaignWithSlot & { imagePreviewUrl: string }> {
     const campaign = await this.repository.findById(id);
     if (!campaign) throw new NotFoundAppError('Campaign not found.');
-    return campaign;
+    return { ...campaign, imagePreviewUrl: this.resolveCampaignImageUrl(campaign.imageUrl) };
   }
 
   async createCampaign(
@@ -184,6 +185,7 @@ export class AdCampaignService {
     requestId: string,
   ): Promise<AdCampaignWithSlot> {
     await this.assertValidCampaignInput(input);
+    await this.assertValidCampaignImage(input.imageUrl);
 
     const campaign = await this.repository.create({
       name: input.name,
@@ -288,6 +290,9 @@ export class AdCampaignService {
       adSlotId: input.adSlotId ?? current.adSlotId ?? '',
     };
     await this.assertValidCampaignInput(merged);
+    if (input.imageUrl !== undefined && input.imageUrl !== current.imageUrl) {
+      await this.assertValidCampaignImage(input.imageUrl);
+    }
     if (current.status === 'ACTIVE') {
       const conflict = await this.repository.findObviousSlotConflict({
         ...current,
@@ -328,6 +333,9 @@ export class AdCampaignService {
       requestId,
       metadata: { before: current, after: updated },
     });
+    if (updated.imageUrl !== current.imageUrl) {
+      await this.cleanupReplacedCampaignImage(current.imageUrl);
+    }
     return updated;
   }
 
@@ -444,6 +452,38 @@ export class AdCampaignService {
       return imageUrl;
     }
     return this.storage.getPresignedDownloadUrl(imageUrl);
+  }
+
+  private async assertValidCampaignImage(imageUrl: string): Promise<void> {
+    if (!imageUrl.startsWith('advertising/campaigns/')) return;
+    if (!this.storage) throw new ValidationError('Campaign image storage is unavailable.');
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.storage.readObjectPrefix(imageUrl, 16);
+    } catch {
+      throw new ValidationError('Campaign image could not be validated.');
+    }
+    const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every(
+      (value, index) => bytes[index] === value,
+    );
+    const webp =
+      String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' &&
+      String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
+    if (!jpeg && !png && !webp) {
+      throw new ValidationError('Campaign image content is not a valid JPEG, PNG, or WebP file.');
+    }
+  }
+
+  private async cleanupReplacedCampaignImage(imageUrl: string): Promise<void> {
+    if (!imageUrl.startsWith('advertising/campaigns/') || !this.storage) return;
+    try {
+      await this.storage.deleteObject(imageUrl);
+    } catch (error) {
+      this.logger.warn(
+        `Advertising image cleanup failed after campaign update: ${error instanceof Error ? error.name : 'unknown error'}`,
+      );
+    }
   }
 
   private normalizeAdUnitId(value?: string | null): string | null {
