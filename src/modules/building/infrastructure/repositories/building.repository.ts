@@ -348,6 +348,89 @@ export class BuildingRepository {
     });
   }
 
+  /**
+   * MVP Safe Unit Delete (backend gap identified during Mobile UI/UX-05B
+   * QA — a manager who accidentally created an extra unit had no way to
+   * remove it). See `BuildingService.deleteUnit`'s own doc comment for
+   * the full policy rationale; this method is the mechanism.
+   *
+   * Checks every relation `model Unit` declares in schema.prisma —
+   * Ownership, Membership, Tenancy, ChargeItem, Payment, CreditBalance,
+   * Adjustment, Refund, VoteEligibilitySnapshot, Ballot, VoteProxy, Case
+   * — and only deletes the Unit row itself if ALL of them are empty.
+   * Document/Notification/Gamification(XpTransaction/PersonAchievement)/
+   * Advertising(AdCampaign) models have no `unitId` relation at all
+   * (confirmed by grep across schema.prisma) and are correctly absent
+   * from this list — they can never block a unit delete.
+   *
+   * The check and the delete run inside one transaction so nothing can
+   * create a new dependency in between (closes what would otherwise be a
+   * TOCTOU race). This is still not the only guard: no `onDelete`
+   * directive exists anywhere in schema.prisma (see this repository's
+   * sibling `test/building.e2e-spec.ts` header comment, which documents
+   * the same fact for its own cleanup ordering), so every one of these
+   * relations is already `RESTRICT`/`NoAction` at the database level —
+   * if this application-level check were ever wrong, Postgres itself
+   * still refuses the delete rather than silently cascading. Nothing
+   * here weakens or bypasses that.
+   */
+  async deleteUnitIfUnused(unitId: string): Promise<{ deleted: boolean; blockedBy: string[] }> {
+    return this.prisma.$transaction(async (tx) => {
+      const [
+        ownerships,
+        memberships,
+        tenancies,
+        chargeItems,
+        payments,
+        creditBalances,
+        adjustments,
+        refunds,
+        voteEligibilitySnapshots,
+        ballots,
+        voteProxies,
+        cases,
+      ] = await Promise.all([
+        tx.ownership.count({ where: { unitId } }),
+        tx.membership.count({ where: { unitId } }),
+        tx.tenancy.count({ where: { unitId } }),
+        tx.chargeItem.count({ where: { unitId } }),
+        tx.payment.count({ where: { unitId } }),
+        tx.creditBalance.count({ where: { unitId } }),
+        tx.adjustment.count({ where: { unitId } }),
+        tx.refund.count({ where: { unitId } }),
+        tx.voteEligibilitySnapshot.count({ where: { unitId } }),
+        tx.ballot.count({ where: { unitId } }),
+        tx.voteProxy.count({ where: { unitId } }),
+        tx.case.count({ where: { unitId } }),
+      ]);
+
+      const counts: Record<string, number> = {
+        ownerships,
+        memberships,
+        tenancies,
+        chargeItems,
+        payments,
+        creditBalances,
+        adjustments,
+        refunds,
+        voteEligibilitySnapshots,
+        ballots,
+        voteProxies,
+        cases,
+      };
+      const blockedBy = Object.entries(counts)
+        .filter(([, count]) => count > 0)
+        .map(([relation]) => relation);
+
+      if (blockedBy.length > 0) {
+        return { deleted: false, blockedBy };
+      }
+
+      await tx.unit.delete({ where: { id: unitId } });
+      return { deleted: true, blockedBy: [] };
+    });
+  }
+
   createMembershipRequest(params: {
     buildingId: string;
     personId: string;

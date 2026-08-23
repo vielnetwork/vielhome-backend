@@ -19,7 +19,7 @@ import { RegisterTenantDto } from './dto/register-tenant.dto';
 import { CreateMembershipRequestDto } from './dto/create-membership-request.dto';
 import { UpdateBuildingSettingsDto } from './dto/update-building-settings.dto';
 import { AuditService } from '../../../common/audit/audit.service';
-import { NotFoundAppError } from '../../../common/errors/app-error';
+import { ConflictError, NotFoundAppError } from '../../../common/errors/app-error';
 import { UnitCreatedEvent } from '../events/unit-created.event';
 import { ManagerChangedEvent } from '../events/manager-changed.event';
 import { OwnershipTransferInitiatedEvent } from '../events/ownership-transferred.event';
@@ -398,6 +398,47 @@ export class BuildingService {
     });
 
     return updated;
+  }
+
+  /**
+   * MVP Safe Unit Delete (backend gap identified during Mobile UI/UX-05B
+   * QA): a manager who accidentally created an extra unit — e.g. 6 units
+   * for a 5-unit building — had no way to remove the mistaken one.
+   * MANAGER-only (`@Roles('MANAGER')` on the controller route, same
+   * boundary `addUnit`/`updateUnit` already enforce).
+   *
+   * Hard-deletes the Unit row ONLY when it is genuinely unused — see
+   * `BuildingRepository.deleteUnitIfUnused`'s own doc comment for the
+   * exhaustive list of relations checked (every one `model Unit` declares
+   * in schema.prisma) and why the check is safe even under concurrent
+   * writes. If the unit has ANY related record/history, deletion is
+   * refused with a stable `ConflictError` (409) rather than cascade-
+   * deleting real business/history records just to make the delete
+   * succeed — Ownership/Tenancy in particular are documented elsewhere in
+   * this schema as permanent, never-deleted history, and this method
+   * does not weaken that.
+   */
+  async deleteUnit(buildingId: string, unitId: string, personId: string, requestId: string) {
+    await this.getOwnUnit(buildingId, unitId); // 404s: missing building, missing unit, or cross-building
+
+    const result = await this.buildings.deleteUnitIfUnused(unitId);
+    if (!result.deleted) {
+      throw new ConflictError(
+        'This unit cannot be deleted because it already has related records or history.',
+        { unitId, blockedBy: result.blockedBy },
+      );
+    }
+
+    await this.audit.record({
+      actorId: personId,
+      buildingId,
+      action: 'UnitDeleted',
+      entityType: 'Unit',
+      entityId: unitId,
+      requestId,
+    });
+
+    return { id: unitId, deleted: true };
   }
 
   /**

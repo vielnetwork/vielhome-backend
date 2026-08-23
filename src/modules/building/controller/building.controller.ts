@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { BuildingSetupService } from '../application/building-setup.service';
 import { BuildingService } from '../application/building.service';
@@ -190,6 +190,23 @@ export class BuildingController {
     @RequestId() requestId: string,
   ) {
     return this.buildings.inviteOwnerV2(id, unitId, dto, user.sub, requestId);
+  }
+
+  // MVP Safe Unit Delete (backend gap identified during Mobile UI/UX-05B
+  // QA) — MANAGER-only, same guard as `addUnit`/`updateUnit` above.
+  // `BuildingService.deleteUnit` refuses (409) rather than deletes when
+  // the unit has any related record/history; see that method's own doc
+  // comment for the full policy.
+  @Delete(':id/units/:unitId')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
+  deleteUnit(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.buildings.deleteUnit(id, unitId, user.sub, requestId);
   }
 
   // Owner Self-Claim (Building Setup Refinement Phase 3). Deliberately NO

@@ -1273,6 +1273,217 @@ describe('Building (e2e) — Unit Authorization Hardening (Building Setup Refine
   });
 });
 
+describe('Building (e2e) — MVP Safe Unit Delete', () => {
+  // Backend gap identified during Mobile UI/UX-05B QA: a manager who
+  // accidentally created an extra unit (e.g. 6 units for a 5-unit
+  // building) had no way to remove the mistaken one. Covers: role gate
+  // (MANAGER only), not-found convention (missing unit / cross-building),
+  // the 409 dependency block (and that it changes nothing), the happy
+  // path (only the targeted unit is removed, siblings untouched), and the
+  // audit event.
+  //
+  // Budget: 5 calls to POST /auth/otp/request (manager + owner + tenant +
+  // board member + accountant).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let owner: RegisteredPerson;
+  let tenant: RegisteredPerson;
+  let boardMember: RegisteredPerson;
+  let accountant: RegisteredPerson;
+  let buildingId: string;
+  let otherBuildingId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    createdBuildingIds.push(buildingId);
+
+    owner = await registerPerson(app);
+    createdPhones.push(owner.phone);
+    await joinBuildingAsApprovedMember(
+      app,
+      buildingId,
+      owner.accessToken,
+      manager.accessToken,
+      'OWNER',
+    );
+
+    // TENANT/BOARD_MEMBER/ACCOUNTANT fixture-created directly via Prisma,
+    // same precedent the Unit Authorization Hardening describe above uses
+    // for BOARD_MEMBER/ACCOUNTANT — this group only needs "a real person
+    // who currently holds this role on the building" to prove RolesGuard
+    // denies them; RolesGuard resolves roles building-wide, not per-unit,
+    // so no real occupied unit/tenancy is needed to exercise it here.
+    tenant = await registerPerson(app);
+    createdPhones.push(tenant.phone);
+    await prisma.membership.create({
+      data: { personId: tenant.personId, buildingId, role: 'TENANT', isCurrent: true },
+    });
+
+    boardMember = await registerPerson(app);
+    createdPhones.push(boardMember.phone);
+    await prisma.membership.create({
+      data: { personId: boardMember.personId, buildingId, role: 'BOARD_MEMBER', isCurrent: true },
+    });
+
+    accountant = await registerPerson(app);
+    createdPhones.push(accountant.phone);
+    await prisma.membership.create({
+      data: { personId: accountant.personId, buildingId, role: 'ACCOUNTANT', isCurrent: true },
+    });
+
+    // A second, unrelated building (same manager) purely to prove no
+    // cross-building deletion is possible.
+    otherBuildingId = await createBuilding(app, manager.accessToken, { totalUnits: 1 });
+    createdBuildingIds.push(otherBuildingId);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  async function addCleanUnit(unitNumber: string): Promise<string> {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ unitNumber })
+      .expect(201);
+    return res.body.data.id as string;
+  }
+
+  describe('DELETE :id/units/:unitId (delete unit) — MANAGER only', () => {
+    it('rejects OWNER (403) and leaves the unit in place', async () => {
+      const unitId = await addCleanUnit(`DEL-AUTH-OWNER-${RUN_ID}`);
+      const res = await request(app.getHttpServer())
+        .delete(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+
+      await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+    });
+
+    it('rejects TENANT (403)', async () => {
+      const unitId = await addCleanUnit(`DEL-AUTH-TENANT-${RUN_ID}`);
+      const res = await request(app.getHttpServer())
+        .delete(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${tenant.accessToken}`)
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects BOARD_MEMBER (403)', async () => {
+      const unitId = await addCleanUnit(`DEL-AUTH-BOARD-${RUN_ID}`);
+      const res = await request(app.getHttpServer())
+        .delete(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${boardMember.accessToken}`)
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('rejects ACCOUNTANT (403)', async () => {
+      const unitId = await addCleanUnit(`DEL-AUTH-ACCT-${RUN_ID}`);
+      const res = await request(app.getHttpServer())
+        .delete(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${accountant.accessToken}`)
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('404s for a nonexistent unit', async () => {
+      const res = await request(app.getHttpServer())
+        .delete(`/api/v1/buildings/${buildingId}/units/does-not-exist-${RUN_ID}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(404);
+      expect(res.body.errors[0].code).toBe('NOT_FOUND');
+    });
+
+    it('404s for a unit that belongs to a different building — no cross-building deletion', async () => {
+      const otherUnitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${otherBuildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      const otherUnitId = otherUnitsRes.body.data[0].id;
+
+      const res = await request(app.getHttpServer())
+        .delete(`/api/v1/buildings/${buildingId}/units/${otherUnitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(404);
+      expect(res.body.errors[0].code).toBe('NOT_FOUND');
+
+      // Untouched, on its real building.
+      await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${otherBuildingId}/units/${otherUnitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+    });
+
+    it('a dependency (an Ownership row) blocks deletion with 409, and nothing is deleted', async () => {
+      const unitId = await addCleanUnit(`DEL-BLOCKED-${RUN_ID}`);
+      await prisma.ownership.create({
+        data: { unitId, personId: owner.personId, isCurrent: true },
+      });
+
+      const res = await request(app.getHttpServer())
+        .delete(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(409);
+      expect(res.body.errors[0].code).toBe('CONFLICT');
+      expect(res.body.errors[0].details?.blockedBy).toContain('ownerships');
+
+      // Blocked deletion preserves both the unit and the dependency.
+      await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      const ownershipCount = await prisma.ownership.count({ where: { unitId } });
+      expect(ownershipCount).toBe(1);
+    });
+
+    it('MANAGER deletes a clean, unused unit — removes only that unit, leaves a sibling unit intact, and records an audit event', async () => {
+      const survivorUnitId = await addCleanUnit(`DEL-SURVIVOR-${RUN_ID}`);
+      const unitId = await addCleanUnit(`DEL-CLEAN-${RUN_ID}`);
+
+      const res = await request(app.getHttpServer())
+        .delete(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      expect(res.body.data).toEqual({ id: unitId, deleted: true });
+
+      // Really gone.
+      await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units/${unitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(404);
+
+      // The sibling unit — and by extension every other unit — is untouched.
+      await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units/${survivorUnitId}`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+
+      const auditRow = await prisma.auditLog.findFirst({
+        where: { entityType: 'Unit', entityId: unitId, action: 'UnitDeleted' },
+      });
+      expect(auditRow).not.toBeNull();
+      expect(auditRow?.actorId).toBe(manager.personId);
+      expect(auditRow?.buildingId).toBe(buildingId);
+    });
+  });
+});
+
 describe('Building (e2e) — Address Hierarchy & Postal Code (Building Setup Refinement Phase 2)', () => {
   // Budget: 2 calls to POST /auth/otp/request for this ENTIRE describe
   // block (1 shared actor for almost every case below, + 1 dedicated
