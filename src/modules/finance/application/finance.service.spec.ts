@@ -675,7 +675,7 @@ describe('FinanceService', () => {
       );
     });
 
-    it('resolves TENANT payer snapshots at issue time (not draft time) and passes them into the same atomic issue call', async () => {
+    it('resolves a legacy TENANT-requested payer snapshot to RESIDENT at issue time (not draft time), and passes it into the same atomic issue call (FIN-CTX-01: TENANT is a deprecated input alias — the persisted outcome is always RESIDENT, never TENANT)', async () => {
       finance.findChargeBatchById.mockResolvedValue({
         id: 'batch-1',
         buildingId: 'b1',
@@ -693,7 +693,7 @@ describe('FinanceService', () => {
       expect(finance.issueChargeBatch).toHaveBeenCalledWith(
         expect.objectContaining({
           payerResolutions: [
-            { chargeItemId: 'item-1', resolvedPayerType: 'TENANT', personIds: ['tenant-1'] },
+            { chargeItemId: 'item-1', resolvedPayerType: 'RESIDENT', personIds: ['tenant-1'] },
           ],
         }),
       );
@@ -769,9 +769,129 @@ describe('FinanceService', () => {
     });
   });
 
+  describe('FIN-CTX-01 — RESIDENT payer type (OWNER/RESIDENT domain correction)', () => {
+    it('resolves RESIDENT payer snapshots to the current tenant when the unit has an active tenancy (tenant-occupied unit)', async () => {
+      finance.findChargeBatchById.mockResolvedValue({
+        id: 'batch-1',
+        buildingId: 'b1',
+        status: 'DRAFT',
+        totalAmount: 100_000,
+        fundId: 'fund-1',
+        payerType: 'RESIDENT',
+        chargeItems: [{ id: 'item-1', unitId: 'u1' }],
+      });
+      buildings.findCurrentTenancyForUnit.mockResolvedValue({ personId: 'tenant-1' });
+      finance.issueChargeBatch.mockResolvedValue({ id: 'batch-1', status: 'ISSUED' });
+
+      await service.issueChargeBatch('b1', 'batch-1', 'actor-1', 'req-1');
+
+      expect(finance.issueChargeBatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payerResolutions: [
+            { chargeItemId: 'item-1', resolvedPayerType: 'RESIDENT', personIds: ['tenant-1'] },
+          ],
+        }),
+      );
+    });
+
+    it('falls back a RESIDENT-requested batch to OWNER (all current co-owners) when the unit has no active tenant — owner-occupied and genuinely-vacant units are indistinguishable today and both correctly bill the owner', async () => {
+      finance.findChargeBatchById.mockResolvedValue({
+        id: 'batch-1',
+        buildingId: 'b1',
+        status: 'DRAFT',
+        totalAmount: 100_000,
+        fundId: 'fund-1',
+        payerType: 'RESIDENT',
+        chargeItems: [{ id: 'item-1', unitId: 'u1' }],
+      });
+      buildings.findCurrentTenancyForUnit.mockResolvedValue(null);
+      buildings.getCurrentOwnerPersonIds.mockResolvedValue(['owner-1', 'owner-2']);
+      finance.issueChargeBatch.mockResolvedValue({ id: 'batch-1', status: 'ISSUED' });
+
+      await service.issueChargeBatch('b1', 'batch-1', 'actor-1', 'req-1');
+
+      expect(finance.issueChargeBatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payerResolutions: [
+            {
+              chargeItemId: 'item-1',
+              resolvedPayerType: 'OWNER',
+              personIds: ['owner-1', 'owner-2'],
+            },
+          ],
+        }),
+      );
+    });
+
+    it('legacy TENANT input (deprecated alias, kept for the existing Mobile client) resolves identically to RESIDENT and never persists a new TENANT snapshot', async () => {
+      finance.findChargeBatchById.mockResolvedValue({
+        id: 'batch-1',
+        buildingId: 'b1',
+        status: 'DRAFT',
+        totalAmount: 100_000,
+        fundId: 'fund-1',
+        payerType: 'TENANT',
+        chargeItems: [{ id: 'item-1', unitId: 'u1' }],
+      });
+      buildings.findCurrentTenancyForUnit.mockResolvedValue({ personId: 'tenant-1' });
+      finance.issueChargeBatch.mockResolvedValue({ id: 'batch-1', status: 'ISSUED' });
+
+      await service.issueChargeBatch('b1', 'batch-1', 'actor-1', 'req-1');
+
+      const call = finance.issueChargeBatch.mock.calls[0][0];
+      expect(call.payerResolutions).toEqual([
+        { chargeItemId: 'item-1', resolvedPayerType: 'RESIDENT', personIds: ['tenant-1'] },
+      ]);
+      expect(
+        call.payerResolutions.some(
+          (r: { resolvedPayerType: string }) => r.resolvedPayerType === 'TENANT',
+        ),
+      ).toBe(false);
+    });
+
+    it('previewChargeBatch resolves RESIDENT identically to issueChargeBatch (tenant-occupied unit) — proves preview/issue semantics never structurally drift', async () => {
+      finance.findDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([{ id: 'u1', type: 'RESIDENTIAL', areaSqm: null }]);
+      buildings.findCurrentTenancyForUnit.mockResolvedValue({ personId: 'tenant-1' });
+
+      const result = await service.previewChargeBatch('b1', {
+        title: 'Preview',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 50_000,
+        payerType: 'RESIDENT',
+      });
+
+      expect(result.items[0]).toEqual(
+        expect.objectContaining({ resolvedPayerType: 'RESIDENT', payerPersonIds: ['tenant-1'] }),
+      );
+    });
+
+    it("previewChargeBatch falls a vacant/owner-occupied unit's RESIDENT request back to OWNER, same as issue", async () => {
+      finance.findDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([{ id: 'u1', type: 'RESIDENTIAL', areaSqm: null }]);
+      buildings.findCurrentTenancyForUnit.mockResolvedValue(null);
+      buildings.getCurrentOwnerPersonIds.mockResolvedValue(['owner-1']);
+
+      const result = await service.previewChargeBatch('b1', {
+        title: 'Preview',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 50_000,
+        payerType: 'RESIDENT',
+      });
+
+      expect(result.items[0]).toEqual(
+        expect.objectContaining({ resolvedPayerType: 'OWNER', payerPersonIds: ['owner-1'] }),
+      );
+    });
+  });
+
   describe('cancelChargeBatch', () => {
     it('rejects cancelling a batch with paid ChargeItems via ChargePolicy.assertCancellable', async () => {
-      finance.findChargeBatchById.mockResolvedValue({ id: 'batch-1', buildingId: 'b1', status: 'ISSUED' });
+      finance.findChargeBatchById.mockResolvedValue({
+        id: 'batch-1',
+        buildingId: 'b1',
+        status: 'ISSUED',
+      });
       finance.hasAnyPaidChargeItems.mockResolvedValue(true);
 
       await expect(

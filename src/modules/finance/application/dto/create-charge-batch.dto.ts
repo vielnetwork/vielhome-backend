@@ -16,7 +16,12 @@ const CALCULATION_METHODS = ['FIXED', 'AREA_BASED', 'MIXED'] as const;
 
 // ADR-095 (Sprint 29, Charge Generation Phase 2)
 const UNIT_SCOPES = ['ALL', 'RESIDENTIAL', 'COMMERCIAL', 'PARKING', 'STORAGE', 'MANUAL'] as const;
-const PAYER_TYPES = ['OWNER', 'TENANT'] as const;
+// FIN-CTX-01: RESIDENT is canonical (OWNER vs RESIDENT — see
+// ChargePayerType's schema comment for why OWNER vs TENANT was wrong).
+// TENANT is kept, deprecated, as an accepted legacy alias so the
+// already-shipped, frozen Mobile client keeps working unmodified; it
+// resolves identically to RESIDENT (see FinanceService.resolvePayers).
+const PAYER_TYPES = ['OWNER', 'RESIDENT', 'TENANT'] as const;
 const LATE_FEE_TYPES = ['FIXED', 'PERCENTAGE'] as const;
 
 export class ChargeBatchItemDto {
@@ -145,8 +150,19 @@ export class CreateChargeBatchDto {
    * this is for display/notification targeting. Never restricts who may
    * call `createPayment`. Resolved + snapshotted onto each ChargeItem at
    * ISSUE time, not at draft creation — see ChargeItem.resolvedPayerType.
+   *
+   * FIN-CTX-01: use `RESIDENT` (the unit's current occupant — tenant if
+   * one exists, owner otherwise) for new integrations. `TENANT` is
+   * accepted only for backward compatibility with the existing Mobile
+   * client and behaves identically to `RESIDENT`; it is deprecated and
+   * will not gain new behavior.
    */
-  @ApiProperty({ required: false, enum: PAYER_TYPES })
+  @ApiProperty({
+    required: false,
+    enum: PAYER_TYPES,
+    description:
+      "Who this charge batch's debt is attributed to. RESIDENT is canonical — the unit's current occupant (tenant if one exists, owner otherwise). TENANT is a deprecated alias for RESIDENT, accepted only for backward compatibility with existing clients.",
+  })
   @IsOptional()
   @IsIn(PAYER_TYPES)
   payerType?: (typeof PAYER_TYPES)[number];

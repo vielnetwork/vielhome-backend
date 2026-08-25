@@ -290,26 +290,46 @@ export class FinanceService {
   }
 
   /**
-   * ADR-095 — resolves who a unit's charge is attributed to (informational
-   * only, see ChargeBatch.payerType's own comment). TENANT falls back to
-   * OWNER — snapshotting ALL current owners, never picking one arbitrarily,
-   * since this schema has never enforced single-ownership-per-unit (see
-   * `Ownership`'s own schema comment). Shared verbatim by
-   * `previewChargeBatch` (display-only) and `issueChargeBatch` (persisted
-   * snapshot) — same function, so the two can only ever differ because the
-   * underlying ownership/tenancy data changed between calls, never because
-   * the resolution logic differs.
+   * ADR-095 / FIN-CTX-01 — resolves who a unit's charge is attributed to
+   * (informational only, see ChargeBatch.payerType's own comment).
+   * RESIDENT (and its deprecated legacy alias TENANT — see
+   * ChargePayerType's own comment) falls back to OWNER when the unit has
+   * no active Tenancy — snapshotting ALL current owners, never picking
+   * one arbitrarily, since this schema has never enforced
+   * single-ownership-per-unit (see `Ownership`'s own schema comment).
+   *
+   * This IS the correct RESIDENT resolution, not a stand-in for one: this
+   * schema has no reliable way to positively confirm "the owner
+   * physically occupies this unit" (`Unit.occupancyStatus`'s
+   * OWNER_OCCUPIED value is a free-standing manual flag a manager can set
+   * via `updateUnit`, never reconciled against Ownership/Tenancy — see
+   * that field's own schema comment) — but it doesn't need to, because
+   * the payer is the same person (the current owner) whether the unit is
+   * genuinely vacant or the owner lives there themselves. Only "does an
+   * active Tenancy exist" needs to be known to resolve RESIDENT correctly,
+   * and that IS reliably tracked (`Tenancy.isCurrent`, kept in sync by
+   * `createTenancy`/`endTenancy`).
+   *
+   * New resolutions never write `'TENANT'` — only `'OWNER'` or
+   * `'RESIDENT'` — regardless of whether the caller requested `RESIDENT`
+   * or the legacy `TENANT` alias, so `ChargeItem.resolvedPayerType` never
+   * grows new TENANT rows after FIN-CTX-01.
+   *
+   * Shared verbatim by `previewChargeBatch` (display-only) and
+   * `issueChargeBatch` (persisted snapshot) — same function, so the two
+   * can only ever differ because the underlying ownership/tenancy data
+   * changed between calls, never because the resolution logic differs.
    */
   private async resolvePayers(
     unitId: string,
     payerType: CreateChargeBatchDto['payerType'],
-  ): Promise<{ resolvedPayerType: 'OWNER' | 'TENANT'; personIds: string[] } | null> {
+  ): Promise<{ resolvedPayerType: 'OWNER' | 'RESIDENT'; personIds: string[] } | null> {
     if (!payerType) return null;
 
-    if (payerType === 'TENANT') {
+    if (payerType === 'RESIDENT' || payerType === 'TENANT') {
       const tenancy = await this.buildings.findCurrentTenancyForUnit(unitId);
       if (tenancy) {
-        return { resolvedPayerType: 'TENANT', personIds: [tenancy.personId] };
+        return { resolvedPayerType: 'RESIDENT', personIds: [tenancy.personId] };
       }
     }
 
@@ -495,7 +515,7 @@ export class FinanceService {
     // `finance.issueChargeBatch` below.
     let payerResolutions: Array<{
       chargeItemId: string;
-      resolvedPayerType: 'OWNER' | 'TENANT';
+      resolvedPayerType: 'OWNER' | 'RESIDENT';
       personIds: string[];
     }> = [];
     // Narrowed into a local const before the closure below — TS narrowing

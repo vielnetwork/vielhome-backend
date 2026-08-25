@@ -1,0 +1,18 @@
+-- FIN-CTX-01: add RESIDENT to ChargePayerType.
+--
+-- Additive only. TENANT is NOT removed and NO existing rows are rewritten:
+-- historical ChargeBatch.payerType / ChargeItem.resolvedPayerType values of
+-- 'TENANT' are an immutable snapshot of what was requested/resolved before
+-- this change and must remain readable as-is (see ChargePayerType's schema
+-- comment). Going forward, application code (FinanceService.resolvePayers)
+-- only ever writes OWNER or RESIDENT for new resolutions; TENANT is kept
+-- purely as a deprecated, still-accepted legacy input alias so the
+-- already-shipped, frozen Mobile client (which sends payerType: 'TENANT')
+-- keeps working unmodified.
+--
+-- Safe to run standalone: adding an enum value does not lock or rewrite
+-- the column, and this migration does not use the new value itself (Postgres
+-- disallows using a value added by ALTER TYPE ... ADD VALUE within the same
+-- transaction it was added in), so it can be applied independently of the
+-- application code deploy that starts writing/reading RESIDENT.
+ALTER TYPE "ChargePayerType" ADD VALUE 'RESIDENT';

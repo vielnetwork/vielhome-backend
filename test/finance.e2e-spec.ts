@@ -1535,7 +1535,11 @@ describe('Finance (e2e) — Charge Generation Phase 2 (ADR-095)', () => {
       where: { chargeBatchId: batchId, unitId: ownerOnlyUnitId },
       include: { payers: true },
     });
-    expect(item?.resolvedPayerType).toBe('TENANT');
+    // FIN-CTX-01: RESIDENT is the canonical resolved value now — TENANT
+    // is a deprecated input alias that resolves the SAME WAY, but never
+    // persists 'TENANT' onto a new snapshot (see resolvePayers's own
+    // comment).
+    expect(item?.resolvedPayerType).toBe('RESIDENT');
     expect(item?.payers.map((p) => p.personId)).toEqual([tenant.personId]);
   });
 
@@ -1567,6 +1571,127 @@ describe('Finance (e2e) — Charge Generation Phase 2 (ADR-095)', () => {
     expect(item?.payers.map((p) => p.personId).sort()).toEqual(
       [owner1.personId, owner2.personId].sort(),
     );
+  });
+
+  // --- FIN-CTX-01: RESIDENT payer type -----------------------------------------
+
+  it('snapshots the active occupant as RESIDENT (tenant-occupied unit) — the canonical value going forward', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Resident Payer',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 60_000,
+        unitScope: 'MANUAL',
+        unitIds: [ownerOnlyUnitId],
+        payerType: 'RESIDENT',
+      })
+      .expect(201);
+    const batchId = createRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${batchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const item = await prisma.chargeItem.findFirst({
+      where: { chargeBatchId: batchId, unitId: ownerOnlyUnitId },
+      include: { payers: true },
+    });
+    expect(item?.resolvedPayerType).toBe('RESIDENT');
+    expect(item?.payers.map((p) => p.personId)).toEqual([tenant.personId]);
+  });
+
+  it('falls back RESIDENT to OWNER (all current co-owners) when the unit has no active tenant — owner-occupied and vacant units are indistinguishable today and both correctly bill the owner', async () => {
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Resident Fallback To Co-Owners',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 60_000,
+        unitScope: 'MANUAL',
+        unitIds: [multiOwnerUnitId],
+        payerType: 'RESIDENT',
+      })
+      .expect(201);
+    const batchId = createRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${batchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const item = await prisma.chargeItem.findFirst({
+      where: { chargeBatchId: batchId, unitId: multiOwnerUnitId },
+      include: { payers: true },
+    });
+    expect(item?.resolvedPayerType).toBe('OWNER');
+    expect(item?.payers.map((p) => p.personId).sort()).toEqual(
+      [owner1.personId, owner2.personId].sort(),
+    );
+  });
+
+  it('preview and issue resolve an identical RESIDENT snapshot for the same unit (no drift between the two code paths)', async () => {
+    const previewRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Resident Preview',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 60_000,
+        unitScope: 'MANUAL',
+        unitIds: [ownerOnlyUnitId],
+        payerType: 'RESIDENT',
+      })
+      .expect(201);
+    const previewItem = previewRes.body.data.items.find(
+      (i: { unitId: string }) => i.unitId === ownerOnlyUnitId,
+    );
+    expect(previewItem.resolvedPayerType).toBe('RESIDENT');
+    expect(previewItem.payerPersonIds).toEqual([tenant.personId]);
+
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Resident Preview-vs-Issue',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 60_000,
+        unitScope: 'MANUAL',
+        unitIds: [ownerOnlyUnitId],
+        payerType: 'RESIDENT',
+      })
+      .expect(201);
+    const batchId = createRes.body.data.id;
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${batchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const item = await prisma.chargeItem.findFirst({
+      where: { chargeBatchId: batchId, unitId: ownerOnlyUnitId },
+      include: { payers: true },
+    });
+    expect(item?.resolvedPayerType).toBe(previewItem.resolvedPayerType);
+    expect(item?.payers.map((p) => p.personId)).toEqual(previewItem.payerPersonIds);
+  });
+
+  it('rejects an unrecognized payerType (contract validation unchanged by FIN-CTX-01)', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Bad Payer Type',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 60_000,
+        unitScope: 'MANUAL',
+        unitIds: [ownerOnlyUnitId],
+        payerType: 'OCCUPANT',
+      })
+      .expect(400);
   });
 
   // --- Gap 3: Late Fee -----------------------------------------------------------

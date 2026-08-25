@@ -812,15 +812,37 @@ enum ChargeUnitScope {
   MANUAL
 }
 
-// ADR-095 — who a charge batch's debt is attributed to, informational
-// only (does NOT restrict who may call `createPayment` — see that
-// method's own doc comment, unchanged). Snapshotted per ChargeItem at
-// issue time via `ChargeItem.resolvedPayerType` + `ChargeItemPayer`, not
-// re-derived live, so later ownership/tenancy changes never rewrite
-// historical responsibility.
+// ADR-095 / FIN-CTX-01 — who a charge batch's debt is attributed to,
+// informational only (does NOT restrict who may call `createPayment` —
+// see that method's own doc comment, unchanged). Snapshotted per
+// ChargeItem at issue time via `ChargeItem.resolvedPayerType` +
+// `ChargeItemPayer`, not re-derived live, so later ownership/tenancy
+// changes never rewrite historical responsibility.
+//
+// FIN-CTX-01: OWNER vs TENANT was conceptually wrong — an owner can live
+// in their own unit, so "who owes this" is really OWNER vs RESIDENT
+// (whoever currently occupies the unit), not OWNER vs TENANT. RESIDENT
+// is the correct, canonical value going forward: `resolvePayers`
+// (FinanceService) resolves it to the unit's current Tenancy occupant
+// when one exists, falling back to the current Owner(s) otherwise — the
+// exact same resolution TENANT already performed, since this schema has
+// never had a way to positively confirm "owner occupies this unit" (see
+// `Unit.occupancyStatus`'s own comment) and billing the owner by default
+// when nobody rents the unit is correct regardless of whether that's
+// because the owner lives there or the unit sits empty.
+//
+// TENANT is kept, deprecated, as an accepted legacy alias for RESIDENT on
+// write (so the already-shipped, frozen Mobile client's existing
+// `payerType: 'TENANT'` requests keep working unmodified) and as the
+// literal value already persisted on historical ChargeItem/ChargeBatch
+// rows (never rewritten — those rows are an immutable snapshot of what
+// was requested/resolved at the time). No code path writes TENANT for a
+// NEW resolution anymore — `resolvePayers` always returns OWNER or
+// RESIDENT.
 enum ChargePayerType {
   OWNER
   TENANT
+  RESIDENT
 }
 
 // ADR-095/ADR-125 — FIXED: lateFeeValue is a flat Rial amount. PERCENTAGE:
@@ -864,9 +886,11 @@ model ChargeBatch {
   // FinanceService.resolveChargeItems). Always null for MIXED, since unit
   // selection there comes entirely from `items[]`.
   unitScope         ChargeUnitScope?
-  // ADR-095 — the requested payer type; NOT the resolved outcome (a
-  // requested TENANT can still resolve to OWNER per unit if that unit has
-  // no active tenant — see ChargeItem.resolvedPayerType below).
+  // ADR-095 / FIN-CTX-01 — the requested payer type; NOT the resolved
+  // outcome (a requested RESIDENT/TENANT can still resolve to OWNER per
+  // unit if that unit has no active tenant — see ChargeItem
+  // .resolvedPayerType below). RESIDENT is canonical; TENANT is accepted
+  // as a deprecated legacy alias (see ChargePayerType's own comment).
   payerType         ChargePayerType?
   lateFeeType       LateFeeType?
   lateFeeValue      Int?
@@ -913,8 +937,11 @@ model ChargeItem {
   // transaction (never at DRAFT creation, since a draft can sit for days
   // before issue — see ChargeBatch.payerType's own comment). Null/empty
   // when the batch never requested a payerType. `resolvedPayerType` can
-  // differ from the batch's requested `payerType` (TENANT-with-no-active-
-  // tenant falls back to OWNER) — this field records the ACTUAL outcome.
+  // differ from the batch's requested `payerType` (RESIDENT/TENANT-with-
+  // no-active-tenant falls back to OWNER) — this field records the ACTUAL
+  // outcome. FIN-CTX-01: new resolutions only ever write OWNER or
+  // RESIDENT here; a persisted TENANT value is historical-only (written
+  // before this change, immutable — see ChargePayerType's own comment).
   resolvedPayerType ChargePayerType?
   payers            ChargeItemPayer[]
 
