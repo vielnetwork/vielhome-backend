@@ -137,18 +137,25 @@ export class BuildingService {
   /**
    * Response enrichment (Building Setup Refinement Phase 3, item E) — the
    * `GET /buildings` shape used by the controller route. Batches one
-   * `getRolesForBuildings` call instead of N+1 `getRoles` calls. Not folded
+   * `getMembershipScopesForBuildings` call instead of N+1 membership calls. Not folded
    * into the plain `listForPerson` above since `AuthService.verifyOtp`
    * calls that one too, only to check `.length > 0` — no need to pay for
    * role enrichment there.
    */
   async listForPersonEnriched(personId: string) {
     const buildings = await this.buildings.listForPerson(personId);
-    const rolesByBuilding = await this.buildings.getRolesForBuildings(
+    const membershipsByBuilding = await this.buildings.getMembershipScopesForBuildings(
       personId,
       buildings.map((b) => b.id),
     );
-    return buildings.map((b) => ({ ...b, myRoles: rolesByBuilding[b.id] ?? [] }));
+    return buildings.map((b) => {
+      const memberships = membershipsByBuilding[b.id] ?? [];
+      return {
+        ...b,
+        myRoles: memberships.map((membership) => membership.role),
+        myMemberships: memberships.map(({ buildingId: _, ...membership }) => membership),
+      };
+    });
   }
 
   /**

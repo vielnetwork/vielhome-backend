@@ -2245,6 +2245,13 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
         .expect(200);
       const mine = listRes.body.data.find((b: { id: string }) => b.id === buildingId);
       expect(mine.myRoles).toEqual(expect.arrayContaining(['MANAGER']));
+      expect(mine.myMemberships).toEqual([
+        expect.objectContaining({
+          role: 'MANAGER',
+          unitId: null,
+          unit: null,
+        }),
+      ]);
 
       const oneRes = await request(app.getHttpServer())
         .get(`/api/v1/buildings/${buildingId}`)

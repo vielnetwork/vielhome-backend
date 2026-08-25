@@ -491,18 +491,33 @@ export class BuildingRepository {
    * (`listForPerson`): one query for every building the person belongs to,
    * instead of N+1 `getRoles` calls in a loop.
    */
-  async getRolesForBuildings(
-    personId: string,
-    buildingIds: string[],
-  ): Promise<Record<string, MembershipRole[]>> {
+  async getMembershipScopesForBuildings(personId: string, buildingIds: string[]) {
     if (buildingIds.length === 0) return {};
     const rows = await this.prisma.membership.findMany({
       where: { personId, buildingId: { in: buildingIds }, isCurrent: true },
-      select: { buildingId: true, role: true },
+      select: {
+        id: true,
+        buildingId: true,
+        role: true,
+        unitId: true,
+        unit: { select: { id: true, unitNumber: true } },
+      },
     });
-    const result: Record<string, MembershipRole[]> = {};
+
+    rows.sort((a, b) => {
+      if (a.buildingId !== b.buildingId) return a.buildingId < b.buildingId ? -1 : 1;
+      if (a.unitId === null && b.unitId !== null) return -1;
+      if (a.unitId !== null && b.unitId === null) return 1;
+      const aUnitNumber = a.unit?.unitNumber ?? '';
+      const bUnitNumber = b.unit?.unitNumber ?? '';
+      if (aUnitNumber !== bUnitNumber) return aUnitNumber < bUnitNumber ? -1 : 1;
+      if (a.role !== b.role) return a.role < b.role ? -1 : 1;
+      return a.id === b.id ? 0 : a.id < b.id ? -1 : 1;
+    });
+
+    const result: Record<string, typeof rows> = {};
     for (const id of buildingIds) result[id] = [];
-    for (const row of rows) result[row.buildingId].push(row.role);
+    for (const row of rows) result[row.buildingId].push(row);
     return result;
   }
 
