@@ -44,6 +44,91 @@ import {
 import { AdjustmentCreatedEvent } from '../events/adjustment.events';
 import { ExpenseCreatedEvent, ExpenseVoidedEvent } from '../events/expense.events';
 
+/**
+ * FIN-CALC-01 — deterministic EQUAL allocation of `totalAmount` (integer
+ * Rial) across `unitIds` (the batch's already-scope-filtered eligible
+ * units), guaranteeing `SUM(item.amount) === totalAmount` exactly, with
+ * no independent per-item rounding drift.
+ *
+ * `base = floor(totalAmount / n)`; the remainder (`totalAmount - base *
+ * n`, always an integer in `[0, n)`) is handed out one extra Rial at a
+ * time to the FIRST `remainder` units in `unitIds`'s own order — the same
+ * order `FinanceService.filterUnitsByScope` already returns (itself the
+ * underlying `BuildingRepository.listUnits` read, unchanged by this
+ * task). Because `previewChargeBatch` and `createChargeBatch` both reach
+ * this through the identical `resolveChargeItems` path against the same
+ * repository read, they always agree exactly — the remainder is never
+ * assigned differently between a preview and the batch it becomes.
+ *
+ * A `totalAmount` smaller than `unitIds.length` is allowed and produces
+ * some `amount: 0` items (base is 0, only `remainder` units get 1 Rial) —
+ * deliberate, not a bug: `ChargePolicy.assertValidCalculationInputs`
+ * already guarantees `totalAmount > 0`, and a zero-amount ChargeItem is a
+ * harmless, already-UNPAID-by-default row (Finance-hardening's
+ * `computeItemStatus`/credit-balance-application paths treat a
+ * zero-outstanding item as a no-op, never a crash).
+ */
+function allocateEqually(
+  totalAmount: number,
+  unitIds: string[],
+): Array<{ unitId: string; amount: number }> {
+  const n = unitIds.length;
+  const base = Math.floor(totalAmount / n);
+  const remainder = totalAmount - base * n;
+  return unitIds.map((unitId, index) => ({
+    unitId,
+    amount: index < remainder ? base + 1 : base,
+  }));
+}
+
+/**
+ * FIN-CALC-01 — deterministic AREA-PROPORTIONAL allocation of
+ * `totalAmount` across `units` (the batch's scope-filtered units that
+ * additionally have a positive `areaSqm` — see `resolveChargeItems`'s
+ * AREA_BASED branch for why area-less units never reach this function),
+ * using the largest-remainder ("Hamilton apportionment") method so
+ * `SUM(item.amount) === totalAmount` exactly.
+ *
+ * Each unit's exact share is `totalAmount * unitArea / totalArea` (a
+ * real number). Flooring every share independently and summing the
+ * floors would under-allocate by the sum of the dropped fractions —
+ * breaking the required SUM invariant — so instead: floor every share
+ * first, then hand the leftover Rials (`totalAmount - sum(floors)`,
+ * always an integer in `[0, units.length)`) out one at a time to the
+ * units whose fractional remainder was largest. Ties (equal fractional
+ * remainder) are broken by the unit's own original position in `units` —
+ * the same stable order `filterUnitsByScope` already returns — so this
+ * is fully deterministic. As with `allocateEqually`, `previewChargeBatch`
+ * and `createChargeBatch`/`issueChargeBatch` share the identical
+ * `resolveChargeItems` call and the same repository read, so preview and
+ * the real batch always agree exactly.
+ */
+function allocateByArea(
+  totalAmount: number,
+  units: Array<{ unitId: string; areaSqm: number }>,
+): Array<{ unitId: string; amount: number }> {
+  const totalArea = units.reduce((sum, u) => sum + u.areaSqm, 0);
+  const shares = units.map((u, index) => {
+    const exact = (totalAmount * u.areaSqm) / totalArea;
+    const floorAmount = Math.floor(exact);
+    return { unitId: u.unitId, index, floorAmount, fraction: exact - floorAmount };
+  });
+  const allocated = shares.reduce((sum, s) => sum + s.floorAmount, 0);
+  const leftover = totalAmount - allocated;
+
+  const byRemainderDesc = [...shares].sort((a, b) => {
+    if (b.fraction !== a.fraction) return b.fraction - a.fraction;
+    // Deterministic tie-break: the unit's own stable original position.
+    return a.index - b.index;
+  });
+  const bonusUnitIds = new Set(byRemainderDesc.slice(0, leftover).map((s) => s.unitId));
+
+  return shares.map((s) => ({
+    unitId: s.unitId,
+    amount: s.floorAmount + (bonusUnitIds.has(s.unitId) ? 1 : 0),
+  }));
+}
+
 @Injectable()
 export class FinanceService {
   constructor(
@@ -239,6 +324,13 @@ export class FinanceService {
   ): Promise<{
     items: Array<{ unitId: string; amount: number }>;
     effectiveUnitScope: CreateChargeBatchDto['unitScope'] | null;
+    // FIN-CALC-01 — count of in-scope AREA_BASED units excluded because
+    // they have no positive `areaSqm`, purely for `previewChargeBatch`'s
+    // `validationWarnings` visibility (see that method). Always 0 for
+    // FIXED/MIXED. `createChargeBatch` ignores this field entirely — it
+    // doesn't change persistence, only what preview surfaces to the
+    // caller before they issue.
+    areaUnitsSkippedForMissingArea: number;
   }> {
     this.chargePolicy.assertValidCalculationInputs(dto.calculationMethod, dto);
 
@@ -246,6 +338,7 @@ export class FinanceService {
       return {
         items: dto.items!.map((i) => ({ unitId: i.unitId, amount: i.amount })),
         effectiveUnitScope: null,
+        areaUnitsSkippedForMissingArea: 0,
       };
     }
 
@@ -254,23 +347,72 @@ export class FinanceService {
     const units = this.filterUnitsByScope(allUnits, effectiveUnitScope, dto.unitIds);
 
     if (dto.calculationMethod === 'FIXED') {
+      if (dto.totalAmount !== undefined) {
+        // FIN-CALC-01 — the manager's chosen total, split evenly across
+        // every eligible unit (see `allocateEqually`'s own doc comment).
+        return {
+          items: allocateEqually(
+            dto.totalAmount,
+            units.map((u) => u.id),
+          ),
+          effectiveUnitScope,
+          areaUnitsSkippedForMissingArea: 0,
+        };
+      }
+      // Legacy — amountPerUnit applied verbatim to every eligible unit,
+      // UNCHANGED from before FIN-CALC-01 (kept only for the
+      // currently-shipped Mobile client — see
+      // CreateChargeBatchDto.amountPerUnit's own doc comment).
       return {
         items: units.map((u) => ({ unitId: u.id, amount: dto.amountPerUnit! })),
         effectiveUnitScope,
+        areaUnitsSkippedForMissingArea: 0,
       };
     }
 
     // AREA_BASED — units with no areaSqm configured yet are skipped rather
     // than charged 0 (06_User_Flows: area is a "Configure Units" follow-up,
-    // not guaranteed at skeleton-unit creation time).
+    // not guaranteed at skeleton-unit creation time). Identical rule under
+    // both the new totalAmount shape and the legacy ratePerSqm shape.
+    const unitsWithArea = units.filter((u) => u.areaSqm && u.areaSqm > 0);
+    const areaUnitsSkippedForMissingArea = units.length - unitsWithArea.length;
+
+    if (dto.totalAmount !== undefined) {
+      // FIN-CALC-01 — AREA VALIDATION: a totalAmount-based AREA_BASED
+      // batch cannot proportionally divide anything if not one in-scope
+      // unit has a usable area — that's a data-integrity problem the
+      // caller must fix (add area to at least one unit, or narrow scope),
+      // not something to paper over with an invented fallback (e.g.
+      // splitting evenly instead — no evidence that's what the product
+      // wants when AREA_BASED was explicitly requested). This is
+      // deliberately stricter than the legacy ratePerSqm shape below,
+      // which silently produces zero items in this same situation
+      // (pre-existing, unchanged, since altering that would risk the
+      // currently-shipped Mobile client's behavior) — the new shape has
+      // no such compatibility constraint, so it fails loudly instead.
+      if (unitsWithArea.length === 0) {
+        throw new BusinessRuleViolationError(
+          `An AREA_BASED charge batch requires at least one in-scope unit with a positive area configured; 0 of ${units.length} in-scope unit(s) have area set.`,
+        );
+      }
+      return {
+        items: allocateByArea(
+          dto.totalAmount,
+          unitsWithArea.map((u) => ({ unitId: u.id, areaSqm: u.areaSqm as number })),
+        ),
+        effectiveUnitScope,
+        areaUnitsSkippedForMissingArea,
+      };
+    }
+
+    // Legacy — per-unit rate, UNCHANGED from before FIN-CALC-01.
     return {
-      items: units
-        .filter((u) => u.areaSqm && u.areaSqm > 0)
-        .map((u) => ({
-          unitId: u.id,
-          amount: Math.round(dto.ratePerSqm! * (u.areaSqm as number)),
-        })),
+      items: unitsWithArea.map((u) => ({
+        unitId: u.id,
+        amount: Math.round(dto.ratePerSqm! * (u.areaSqm as number)),
+      })),
       effectiveUnitScope,
+      areaUnitsSkippedForMissingArea,
     };
   }
 
@@ -428,7 +570,8 @@ export class FinanceService {
       }
     }
 
-    const { items, effectiveUnitScope } = await this.resolveChargeItems(buildingId, dto);
+    const { items, effectiveUnitScope, areaUnitsSkippedForMissingArea } =
+      await this.resolveChargeItems(buildingId, dto);
     const allUnits = await this.buildings.listUnits(buildingId);
     const unitById = new Map(allUnits.map((u) => [u.id, u]));
 
@@ -462,6 +605,16 @@ export class FinanceService {
     if (previewItems.length === 0) {
       validationWarnings.push(
         'No units matched the requested scope — this batch would have zero items.',
+      );
+    }
+    // FIN-CALC-01 — AREA VALIDATION: surfaces the pre-existing "units
+    // with no area are skipped, not charged 0" behavior (unchanged by
+    // this task — see resolveChargeItems's AREA_BASED branch) explicitly
+    // to the caller instead of leaving it silent, for both the new
+    // totalAmount shape and the legacy ratePerSqm shape alike.
+    if (areaUnitsSkippedForMissingArea > 0) {
+      validationWarnings.push(
+        `${areaUnitsSkippedForMissingArea} unit(s) in scope were skipped because they have no positive area configured.`,
       );
     }
 

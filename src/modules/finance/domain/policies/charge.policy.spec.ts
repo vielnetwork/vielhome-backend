@@ -117,6 +117,75 @@ describe('ChargePolicy', () => {
         }),
       ).toThrow(BusinessRuleViolationError);
     });
+
+    // FIN-CALC-01 — totalAmount (preferred) vs legacy amountPerUnit/ratePerSqm.
+    describe('FIN-CALC-01 — totalAmount', () => {
+      it('accepts a valid FIXED input using totalAmount instead of amountPerUnit', () => {
+        expect(() =>
+          policy.assertValidCalculationInputs('FIXED', { totalAmount: 900_000 }),
+        ).not.toThrow();
+      });
+
+      it('accepts a valid AREA_BASED input using totalAmount instead of ratePerSqm', () => {
+        expect(() =>
+          policy.assertValidCalculationInputs('AREA_BASED', { totalAmount: 900_000 }),
+        ).not.toThrow();
+      });
+
+      it('rejects FIXED with a zero totalAmount', () => {
+        expect(() =>
+          policy.assertValidCalculationInputs('FIXED', { totalAmount: 0 }),
+        ).toThrow(BusinessRuleViolationError);
+      });
+
+      it('rejects FIXED with a negative totalAmount', () => {
+        expect(() =>
+          policy.assertValidCalculationInputs('FIXED', { totalAmount: -1 }),
+        ).toThrow(BusinessRuleViolationError);
+      });
+
+      it('rejects AREA_BASED with a zero totalAmount', () => {
+        expect(() =>
+          policy.assertValidCalculationInputs('AREA_BASED', { totalAmount: 0 }),
+        ).toThrow(BusinessRuleViolationError);
+      });
+
+      it('rejects FIXED with BOTH totalAmount and the legacy amountPerUnit (ambiguous)', () => {
+        expect(() =>
+          policy.assertValidCalculationInputs('FIXED', {
+            totalAmount: 900_000,
+            amountPerUnit: 100_000,
+          }),
+        ).toThrow(BusinessRuleViolationError);
+      });
+
+      it('rejects AREA_BASED with BOTH totalAmount and the legacy ratePerSqm (ambiguous)', () => {
+        expect(() =>
+          policy.assertValidCalculationInputs('AREA_BASED', {
+            totalAmount: 900_000,
+            ratePerSqm: 5_000,
+          }),
+        ).toThrow(BusinessRuleViolationError);
+      });
+
+      it('rejects MIXED combined with totalAmount', () => {
+        expect(() =>
+          policy.assertValidCalculationInputs('MIXED', {
+            items: [{ unitId: 'u1', amount: 10_000 }],
+            totalAmount: 900_000,
+          }),
+        ).toThrow(BusinessRuleViolationError);
+      });
+
+      it('still enforces MANUAL unitScope validation when using totalAmount', () => {
+        expect(() =>
+          policy.assertValidCalculationInputs('FIXED', {
+            totalAmount: 900_000,
+            unitScope: 'MANUAL',
+          }),
+        ).toThrow(BusinessRuleViolationError);
+      });
+    });
   });
 
   describe('assertUnitsBelongToBuilding', () => {

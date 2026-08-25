@@ -653,6 +653,320 @@ describe('FinanceService', () => {
     });
   });
 
+  describe('FIN-CALC-01 — totalAmount allocation (equal / area-based)', () => {
+    it('100/3 equal allocation across 3 units sums exactly to 100, base+remainder deterministic on unit order', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u3', type: 'RESIDENTIAL', areaSqm: null },
+      ]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      await service.createChargeBatch(
+        'b1',
+        { title: 'Equal split', calculationMethod: 'FIXED', totalAmount: 100 },
+        'actor-1',
+        'req-1',
+      );
+
+      const items = finance.createChargeBatch.mock.calls[0][0].items;
+      expect(items).toEqual([
+        { unitId: 'u1', amount: 34 },
+        { unitId: 'u2', amount: 33 },
+        { unitId: 'u3', amount: 33 },
+      ]);
+      expect(items.reduce((sum: number, i: { amount: number }) => sum + i.amount, 0)).toBe(100);
+    });
+
+    it('a totalAmount smaller than the number of units still sums exactly, with amount-0 items for the units that miss out', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u3', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u4', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u5', type: 'RESIDENTIAL', areaSqm: null },
+      ]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      await service.createChargeBatch(
+        'b1',
+        { title: 'Tiny total', calculationMethod: 'FIXED', totalAmount: 2 },
+        'actor-1',
+        'req-1',
+      );
+
+      const items = finance.createChargeBatch.mock.calls[0][0].items;
+      expect(items).toEqual([
+        { unitId: 'u1', amount: 1 },
+        { unitId: 'u2', amount: 1 },
+        { unitId: 'u3', amount: 0 },
+        { unitId: 'u4', amount: 0 },
+        { unitId: 'u5', amount: 0 },
+      ]);
+      expect(items.reduce((sum: number, i: { amount: number }) => sum + i.amount, 0)).toBe(2);
+    });
+
+    it('a single eligible unit gets the entire totalAmount', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([{ id: 'u1', type: 'RESIDENTIAL', areaSqm: null }]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      await service.createChargeBatch(
+        'b1',
+        { title: 'One unit', calculationMethod: 'FIXED', totalAmount: 777 },
+        'actor-1',
+        'req-1',
+      );
+
+      expect(finance.createChargeBatch.mock.calls[0][0].items).toEqual([
+        { unitId: 'u1', amount: 777 },
+      ]);
+    });
+
+    it('RESIDENTIAL unitScope is the denominator for equal allocation — the COMMERCIAL unit gets nothing and is excluded from the split', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u3', type: 'COMMERCIAL', areaSqm: null },
+      ]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      await service.createChargeBatch(
+        'b1',
+        {
+          title: 'Residential only',
+          calculationMethod: 'FIXED',
+          totalAmount: 100,
+          unitScope: 'RESIDENTIAL',
+        },
+        'actor-1',
+        'req-1',
+      );
+
+      const items = finance.createChargeBatch.mock.calls[0][0].items;
+      expect(items.map((i: { unitId: string }) => i.unitId)).toEqual(['u1', 'u2']);
+      expect(items.reduce((sum: number, i: { amount: number }) => sum + i.amount, 0)).toBe(100);
+    });
+
+    it('MANUAL unitScope is the denominator for equal allocation — only the selected units split the total', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u3', type: 'RESIDENTIAL', areaSqm: null },
+      ]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      await service.createChargeBatch(
+        'b1',
+        {
+          title: 'Manual split',
+          calculationMethod: 'FIXED',
+          totalAmount: 100,
+          unitScope: 'MANUAL',
+          unitIds: ['u1', 'u3'],
+        },
+        'actor-1',
+        'req-1',
+      );
+
+      const items = finance.createChargeBatch.mock.calls[0][0].items;
+      expect(items.map((i: { unitId: string }) => i.unitId)).toEqual(['u1', 'u3']);
+      expect(items.reduce((sum: number, i: { amount: number }) => sum + i.amount, 0)).toBe(100);
+    });
+
+    it('area-based totalAmount splits proportional to unequal areas (50/75/125 sqm) and sums exactly', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: 50 },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: 75 },
+        { id: 'u3', type: 'RESIDENTIAL', areaSqm: 125 },
+      ]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      await service.createChargeBatch(
+        'b1',
+        { title: 'Area split', calculationMethod: 'AREA_BASED', totalAmount: 1_000_000 },
+        'actor-1',
+        'req-1',
+      );
+
+      const items = finance.createChargeBatch.mock.calls[0][0].items;
+      // Exact shares: 200_000 / 300_000 / 500_000 (50/75/125 out of 250
+      // total sqm) — no fractional remainder to distribute in this case,
+      // but the SUM invariant is still asserted explicitly below.
+      expect(items).toEqual([
+        { unitId: 'u1', amount: 200_000 },
+        { unitId: 'u2', amount: 300_000 },
+        { unitId: 'u3', amount: 500_000 },
+      ]);
+      expect(items.reduce((sum: number, i: { amount: number }) => sum + i.amount, 0)).toBe(
+        1_000_000,
+      );
+    });
+
+    it('area-based totalAmount with a remainder distributes it deterministically by largest fractional share', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: 10 },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: 10 },
+        { id: 'u3', type: 'RESIDENTIAL', areaSqm: 10 },
+      ]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      await service.createChargeBatch(
+        'b1',
+        { title: 'Equal-area remainder', calculationMethod: 'AREA_BASED', totalAmount: 100 },
+        'actor-1',
+        'req-1',
+      );
+
+      const items = finance.createChargeBatch.mock.calls[0][0].items;
+      // Equal areas -> equal exact shares (33.33 each) -> equal
+      // fractional remainders -> tie-break falls back to stable original
+      // order, same as the pure equal-allocation case.
+      expect(items).toEqual([
+        { unitId: 'u1', amount: 34 },
+        { unitId: 'u2', amount: 33 },
+        { unitId: 'u3', amount: 33 },
+      ]);
+      expect(items.reduce((sum: number, i: { amount: number }) => sum + i.amount, 0)).toBe(100);
+    });
+
+    it('area-based totalAmount skips units with no positive area, splitting the total only across the units that have one', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: 100 },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u3', type: 'RESIDENTIAL', areaSqm: 0 },
+      ]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      await service.createChargeBatch(
+        'b1',
+        { title: 'Partial area', calculationMethod: 'AREA_BASED', totalAmount: 500_000 },
+        'actor-1',
+        'req-1',
+      );
+
+      expect(finance.createChargeBatch.mock.calls[0][0].items).toEqual([
+        { unitId: 'u1', amount: 500_000 },
+      ]);
+    });
+
+    it('rejects an area-based totalAmount batch when zero in-scope units have a positive area (BUSINESS_RULE_VIOLATION, never reaches the repository)', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: 0 },
+      ]);
+
+      await expect(
+        service.createChargeBatch(
+          'b1',
+          { title: 'No area anywhere', calculationMethod: 'AREA_BASED', totalAmount: 500_000 },
+          'actor-1',
+          'req-1',
+        ),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+      expect(finance.createChargeBatch).not.toHaveBeenCalled();
+    });
+
+    it('rejects sending both totalAmount and the legacy amountPerUnit together (BUSINESS_RULE_VIOLATION, never reaches the repository)', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([{ id: 'u1', type: 'RESIDENTIAL', areaSqm: null }]);
+
+      await expect(
+        service.createChargeBatch(
+          'b1',
+          {
+            title: 'Ambiguous',
+            calculationMethod: 'FIXED',
+            totalAmount: 100_000,
+            amountPerUnit: 50_000,
+          },
+          'actor-1',
+          'req-1',
+        ),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+      expect(finance.createChargeBatch).not.toHaveBeenCalled();
+    });
+
+    it('the legacy amountPerUnit shape is completely unaffected — still charges every eligible unit that exact amount, not a proportional split', async () => {
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: null },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: null },
+      ]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      await service.createChargeBatch(
+        'b1',
+        { title: 'Legacy unchanged', calculationMethod: 'FIXED', amountPerUnit: 250_000 },
+        'actor-1',
+        'req-1',
+      );
+
+      expect(finance.createChargeBatch.mock.calls[0][0].items).toEqual([
+        { unitId: 'u1', amount: 250_000 },
+        { unitId: 'u2', amount: 250_000 },
+      ]);
+    });
+
+    it('previewChargeBatch surfaces a validationWarning when AREA_BASED units are skipped for missing area, and grandTotal still equals the requested totalAmount', async () => {
+      buildings.listUnits.mockResolvedValue([
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: 100, unitNumber: '1' },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: null, unitNumber: '2' },
+      ]);
+      finance.findDefaultFund.mockResolvedValue(DEFAULT_FUND);
+
+      const result = await service.previewChargeBatch('b1', {
+        title: 'Preview with gaps',
+        calculationMethod: 'AREA_BASED',
+        totalAmount: 500_000,
+      });
+
+      expect(result.items).toEqual([
+        expect.objectContaining({ unitId: 'u1', amount: 500_000 }),
+      ]);
+      expect(result.grandTotal).toBe(500_000);
+      expect(result.validationWarnings).toEqual(
+        expect.arrayContaining([
+          '1 unit(s) in scope were skipped because they have no positive area configured.',
+        ]),
+      );
+    });
+
+    it('previewChargeBatch and createChargeBatch compute byte-identical items for the same totalAmount request (same resolveChargeItems path)', async () => {
+      const units = [
+        { id: 'u1', type: 'RESIDENTIAL', areaSqm: 30, unitNumber: '1' },
+        { id: 'u2', type: 'RESIDENTIAL', areaSqm: 70, unitNumber: '2' },
+      ];
+      buildings.listUnits.mockResolvedValue(units);
+      finance.findDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      const dto = {
+        title: 'Same math',
+        calculationMethod: 'AREA_BASED' as const,
+        totalAmount: 333_333,
+      };
+
+      const preview = await service.previewChargeBatch('b1', dto);
+      await service.createChargeBatch('b1', dto, 'actor-1', 'req-1');
+
+      const createdItems = finance.createChargeBatch.mock.calls[0][0].items;
+      expect(preview.items.map((i) => ({ unitId: i.unitId, amount: i.amount }))).toEqual(
+        createdItems,
+      );
+      expect(preview.grandTotal).toBe(333_333);
+    });
+  });
+
   describe('issueChargeBatch — payer snapshot timing (ADR-095)', () => {
     it('never calls resolvePayers/BuildingRepository when the batch has no requested payerType', async () => {
       finance.findChargeBatchById.mockResolvedValue({

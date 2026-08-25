@@ -46,15 +46,31 @@ export class ChargeBatchItemDto {
 }
 
 /**
- * `calculationMethod` picks which of the three input shapes below is
- * required — enforced by `ChargePolicy.assertValidCalculationInputs`, not
- * here, since "which fields are required given another field's value" is a
- * business rule, not a shape-validation concern (09_Engineering_
- * Constitution: validation vs business rules stay in separate layers).
- *   FIXED      -> amountPerUnit (applied to every unit in the building)
- *   AREA_BASED -> ratePerSqm (amount = ratePerSqm * unit.areaSqm; units
- *                 with no areaSqm set yet are skipped, not charged 0)
- *   MIXED      -> items (explicit per-unit amounts)
+ * `calculationMethod` picks which of the input shapes below is required —
+ * enforced by `ChargePolicy.assertValidCalculationInputs`, not here, since
+ * "which fields are required given another field's value" is a business
+ * rule, not a shape-validation concern (09_Engineering_Constitution:
+ * validation vs business rules stay in separate layers).
+ *   FIXED      -> totalAmount (preferred, FIN-CALC-01) split evenly across
+ *                 every eligible unit — see `totalAmount`'s own doc
+ *                 comment — OR the legacy `amountPerUnit` (applied
+ *                 verbatim to every eligible unit; deprecated, kept only
+ *                 for the currently-shipped Mobile client — see that
+ *                 field's own doc comment). Exactly one of the two, never
+ *                 both.
+ *   AREA_BASED -> totalAmount (preferred, FIN-CALC-01) split across every
+ *                 eligible unit proportional to its area — see
+ *                 `totalAmount`'s own doc comment — OR the legacy
+ *                 `ratePerSqm` (amount = ratePerSqm * unit.areaSqm per
+ *                 unit; deprecated, see that field's own doc comment).
+ *                 Exactly one of the two, never both. Units with no
+ *                 positive `areaSqm` are skipped (not charged 0) under
+ *                 either shape — see `totalAmount`'s doc comment for the
+ *                 stricter all-units-missing-area behavior that applies
+ *                 only to the new `totalAmount` shape.
+ *   MIXED      -> items (explicit per-unit amounts). `totalAmount` cannot
+ *                 be combined with MIXED — its own items[] already is the
+ *                 exact, explicit total; see `ChargePolicy`.
  */
 export class CreateChargeBatchDto {
   @ApiProperty({ required: false })
@@ -75,7 +91,23 @@ export class CreateChargeBatchDto {
   @IsIn(CALCULATION_METHODS)
   calculationMethod!: (typeof CALCULATION_METHODS)[number];
 
-  /** Finance Hardening Pass — `@IsInt()`, see `ChargeBatchItemDto.amount`'s own doc comment: this value is applied verbatim (no rounding) to every unit's `ChargeItem.amount`, an `Int` column. */
+  /**
+   * Finance Hardening Pass — `@IsInt()`, see `ChargeBatchItemDto.amount`'s
+   * own doc comment: this value is applied verbatim (no rounding) to
+   * every eligible unit's `ChargeItem.amount`, an `Int` column.
+   *
+   * FIN-CALC-01: this is now the LEGACY FIXED input — it does not
+   * distribute a total, it charges every eligible unit this exact amount
+   * (so the batch's real total is `amountPerUnit * eligibleUnits.length`,
+   * not a value the caller chose directly). This was the strategic bug
+   * FIN-CALC-01 corrected: VielHome's product model is a manager entering
+   * one total for the charge period, not a fixed per-unit amount. Kept,
+   * deprecated, only so the currently-shipped Mobile client (which still
+   * sends this shape) keeps working unmodified until it migrates to
+   * `totalAmount` in a follow-up Mobile task. New integrations must use
+   * `totalAmount` instead. Mutually exclusive with `totalAmount` — see
+   * `ChargePolicy.assertValidCalculationInputs`.
+   */
   @ApiProperty({ required: false })
   @IsOptional()
   @IsInt()
@@ -93,12 +125,56 @@ export class CreateChargeBatchDto {
    * other amount/rate in Finance is a whole-Rial integer — so allowing a
    * fractional rate here would be the one inconsistent exception, not a
    * currency granularity this domain actually supports.
+   *
+   * FIN-CALC-01: this is now the LEGACY AREA_BASED input — like
+   * `amountPerUnit`, it does not distribute a chosen total; the batch's
+   * real total falls out of `ratePerSqm * each unit's area` rather than
+   * being a value the caller chose directly. Kept, deprecated, only for
+   * the currently-shipped Mobile client — see `amountPerUnit`'s own doc
+   * comment for the full rationale, identical here. New integrations must
+   * use `totalAmount` instead. Mutually exclusive with `totalAmount`.
    */
   @ApiProperty({ required: false })
   @IsOptional()
   @IsInt()
   @IsPositive()
   ratePerSqm?: number;
+
+  /**
+   * FIN-CALC-01 — the preferred, canonical FIXED/AREA_BASED input: the
+   * single TOTAL Rial amount for this charge period, which VielHome
+   * distributes across the batch's eligible units (this is the actual
+   * product model — a manager enters one total, never a per-unit amount
+   * or rate; `amountPerUnit`/`ratePerSqm` above were a strategic
+   * modelling bug this task corrected). Ignored for MIXED — its own
+   * `items[]` already is the explicit, exact total; `ChargePolicy`
+   * rejects sending `totalAmount` alongside MIXED rather than silently
+   * ignoring it, mirroring the existing `unitScope`/MIXED contradiction
+   * check.
+   *
+   * Distribution is deterministic and integer-exact — the sum of the
+   * resulting `ChargeItem.amount` rows always equals `totalAmount`
+   * exactly, with no rounding drift, by construction (see
+   * `FinanceService`'s `allocateEqually`/`allocateByArea` for the exact
+   * algorithm — largest-remainder apportionment for AREA_BASED, a
+   * deterministic base+remainder split for FIXED). "Eligible units" is
+   * always the batch's resolved `unitScope` set (ALL/RESIDENTIAL/
+   * COMMERCIAL/PARKING/STORAGE/MANUAL), never the whole building
+   * regardless of scope.
+   *
+   * Mutually exclusive with the legacy `amountPerUnit`/`ratePerSqm` —
+   * exactly one of {totalAmount, the method's legacy field} must be sent,
+   * enforced by `ChargePolicy.assertValidCalculationInputs`.
+   */
+  @ApiProperty({
+    required: false,
+    description:
+      "The TOTAL Rial amount for this FIXED/AREA_BASED charge period, distributed across the batch's eligible units (evenly for FIXED, by area for AREA_BASED). Preferred over the deprecated amountPerUnit/ratePerSqm. Not used for MIXED.",
+  })
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  totalAmount?: number;
 
   @ApiProperty({ required: false, type: [ChargeBatchItemDto] })
   @IsOptional()

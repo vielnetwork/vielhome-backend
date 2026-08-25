@@ -15,12 +15,26 @@ export interface ChargeBatchLike {
  */
 @Injectable()
 export class ChargePolicy {
-  /** Exactly one calculation input set must be present, matching the method. */
+  /**
+   * Exactly one calculation input set must be present, matching the
+   * method.
+   *
+   * FIN-CALC-01 — FIXED and AREA_BASED each now accept EITHER the
+   * preferred `totalAmount` (VielHome's real product model: the manager
+   * enters one total, distributed across eligible units — see
+   * `CreateChargeBatchDto.totalAmount`'s own doc comment) OR their legacy
+   * per-unit field (`amountPerUnit`/`ratePerSqm`, kept only for the
+   * currently-shipped Mobile client), but never both — an ambiguous
+   * request naming two different totals is rejected outright, the same
+   * "reject the contradiction, don't silently prefer one" posture already
+   * established for MIXED + unitScope/unitIds below.
+   */
   assertValidCalculationInputs(
     method: 'FIXED' | 'AREA_BASED' | 'MIXED',
     input: {
       amountPerUnit?: number;
       ratePerSqm?: number;
+      totalAmount?: number;
       items?: Array<{ unitId: string; amount: number }>;
       unitScope?: string;
       unitIds?: string[];
@@ -35,20 +49,54 @@ export class ChargePolicy {
         'unitScope/unitIds cannot be combined with MIXED — unit selection there comes from items.',
       );
     }
+    // FIN-CALC-01 — likewise, MIXED's items[] already IS the explicit,
+    // exact total; a `totalAmount` sent alongside it would be a second,
+    // contradictory claim about the batch's total.
+    if (method === 'MIXED' && input.totalAmount !== undefined) {
+      throw new BusinessRuleViolationError(
+        'totalAmount cannot be combined with MIXED — its items already specify the exact total.',
+      );
+    }
 
     if (method === 'FIXED') {
-      if (!input.amountPerUnit || input.amountPerUnit <= 0) {
+      const hasTotalAmount = input.totalAmount !== undefined;
+      const hasLegacyAmount = input.amountPerUnit !== undefined;
+      if (hasTotalAmount && hasLegacyAmount) {
         throw new BusinessRuleViolationError(
-          'A FIXED charge batch requires a positive amountPerUnit.',
+          'Send exactly one of totalAmount (preferred) or the legacy amountPerUnit for a FIXED charge batch, not both.',
+        );
+      }
+      if (hasTotalAmount) {
+        if (!input.totalAmount || input.totalAmount <= 0) {
+          throw new BusinessRuleViolationError(
+            'A FIXED charge batch requires a positive totalAmount.',
+          );
+        }
+      } else if (!input.amountPerUnit || input.amountPerUnit <= 0) {
+        throw new BusinessRuleViolationError(
+          'A FIXED charge batch requires either a positive totalAmount or the legacy amountPerUnit.',
         );
       }
       this.assertValidUnitScopeInputs(input.unitScope, input.unitIds);
       return;
     }
     if (method === 'AREA_BASED') {
-      if (!input.ratePerSqm || input.ratePerSqm <= 0) {
+      const hasTotalAmount = input.totalAmount !== undefined;
+      const hasLegacyRate = input.ratePerSqm !== undefined;
+      if (hasTotalAmount && hasLegacyRate) {
         throw new BusinessRuleViolationError(
-          'An AREA_BASED charge batch requires a positive ratePerSqm.',
+          'Send exactly one of totalAmount (preferred) or the legacy ratePerSqm for an AREA_BASED charge batch, not both.',
+        );
+      }
+      if (hasTotalAmount) {
+        if (!input.totalAmount || input.totalAmount <= 0) {
+          throw new BusinessRuleViolationError(
+            'An AREA_BASED charge batch requires a positive totalAmount.',
+          );
+        }
+      } else if (!input.ratePerSqm || input.ratePerSqm <= 0) {
+        throw new BusinessRuleViolationError(
+          'An AREA_BASED charge batch requires either a positive totalAmount or the legacy ratePerSqm.',
         );
       }
       this.assertValidUnitScopeInputs(input.unitScope, input.unitIds);

@@ -3741,3 +3741,369 @@ describe('Finance (e2e) — Remaining Payable: existing credit behavior (Finance
     expect(afterCredit.remainingPayable).toBe(0); // netting existing credit never pushes remainingPayable negative.
   });
 });
+
+// FIN-CALC-01 — Charge Total Amount Allocation. The manager enters ONE
+// totalAmount for the charge period; VielHome distributes it across the
+// batch's eligible (in-scope) units — evenly for FIXED, proportional to
+// area for AREA_BASED — with SUM(ChargeItem.amount) always exactly equal
+// to totalAmount (deterministic largest-remainder-style allocation, see
+// `FinanceService.allocateEqually`/`allocateByArea`). The legacy
+// amountPerUnit/ratePerSqm shapes remain fully supported, unchanged,
+// alongside totalAmount — see CreateChargeBatchDto's own doc comments.
+describe('Finance (e2e) — FIN-CALC-01 Charge Total Amount Allocation', () => {
+  // Budget: 2 calls to POST /auth/otp/request (manager + outsider).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  let manager: RegisteredPerson;
+  let outsider: RegisteredPerson;
+  let buildingId: string;
+  // 5 skeleton units, seeded as: [0] RESIDENTIAL area 50, [1] RESIDENTIAL
+  // area 75, [2] RESIDENTIAL area 125, [3] COMMERCIAL area null, [4]
+  // RESIDENTIAL area null — covers unequal-area proportional splits, a
+  // non-RESIDENTIAL unit for scope-denominator tests, and units with no
+  // area for the AREA VALIDATION tests, from one fixture set.
+  let unitIds: string[];
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    outsider = await registerPerson(app);
+    createdPhones.push(outsider.phone);
+
+    buildingId = await createBuilding(app, manager.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 5,
+    });
+    createdBuildingIds.push(buildingId);
+
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    unitIds = unitsRes.body.data.map((u: { id: string }) => u.id);
+
+    await prisma.unit.update({ where: { id: unitIds[0] }, data: { areaSqm: 50 } });
+    await prisma.unit.update({ where: { id: unitIds[1] }, data: { areaSqm: 75 } });
+    await prisma.unit.update({ where: { id: unitIds[2] }, data: { areaSqm: 125 } });
+    await prisma.unit.update({ where: { id: unitIds[3] }, data: { type: 'COMMERCIAL' } });
+    // unitIds[4] left as skeleton default: RESIDENTIAL, areaSqm null.
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('ROUNDING 1: FIXED totalAmount 100 split across 3 MANUAL units sums to exactly 100, with a base+remainder split (max-min amount difference of at most 1)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: '100 over 3',
+        calculationMethod: 'FIXED',
+        totalAmount: 100,
+        unitScope: 'MANUAL',
+        unitIds: [unitIds[2], unitIds[3], unitIds[4]],
+      })
+      .expect(201);
+
+    const amounts = res.body.data.items.map((i: { amount: number }) => i.amount);
+    expect(amounts.reduce((a: number, b: number) => a + b, 0)).toBe(100);
+    expect(Math.max(...amounts) - Math.min(...amounts)).toBeLessThanOrEqual(1);
+  });
+
+  it('ROUNDING 2: a totalAmount smaller than the number of units still sums exactly, with only 0/1-Rial items', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Tiny total over 5',
+        calculationMethod: 'FIXED',
+        totalAmount: 3,
+        unitScope: 'ALL',
+      })
+      .expect(201);
+
+    const amounts = res.body.data.items.map((i: { amount: number }) => i.amount);
+    expect(amounts.reduce((a: number, b: number) => a + b, 0)).toBe(3);
+    expect(amounts.every((a: number) => a === 0 || a === 1)).toBe(true);
+  });
+
+  it('ROUNDING 3/4: AREA_BASED totalAmount over unequal areas (50/75/125 sqm) splits exactly proportional to area and sums exactly', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Area split',
+        calculationMethod: 'AREA_BASED',
+        totalAmount: 1_000_000,
+        unitScope: 'MANUAL',
+        unitIds: [unitIds[0], unitIds[1], unitIds[2]],
+      })
+      .expect(201);
+
+    const byUnit = new Map(
+      res.body.data.items.map((i: { unitId: string; amount: number }) => [i.unitId, i.amount]),
+    );
+    expect(byUnit.get(unitIds[0])).toBe(200_000); // 50/250 of the total
+    expect(byUnit.get(unitIds[1])).toBe(300_000); // 75/250
+    expect(byUnit.get(unitIds[2])).toBe(500_000); // 125/250
+    expect(
+      res.body.data.items.reduce((sum: number, i: { amount: number }) => sum + i.amount, 0),
+    ).toBe(1_000_000);
+  });
+
+  it('ROUNDING 5/7: repeated preview calls with the same request produce the identical deterministic allocation (stable ordering, no drift)', async () => {
+    const send = () =>
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({
+          title: 'Stability check',
+          calculationMethod: 'FIXED',
+          totalAmount: 101,
+          unitScope: 'ALL',
+        })
+        .expect(201);
+
+    const first = await send();
+    const second = await send();
+    expect(second.body.data.items).toEqual(first.body.data.items);
+  });
+
+  it('SCOPE: RESIDENTIAL unitScope is the denominator — the COMMERCIAL unit is excluded and the total is split only across residential units', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Residential only',
+        calculationMethod: 'FIXED',
+        totalAmount: 400,
+        unitScope: 'RESIDENTIAL',
+      })
+      .expect(201);
+
+    expect(
+      res.body.data.items.some((i: { unitId: string }) => i.unitId === unitIds[3]),
+    ).toBe(false);
+    expect(res.body.data.totalUnitCount).toBe(4);
+    expect(
+      res.body.data.items.reduce((sum: number, i: { amount: number }) => sum + i.amount, 0),
+    ).toBe(400);
+  });
+
+  it('SCOPE: COMMERCIAL unitScope is the denominator — the single COMMERCIAL unit receives the entire total', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Commercial only',
+        calculationMethod: 'FIXED',
+        totalAmount: 250,
+        unitScope: 'COMMERCIAL',
+      })
+      .expect(201);
+
+    expect(res.body.data.items).toEqual([
+      expect.objectContaining({ unitId: unitIds[3], amount: 250 }),
+    ]);
+  });
+
+  it('SCOPE: MANUAL unitScope is the denominator — only the selected units split the total, and a single selected unit gets it all', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Manual single unit',
+        calculationMethod: 'FIXED',
+        totalAmount: 555,
+        unitScope: 'MANUAL',
+        unitIds: [unitIds[4]],
+      })
+      .expect(201);
+
+    expect(res.body.data.items).toEqual([
+      expect.objectContaining({ unitId: unitIds[4], amount: 555 }),
+    ]);
+  });
+
+  it('AREA VALIDATION: AREA_BASED totalAmount skips a unit with no area, giving the total entirely to the unit(s) that have one, with an explicit validationWarning', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Partial area',
+        calculationMethod: 'AREA_BASED',
+        totalAmount: 500_000,
+        unitScope: 'MANUAL',
+        unitIds: [unitIds[0], unitIds[4]],
+      })
+      .expect(201);
+
+    expect(res.body.data.items).toEqual([
+      expect.objectContaining({ unitId: unitIds[0], amount: 500_000 }),
+    ]);
+    expect(res.body.data.validationWarnings).toEqual(
+      expect.arrayContaining([
+        '1 unit(s) in scope were skipped because they have no positive area configured.',
+      ]),
+    );
+  });
+
+  it('AREA VALIDATION: AREA_BASED totalAmount rejects outright when zero in-scope units have a positive area (422 BUSINESS_RULE_VIOLATION)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'No area anywhere',
+        calculationMethod: 'AREA_BASED',
+        totalAmount: 500_000,
+        unitScope: 'MANUAL',
+        unitIds: [unitIds[3], unitIds[4]],
+      })
+      .expect(422);
+
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('rejects a zero totalAmount (400 VALIDATION_ERROR, not a business-rule 422)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ title: 'Zero total', calculationMethod: 'FIXED', totalAmount: 0 })
+      .expect(400);
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects a negative totalAmount (400 VALIDATION_ERROR)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ title: 'Negative total', calculationMethod: 'FIXED', totalAmount: -100 })
+      .expect(400);
+    expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects sending both totalAmount and the legacy amountPerUnit together (422 BUSINESS_RULE_VIOLATION)', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Ambiguous',
+        calculationMethod: 'FIXED',
+        totalAmount: 100_000,
+        amountPerUnit: 50_000,
+      })
+      .expect(422);
+    expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('PREVIEW/ISSUE PARITY: previewChargeBatch and the real created+issued ChargeBatch produce byte-identical per-unit amounts, and the persisted totalAmount matches the request exactly', async () => {
+    const request_ = {
+      title: 'Parity check',
+      calculationMethod: 'AREA_BASED' as const,
+      totalAmount: 333_333,
+      unitScope: 'MANUAL' as const,
+      unitIds: [unitIds[0], unitIds[1]],
+    };
+
+    const previewRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send(request_)
+      .expect(201);
+
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send(request_)
+      .expect(201);
+
+    expect(createRes.body.data.totalAmount).toBe(333_333);
+
+    const getRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charges/${createRes.body.data.id}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const previewByUnit = new Map(
+      previewRes.body.data.items.map((i: { unitId: string; amount: number }) => [
+        i.unitId,
+        i.amount,
+      ]),
+    );
+    const issuedByUnit = new Map(
+      getRes.body.data.chargeItems.map((i: { unitId: string; amount: number }) => [
+        i.unitId,
+        i.amount,
+      ]),
+    );
+    expect(issuedByUnit).toEqual(previewByUnit);
+  });
+
+  it('REGRESSION: a totalAmount-based FIXED batch still honors an explicit fundId and dueDate exactly as before, unaffected by the new allocation path', async () => {
+    const fundRes = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/funds`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ name: 'FIN-CALC-01 Fund' })
+      .expect(201);
+    const fundId = fundRes.body.data.id;
+    const dueDate = '2027-01-01T00:00:00.000Z';
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Fund + due date regression',
+        calculationMethod: 'FIXED',
+        totalAmount: 500,
+        unitScope: 'MANUAL',
+        unitIds: [unitIds[4]],
+        fundId,
+        dueDate,
+      })
+      .expect(201);
+
+    expect(res.body.data.fundId).toBe(fundId);
+    expect(new Date(res.body.data.dueDate).toISOString()).toBe(dueDate);
+  });
+
+  it('REGRESSION: a non-manager member is still blocked from creating a totalAmount-based charge batch (403), authorization unaffected by the new allocation path', async () => {
+    await joinBuildingAsApprovedMember(app, buildingId, outsider.accessToken, manager.accessToken);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .send({ title: 'Should be blocked', calculationMethod: 'FIXED', totalAmount: 100 })
+      .expect(403);
+  });
+
+  it('BACKWARD COMPATIBILITY: the legacy amountPerUnit shape still works exactly as before (unaffected by totalAmount), and historical batches created this way remain readable', async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Legacy shape',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 250_000,
+        unitScope: 'MANUAL',
+        unitIds: [unitIds[4]],
+      })
+      .expect(201);
+
+    expect(res.body.data.totalAmount).toBe(250_000);
+
+    const getRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charges/${res.body.data.id}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(getRes.body.data.chargeItems).toEqual([
+      expect.objectContaining({ unitId: unitIds[4], amount: 250_000 }),
+    ]);
+  });
+});
