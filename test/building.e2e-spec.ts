@@ -2223,7 +2223,10 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
       ({ app, prisma } = await bootstrapTestApp());
       manager = await registerPerson(app);
       createdPhones.push(manager.phone);
-      buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+      buildingId = await createBuilding(app, manager.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 5,
+      });
       createdBuildingIds.push(buildingId);
       const unitsRes = await request(app.getHttpServer())
         .get(`/api/v1/buildings/${buildingId}/units`)
@@ -2258,6 +2261,94 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
         .set('Authorization', `Bearer ${manager.accessToken}`)
         .expect(200);
       expect(oneRes.body.data.myRoles).toEqual(expect.arrayContaining(['MANAGER']));
+    });
+
+    it('GET /buildings preserves multi-unit OWNER and TENANT scopes and excludes inactive memberships', async () => {
+      const units = await prisma.unit.findMany({
+        where: { buildingId },
+        orderBy: { unitNumber: 'asc' },
+        select: { id: true, unitNumber: true },
+      });
+      const [unit1, unit2, unit3, , unit5] = units;
+
+      await prisma.membership.createMany({
+        data: [
+          {
+            personId: manager.personId,
+            buildingId,
+            unitId: unit1.id,
+            role: 'OWNER',
+            isCurrent: true,
+          },
+          {
+            personId: manager.personId,
+            buildingId,
+            unitId: unit5.id,
+            role: 'OWNER',
+            isCurrent: true,
+          },
+          {
+            personId: manager.personId,
+            buildingId,
+            unitId: unit3.id,
+            role: 'TENANT',
+            isCurrent: true,
+          },
+          {
+            personId: manager.personId,
+            buildingId,
+            unitId: unit2.id,
+            role: 'OWNER',
+            isCurrent: false,
+          },
+        ],
+      });
+
+      const listRes = await request(app.getHttpServer())
+        .get('/api/v1/buildings')
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      const matchingBuildings = listRes.body.data.filter(
+        (building: { id: string }) => building.id === buildingId,
+      );
+      expect(matchingBuildings).toHaveLength(1);
+
+      const mine = matchingBuildings[0];
+      const ownerMemberships = mine.myMemberships.filter(
+        (membership: { role: string }) => membership.role === 'OWNER',
+      );
+      expect(ownerMemberships).toHaveLength(2);
+      expect(ownerMemberships).toEqual([
+        expect.objectContaining({
+          role: 'OWNER',
+          unitId: unit1.id,
+          unit: { id: unit1.id, unitNumber: unit1.unitNumber },
+        }),
+        expect.objectContaining({
+          role: 'OWNER',
+          unitId: unit5.id,
+          unit: { id: unit5.id, unitNumber: unit5.unitNumber },
+        }),
+      ]);
+
+      const tenantMembership = mine.myMemberships.find(
+        (membership: { role: string }) => membership.role === 'TENANT',
+      );
+      expect(tenantMembership).toEqual(
+        expect.objectContaining({
+          role: 'TENANT',
+          unitId: unit3.id,
+          unit: { id: unit3.id, unitNumber: unit3.unitNumber },
+        }),
+      );
+      expect(Object.keys(tenantMembership.unit).sort()).toEqual(['id', 'unitNumber']);
+      expect(
+        mine.myMemberships.some(
+          (membership: { unitId: string | null }) => membership.unitId === unit2.id,
+        ),
+      ).toBe(false);
+      expect(mine.myRoles).toEqual(expect.arrayContaining(['MANAGER', 'OWNER', 'TENANT']));
+      expect(mine.myRoles.filter((role: string) => role === 'OWNER')).toHaveLength(2);
     });
 
     it('GET unit detail: canClaimOwnership is true only for the exact invited phone, false otherwise; flips after claim', async () => {
