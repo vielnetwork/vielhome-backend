@@ -929,9 +929,7 @@ describe('FinanceService', () => {
         totalAmount: 500_000,
       });
 
-      expect(result.items).toEqual([
-        expect.objectContaining({ unitId: 'u1', amount: 500_000 }),
-      ]);
+      expect(result.items).toEqual([expect.objectContaining({ unitId: 'u1', amount: 500_000 })]);
       expect(result.grandTotal).toBe(500_000);
       expect(result.validationWarnings).toEqual(
         expect.arrayContaining([

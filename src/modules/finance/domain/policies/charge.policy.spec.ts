@@ -133,21 +133,21 @@ describe('ChargePolicy', () => {
       });
 
       it('rejects FIXED with a zero totalAmount', () => {
-        expect(() =>
-          policy.assertValidCalculationInputs('FIXED', { totalAmount: 0 }),
-        ).toThrow(BusinessRuleViolationError);
+        expect(() => policy.assertValidCalculationInputs('FIXED', { totalAmount: 0 })).toThrow(
+          BusinessRuleViolationError,
+        );
       });
 
       it('rejects FIXED with a negative totalAmount', () => {
-        expect(() =>
-          policy.assertValidCalculationInputs('FIXED', { totalAmount: -1 }),
-        ).toThrow(BusinessRuleViolationError);
+        expect(() => policy.assertValidCalculationInputs('FIXED', { totalAmount: -1 })).toThrow(
+          BusinessRuleViolationError,
+        );
       });
 
       it('rejects AREA_BASED with a zero totalAmount', () => {
-        expect(() =>
-          policy.assertValidCalculationInputs('AREA_BASED', { totalAmount: 0 }),
-        ).toThrow(BusinessRuleViolationError);
+        expect(() => policy.assertValidCalculationInputs('AREA_BASED', { totalAmount: 0 })).toThrow(
+          BusinessRuleViolationError,
+        );
       });
 
       it('rejects FIXED with BOTH totalAmount and the legacy amountPerUnit (ambiguous)', () => {

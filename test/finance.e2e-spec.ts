@@ -3888,9 +3888,9 @@ describe('Finance (e2e) — FIN-CALC-01 Charge Total Amount Allocation', () => {
       })
       .expect(201);
 
-    expect(
-      res.body.data.items.some((i: { unitId: string }) => i.unitId === unitIds[3]),
-    ).toBe(false);
+    expect(res.body.data.items.some((i: { unitId: string }) => i.unitId === unitIds[3])).toBe(
+      false,
+    );
     expect(res.body.data.totalUnitCount).toBe(4);
     expect(
       res.body.data.items.reduce((sum: number, i: { amount: number }) => sum + i.amount, 0),
