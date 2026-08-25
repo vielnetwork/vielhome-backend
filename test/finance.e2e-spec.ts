@@ -4050,7 +4050,7 @@ describe('Finance (e2e) — FIN-CALC-01 Charge Total Amount Allocation', () => {
     const fundRes = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/funds`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
-      .send({ name: 'FIN-CALC-01 Fund' })
+      .send({ name: 'FIN-CALC-01 Fund', type: 'RESERVE' })
       .expect(201);
     const fundId = fundRes.body.data.id;
     const dueDate = '2027-01-01T00:00:00.000Z';
