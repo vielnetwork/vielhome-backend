@@ -327,6 +327,7 @@ model Building {
   adCampaigns        AdCampaign[]
 
   funds          Fund[]
+  chargeSeries   ChargeSeries[]
   chargeBatches  ChargeBatch[]
   payments       Payment[]
   creditBalances CreditBalance[]
@@ -792,6 +793,36 @@ model Fund {
   @@map("funds")
 }
 
+// Stable classification for newly classified ChargeBatches. Existing
+// batches intentionally keep a null kind; their historical intent cannot be
+// reconstructed safely from free-text titles or descriptions.
+enum ChargeKind {
+  MONTHLY
+  RESERVE
+  REPAIR
+  SPECIAL
+  OTHER
+}
+
+// A building-owned recurring charge identity. MONTHLY ChargeBatches use
+// periodStart for ordering within a series; non-monthly and unclassified
+// historical batches do not participate in that ordering.
+model ChargeSeries {
+  id         String   @id @default(cuid())
+  buildingId String
+  building   Building @relation(fields: [buildingId], references: [id])
+  name       String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  chargeBatches ChargeBatch[]
+
+  @@unique([buildingId, name])
+  @@index([buildingId])
+  @@map("charge_series")
+}
+
 enum ChargeCalculationMethod {
   FIXED
   AREA_BASED
@@ -877,6 +908,9 @@ model ChargeBatch {
   // always recomputable from chargeItems.
   totalAmount       Int                     @default(0)
   status            ChargeBatchStatus       @default(DRAFT)
+  kind              ChargeKind?
+  seriesId          String?
+  series            ChargeSeries?           @relation(fields: [seriesId], references: [id])
   periodStart       DateTime?
   periodEnd         DateTime?
   dueDate           DateTime?
@@ -906,6 +940,7 @@ model ChargeBatch {
 
   @@index([buildingId])
   @@index([buildingId, status])
+  @@index([seriesId])
   @@map("charge_batches")
 }
 
@@ -931,7 +966,8 @@ model ChargeItem {
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 
-  allocations PaymentAllocation[]
+  allocations    PaymentAllocation[]
+  debtSelections PaymentDebtSelection[]
 
   // ADR-095 — payer snapshot, written once inside `issueChargeBatch`'s own
   // transaction (never at DRAFT creation, since a draft can sit for days
@@ -990,6 +1026,11 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum PaymentSelectionMode {
+  LEGACY_AUTOMATIC
+  EXPLICIT_SELECTION
+}
+
 // A resident-reported payment (no online gateway at MVP — 05_Business_Rules
 // / 12_Finance_Architecture / v1.0 package all agree: Cash + Bank Transfer
 // only). Starts PENDING_APPROVAL; an ACCOUNTANT or MANAGER approves or
@@ -998,7 +1039,7 @@ enum PaymentStatus {
 // nothing is posted to the ledger before approval, so a rejected/never-
 // resolved payment never pollutes financial history.
 model Payment {
-  id             String        @id @default(cuid())
+  id             String               @id @default(cuid())
   buildingId     String
   building       Building      @relation(fields: [buildingId], references: [id])
   unitId         String
@@ -1009,7 +1050,9 @@ model Payment {
   payer          Person        @relation("PaymentPayer", fields: [payerId], references: [id])
   amount         Int
   method         PaymentMethod
-  status         PaymentStatus @default(PENDING_APPROVAL)
+  status         PaymentStatus        @default(PENDING_APPROVAL)
+  selectionMode  PaymentSelectionMode @default(LEGACY_AUTOMATIC)
+  idempotencyKey String?
   reference      String?
   note           String?
   approvedById   String?
@@ -1025,13 +1068,37 @@ model Payment {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  allocations PaymentAllocation[]
-  refunds     Refund[]
+  allocations    PaymentAllocation[]
+  debtSelections PaymentDebtSelection[]
+  refunds        Refund[]
 
+  @@unique([payerId, buildingId, idempotencyKey])
   @@index([buildingId])
   @@index([unitId])
   @@index([buildingId, status])
   @@map("payments")
+}
+
+// Durable pending intent/reservation for one payable obligation. These rows
+// survive every Payment status transition but never mean accounting was
+// posted; approved application remains PaymentAllocation's responsibility.
+model PaymentDebtSelection {
+  id             String      @id @default(cuid())
+  paymentId      String
+  payment        Payment     @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  chargeItemId   String?
+  chargeItem     ChargeItem? @relation(fields: [chargeItemId], references: [id], onDelete: Restrict)
+  adjustmentId   String?
+  adjustment     Adjustment? @relation(fields: [adjustmentId], references: [id], onDelete: Restrict)
+  selectedAmount Int
+  createdAt      DateTime    @default(now())
+
+  @@unique([paymentId, chargeItemId])
+  @@unique([paymentId, adjustmentId])
+  @@index([paymentId])
+  @@index([chargeItemId])
+  @@index([adjustmentId])
+  @@map("payment_debt_selections")
 }
 
 // Join row recording how much of an approved Payment was applied to a given
@@ -1175,7 +1242,8 @@ model Adjustment {
   createdBy   Person   @relation("AdjustmentCreatedBy", fields: [createdById], references: [id])
   createdAt   DateTime @default(now())
 
-  allocations PaymentAllocation[]
+  allocations    PaymentAllocation[]
+  debtSelections PaymentDebtSelection[]
 
   // ADR-095 (Sprint 29, Charge Generation Phase 2) — generic source
   // reference, mirroring `LedgerEntry.referenceType`/`referenceId`'s own
