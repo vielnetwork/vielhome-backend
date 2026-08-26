@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {
   ChargeCalculationMethod,
+  ChargeKind,
   ChargeItemStatus,
   ChargePayerType,
   ChargeUnitScope,
@@ -58,6 +59,13 @@ function computeItemStatus(paidAmount: number, amount: number): ChargeItemStatus
   if (paidAmount <= 0) return 'UNPAID';
   if (paidAmount >= amount) return 'PAID';
   return 'PARTIALLY_PAID';
+}
+
+export type ExplicitObligationTarget =
+  { type: 'CHARGE_ITEM'; id: string } | { type: 'ADJUSTMENT'; id: string };
+
+export function encodeObligationId(target: ExplicitObligationTarget): string {
+  return `${target.type}:${target.id}`;
 }
 
 type DebtRow = { amount: number; paidAmount: number };
@@ -365,7 +373,13 @@ export class FinanceRepository {
         amount: true,
         paidAmount: true,
         chargeBatch: {
-          select: { status: true, dueDate: true, lateFeeType: true, lateFeeValue: true, lateFeeGraceDays: true },
+          select: {
+            status: true,
+            dueDate: true,
+            lateFeeType: true,
+            lateFeeValue: true,
+            lateFeeGraceDays: true,
+          },
         },
       },
     });
@@ -577,6 +591,285 @@ export class FinanceRepository {
     });
   }
 
+  async listSelectableObligations(unitId: string) {
+    const [items, adjustments] = await Promise.all([
+      this.prisma.chargeItem.findMany({
+        where: {
+          unitId,
+          status: { not: 'PAID' },
+          chargeBatch: { status: { in: ['ISSUED', 'CLOSED'] } },
+        },
+        include: {
+          chargeBatch: {
+            select: {
+              title: true,
+              description: true,
+              kind: true,
+              seriesId: true,
+              periodStart: true,
+              fund: { select: { id: true, name: true, type: true } },
+            },
+          },
+          debtSelections: {
+            where: { reservationState: 'ACTIVE' },
+            select: { id: true },
+            take: 1,
+          },
+        },
+        orderBy: [{ chargeBatch: { periodStart: 'asc' } }, { createdAt: 'asc' }],
+      }),
+      this.prisma.adjustment.findMany({
+        where: { unitId, amount: { gt: 0 } },
+        include: {
+          fund: { select: { id: true, name: true, type: true } },
+          debtSelections: {
+            where: { reservationState: 'ACTIVE' },
+            select: { id: true },
+            take: 1,
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+
+    const monthlyFirstAvailable = new Map<string, string>();
+    for (const item of items) {
+      const remaining = item.amount - item.paidAmount;
+      const seriesId = item.chargeBatch.seriesId;
+      if (
+        remaining > 0 &&
+        item.chargeBatch.kind === ChargeKind.MONTHLY &&
+        seriesId &&
+        item.debtSelections.length === 0 &&
+        !monthlyFirstAvailable.has(seriesId)
+      ) {
+        monthlyFirstAvailable.set(seriesId, item.id);
+      }
+    }
+
+    return [
+      ...items
+        .map((item) => {
+          const remainingPayable = item.amount - item.paidAmount;
+          const reserved = item.debtSelections.length > 0;
+          const monthlyBlocked =
+            item.chargeBatch.kind === ChargeKind.MONTHLY &&
+            !!item.chargeBatch.seriesId &&
+            monthlyFirstAvailable.get(item.chargeBatch.seriesId) !== item.id;
+          const reason = reserved
+            ? 'PENDING_RESERVATION'
+            : monthlyBlocked
+              ? 'OLDER_MONTHLY_OBLIGATION_REQUIRED'
+              : null;
+          return {
+            obligationId: encodeObligationId({ type: 'CHARGE_ITEM', id: item.id }),
+            type: 'CHARGE_ITEM' as const,
+            title: item.chargeBatch.title,
+            description: item.chargeBatch.description,
+            originalAmount: item.amount,
+            remainingPayable,
+            fund: item.chargeBatch.fund,
+            chargeKind: item.chargeBatch.kind,
+            seriesId: item.chargeBatch.seriesId,
+            periodStart: item.chargeBatch.periodStart,
+            selectable: reason === null,
+            unselectableReason: reason,
+          };
+        })
+        .filter((item) => item.remainingPayable > 0),
+      ...adjustments
+        .map((adjustment) => {
+          const remainingPayable = adjustment.amount - adjustment.paidAmount;
+          const reserved = adjustment.debtSelections.length > 0;
+          return {
+            obligationId: encodeObligationId({ type: 'ADJUSTMENT', id: adjustment.id }),
+            type: 'ADJUSTMENT' as const,
+            title: adjustment.reason,
+            description: null,
+            originalAmount: adjustment.amount,
+            remainingPayable,
+            fund: adjustment.fund,
+            chargeKind: null,
+            seriesId: null,
+            periodStart: null,
+            selectable: !reserved,
+            unselectableReason: reserved ? 'PENDING_RESERVATION' : null,
+          };
+        })
+        .filter((item) => item.remainingPayable > 0),
+    ];
+  }
+
+  createExplicitPayment(params: {
+    buildingId: string;
+    unitId: string;
+    payerId: string;
+    method: PaymentMethod;
+    idempotencyKey: string;
+    reference?: string;
+    note?: string;
+    targets: ExplicitObligationTarget[];
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + params.unitId}))`;
+
+      const existing = await tx.payment.findFirst({
+        where: {
+          payerId: params.payerId,
+          buildingId: params.buildingId,
+          idempotencyKey: params.idempotencyKey,
+        },
+        include: { debtSelections: true },
+      });
+      if (existing) {
+        const existingTargets = existing.debtSelections
+          .map((row) =>
+            row.chargeItemId
+              ? encodeObligationId({ type: 'CHARGE_ITEM', id: row.chargeItemId })
+              : encodeObligationId({ type: 'ADJUSTMENT', id: row.adjustmentId! }),
+          )
+          .sort();
+        const requestedTargets = params.targets.map(encodeObligationId).sort();
+        const same =
+          existing.selectionMode === 'EXPLICIT_SELECTION' &&
+          existing.unitId === params.unitId &&
+          existing.method === params.method &&
+          (existing.reference ?? null) === (params.reference ?? null) &&
+          (existing.note ?? null) === (params.note ?? null) &&
+          JSON.stringify(existingTargets) === JSON.stringify(requestedTargets);
+        if (!same)
+          throw new ConflictError(
+            'Idempotency key was already used with a different payment request.',
+          );
+        return existing;
+      }
+
+      const chargeIds = params.targets.filter((t) => t.type === 'CHARGE_ITEM').map((t) => t.id);
+      const adjustmentIds = params.targets.filter((t) => t.type === 'ADJUSTMENT').map((t) => t.id);
+      const [items, adjustments] = await Promise.all([
+        tx.chargeItem.findMany({
+          where: { id: { in: chargeIds } },
+          include: {
+            chargeBatch: true,
+            debtSelections: { where: { reservationState: 'ACTIVE' }, select: { id: true } },
+          },
+        }),
+        tx.adjustment.findMany({
+          where: { id: { in: adjustmentIds } },
+          include: {
+            debtSelections: { where: { reservationState: 'ACTIVE' }, select: { id: true } },
+          },
+        }),
+      ]);
+
+      if (items.length !== chargeIds.length || adjustments.length !== adjustmentIds.length) {
+        throw new BusinessRuleViolationError('One or more selected obligations do not exist.');
+      }
+      if (
+        items.some(
+          (item) =>
+            item.unitId !== params.unitId ||
+            item.chargeBatch.buildingId !== params.buildingId ||
+            !['ISSUED', 'CLOSED'].includes(item.chargeBatch.status),
+        ) ||
+        adjustments.some(
+          (adjustment) =>
+            adjustment.unitId !== params.unitId || adjustment.buildingId !== params.buildingId,
+        )
+      ) {
+        throw new BusinessRuleViolationError(
+          'Every obligation must belong to the exact payment unit.',
+        );
+      }
+      if (
+        items.some(
+          (item) => item.amount - item.paidAmount <= 0 || item.debtSelections.length > 0,
+        ) ||
+        adjustments.some(
+          (adjustment) =>
+            adjustment.amount - adjustment.paidAmount <= 0 || adjustment.debtSelections.length > 0,
+        )
+      ) {
+        throw new ConflictError('One or more obligations are no longer selectable.');
+      }
+
+      const selectedItemIds = new Set(items.map((item) => item.id));
+      const selectedMonthlySeries = new Set(
+        items
+          .filter((item) => item.chargeBatch.kind === 'MONTHLY' && item.chargeBatch.seriesId)
+          .map((item) => item.chargeBatch.seriesId!),
+      );
+      for (const seriesId of selectedMonthlySeries) {
+        const outstanding = await tx.chargeItem.findMany({
+          where: {
+            unitId: params.unitId,
+            status: { not: 'PAID' },
+            chargeBatch: { seriesId, kind: 'MONTHLY', status: { in: ['ISSUED', 'CLOSED'] } },
+            debtSelections: { none: { reservationState: 'ACTIVE' } },
+          },
+          include: { chargeBatch: { select: { periodStart: true } } },
+          orderBy: { chargeBatch: { periodStart: 'asc' } },
+        });
+        const selectedCount = outstanding.filter((item) => selectedItemIds.has(item.id)).length;
+        if (outstanding.slice(0, selectedCount).some((item) => !selectedItemIds.has(item.id))) {
+          throw new BusinessRuleViolationError(
+            'Monthly obligations must be selected oldest first without gaps.',
+          );
+        }
+      }
+
+      const fundIds = new Set([
+        ...items.map((item) => item.chargeBatch.fundId),
+        ...adjustments.map((adjustment) => adjustment.fundId),
+      ]);
+      if (fundIds.size !== 1) {
+        throw new BusinessRuleViolationError(
+          'All selected obligations must belong to the same fund.',
+        );
+      }
+      const fund = await tx.fund.findUnique({ where: { id: [...fundIds][0] } });
+      if (!fund?.isActive) {
+        throw new BusinessRuleViolationError(
+          'The selected obligations belong to an inactive fund.',
+        );
+      }
+
+      const amount =
+        items.reduce((sum, item) => sum + item.amount - item.paidAmount, 0) +
+        adjustments.reduce((sum, adjustment) => sum + adjustment.amount - adjustment.paidAmount, 0);
+      const payment = await tx.payment.create({
+        data: {
+          buildingId: params.buildingId,
+          unitId: params.unitId,
+          fundId: [...fundIds][0],
+          payerId: params.payerId,
+          amount,
+          method: params.method,
+          reference: params.reference,
+          note: params.note,
+          idempotencyKey: params.idempotencyKey,
+          selectionMode: 'EXPLICIT_SELECTION',
+          debtSelections: {
+            create: [
+              ...items.map((item) => ({
+                chargeItemId: item.id,
+                selectedAmount: item.amount - item.paidAmount,
+                reservationState: 'ACTIVE' as const,
+              })),
+              ...adjustments.map((adjustment) => ({
+                adjustmentId: adjustment.id,
+                selectedAmount: adjustment.amount - adjustment.paidAmount,
+                reservationState: 'ACTIVE' as const,
+              })),
+            ],
+          },
+        },
+        include: { debtSelections: true },
+      });
+      return payment;
+    });
+  }
+
   findPaymentById(id: string) {
     return this.prisma.payment.findUnique({ where: { id } });
   }
@@ -622,9 +915,25 @@ export class FinanceRepository {
   }
 
   rejectPayment(id: string, reason?: string) {
-    return this.prisma.payment.update({
-      where: { id },
-      data: { status: 'REJECTED', rejectedReason: reason },
+    return this.prisma.$transaction(async (tx) => {
+      const candidate = await tx.payment.findUnique({ where: { id } });
+      if (!candidate) throw new BusinessRuleViolationError('Payment not found.');
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + candidate.unitId}))`;
+      const current = await tx.payment.findUnique({ where: { id } });
+      if (!current || current.status !== 'PENDING_APPROVAL') {
+        throw new BusinessRuleViolationError('Only a pending payment can be rejected.');
+      }
+      const payment = await tx.payment.update({
+        where: { id },
+        data: { status: 'REJECTED', rejectedReason: reason },
+      });
+      if (payment.selectionMode === 'EXPLICIT_SELECTION') {
+        await tx.paymentDebtSelection.updateMany({
+          where: { paymentId: id, reservationState: 'ACTIVE' },
+          data: { reservationState: 'RELEASED' },
+        });
+      }
+      return payment;
     });
   }
 
@@ -652,6 +961,106 @@ export class FinanceRepository {
     requestId?: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + params.unitId}))`;
+      const current = await tx.payment.findUnique({
+        where: { id: params.paymentId },
+        include: { debtSelections: true },
+      });
+      if (!current || current.status !== 'PENDING_APPROVAL') {
+        throw new BusinessRuleViolationError('Only a pending payment can be approved.');
+      }
+
+      if (current.selectionMode === 'EXPLICIT_SELECTION') {
+        if (
+          current.debtSelections.length === 0 ||
+          current.debtSelections.some((selection) => selection.reservationState !== 'ACTIVE')
+        ) {
+          throw new ConflictError('Explicit payment reservations are no longer active.');
+        }
+        const selectedTotal = current.debtSelections.reduce(
+          (sum, selection) => sum + selection.selectedAmount,
+          0,
+        );
+        if (selectedTotal !== current.amount || current.amount !== params.amount) {
+          throw new BusinessRuleViolationError(
+            'Explicit selection total must equal Payment.amount.',
+          );
+        }
+
+        for (const selection of current.debtSelections) {
+          if (selection.chargeItemId) {
+            const item = await tx.chargeItem.findUniqueOrThrow({
+              where: { id: selection.chargeItemId },
+            });
+            const outstanding = item.amount - item.paidAmount;
+            if (outstanding !== selection.selectedAmount || item.unitId !== params.unitId) {
+              throw new ConflictError('Selected ChargeItem changed before approval.');
+            }
+            const newPaidAmount = item.paidAmount + selection.selectedAmount;
+            await tx.paymentAllocation.create({
+              data: {
+                paymentId: params.paymentId,
+                chargeItemId: item.id,
+                amount: selection.selectedAmount,
+              },
+            });
+            await tx.chargeItem.update({
+              where: { id: item.id },
+              data: {
+                paidAmount: newPaidAmount,
+                status: computeItemStatus(newPaidAmount, item.amount),
+              },
+            });
+          } else {
+            const adjustment = await tx.adjustment.findUniqueOrThrow({
+              where: { id: selection.adjustmentId! },
+            });
+            const outstanding = adjustment.amount - adjustment.paidAmount;
+            if (outstanding !== selection.selectedAmount || adjustment.unitId !== params.unitId) {
+              throw new ConflictError('Selected Adjustment changed before approval.');
+            }
+            await tx.paymentAllocation.create({
+              data: {
+                paymentId: params.paymentId,
+                adjustmentId: adjustment.id,
+                amount: selection.selectedAmount,
+              },
+            });
+            await tx.adjustment.update({
+              where: { id: adjustment.id },
+              data: { paidAmount: { increment: selection.selectedAmount } },
+            });
+          }
+        }
+
+        await tx.paymentDebtSelection.updateMany({
+          where: { paymentId: params.paymentId, reservationState: 'ACTIVE' },
+          data: { reservationState: 'APPLIED' },
+        });
+        const payment = await tx.payment.update({
+          where: { id: params.paymentId },
+          data: { status: 'APPROVED', approvedById: params.actorId, approvedAt: new Date() },
+        });
+        await tx.ledgerEntry.create({
+          data: {
+            buildingId: params.buildingId,
+            fundId: params.fundId,
+            entryType: 'PAYMENT',
+            direction: 'CREDIT',
+            amount: params.amount,
+            referenceType: 'Payment',
+            referenceId: params.paymentId,
+            actorId: params.actorId,
+            requestId: params.requestId,
+          },
+        });
+        await tx.fund.update({
+          where: { id: params.fundId },
+          data: { balance: { increment: params.amount } },
+        });
+        return payment;
+      }
+
       const payment = await tx.payment.update({
         where: { id: params.paymentId },
         data: { status: 'APPROVED', approvedById: params.actorId, approvedAt: new Date() },

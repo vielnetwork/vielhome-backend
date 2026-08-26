@@ -179,6 +179,9 @@ async function deleteBuildingsOnceBatch(
   await prisma.subscription.deleteMany({ where: { buildingId: { in: buildingIds } } });
 
   // --- Finance (new this file — 21_ADRs > ADR-074) --------------------------
+  await prisma.paymentDebtSelection.deleteMany({
+    where: { payment: { buildingId: { in: buildingIds } } },
+  });
   await prisma.paymentAllocation.deleteMany({
     where: { payment: { buildingId: { in: buildingIds } } },
   });
@@ -197,6 +200,7 @@ async function deleteBuildingsOnceBatch(
     where: { chargeBatch: { buildingId: { in: buildingIds } } },
   });
   await prisma.chargeBatch.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  await prisma.chargeSeries.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.creditBalance.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.fund.deleteMany({ where: { buildingId: { in: buildingIds } } });
 
@@ -716,6 +720,428 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
   });
 });
 
+describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', () => {
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+  let manager: RegisteredPerson;
+  let outsider: RegisteredPerson;
+  let buildingId: string;
+  let otherBuildingId: string;
+  let unitId: string;
+  let otherUnitId: string;
+  let fundId: string;
+  let septemberId: string;
+  let octoberId: string;
+  let reserveId: string;
+  let adjustmentId: string;
+  let explicitPaymentId: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    outsider = await registerPerson(app);
+    createdPhones.push(manager.phone, outsider.phone);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 2 });
+    otherBuildingId = await createBuilding(app, manager.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
+    createdBuildingIds.push(buildingId, otherBuildingId);
+
+    const units = await prisma.unit.findMany({
+      where: { buildingId },
+      orderBy: { unitNumber: 'asc' },
+    });
+    unitId = units[0].id;
+    otherUnitId = units[1].id;
+    const fund = await prisma.fund.create({
+      data: { buildingId, name: 'Explicit payments', isDefault: true },
+    });
+    fundId = fund.id;
+
+    await joinBuildingAsApprovedMember(app, buildingId, outsider.accessToken, manager.accessToken);
+    await prisma.membership.updateMany({
+      where: { buildingId, personId: outsider.personId, role: 'OWNER', isCurrent: true },
+      data: { unitId: otherUnitId },
+    });
+    await prisma.ownership.create({
+      data: { unitId: otherUnitId, personId: outsider.personId },
+    });
+
+    const series = await prisma.chargeSeries.create({
+      data: { buildingId, name: 'Monthly dues' },
+    });
+    const [september, october, reserve] = await Promise.all([
+      prisma.chargeBatch.create({
+        data: {
+          buildingId,
+          fundId,
+          title: 'September monthly charge',
+          kind: 'MONTHLY',
+          seriesId: series.id,
+          periodStart: new Date('2026-09-01T00:00:00.000Z'),
+          status: 'ISSUED',
+          createdById: manager.personId,
+        },
+      }),
+      prisma.chargeBatch.create({
+        data: {
+          buildingId,
+          fundId,
+          title: 'October monthly charge',
+          kind: 'MONTHLY',
+          seriesId: series.id,
+          periodStart: new Date('2026-10-01T00:00:00.000Z'),
+          status: 'ISSUED',
+          createdById: manager.personId,
+        },
+      }),
+      prisma.chargeBatch.create({
+        data: {
+          buildingId,
+          fundId,
+          title: 'Reserve charge',
+          kind: 'RESERVE',
+          status: 'ISSUED',
+          createdById: manager.personId,
+        },
+      }),
+    ]);
+    const [septemberItem, octoberItem, reserveItem, adjustment] = await Promise.all([
+      prisma.chargeItem.create({ data: { chargeBatchId: september.id, unitId, amount: 100_000 } }),
+      prisma.chargeItem.create({ data: { chargeBatchId: october.id, unitId, amount: 120_000 } }),
+      prisma.chargeItem.create({ data: { chargeBatchId: reserve.id, unitId, amount: 20_000 } }),
+      prisma.adjustment.create({
+        data: {
+          buildingId,
+          unitId,
+          fundId,
+          amount: 18_000,
+          reason: 'Repair adjustment',
+          createdById: manager.personId,
+        },
+      }),
+    ]);
+    septemberId = `CHARGE_ITEM:${septemberItem.id}`;
+    octoberId = `CHARGE_ITEM:${octoberItem.id}`;
+    reserveId = `CHARGE_ITEM:${reserveItem.id}`;
+    adjustmentId = `ADJUSTMENT:${adjustment.id}`;
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('returns exact-unit obligations with canonical remaining amounts and monthly eligibility', async () => {
+    const independentSeries = await prisma.chargeSeries.create({
+      data: { buildingId, name: 'Independent monthly series' },
+    });
+    const [independentBatch, historicalBatch, paidBatch] = await Promise.all([
+      prisma.chargeBatch.create({
+        data: {
+          buildingId,
+          fundId,
+          title: 'Independent monthly charge',
+          kind: 'MONTHLY',
+          seriesId: independentSeries.id,
+          periodStart: new Date('2026-10-01T00:00:00.000Z'),
+          status: 'ISSUED',
+          createdById: manager.personId,
+        },
+      }),
+      prisma.chargeBatch.create({
+        data: {
+          buildingId,
+          fundId,
+          title: 'Historical unclassified charge',
+          status: 'ISSUED',
+          createdById: manager.personId,
+        },
+      }),
+      prisma.chargeBatch.create({
+        data: {
+          buildingId,
+          fundId,
+          title: 'Fully paid charge',
+          kind: 'OTHER',
+          status: 'ISSUED',
+          createdById: manager.personId,
+        },
+      }),
+    ]);
+    const [independent, historical, paid] = await Promise.all([
+      prisma.chargeItem.create({
+        data: { chargeBatchId: independentBatch.id, unitId, amount: 13_000 },
+      }),
+      prisma.chargeItem.create({
+        data: { chargeBatchId: historicalBatch.id, unitId, amount: 14_000 },
+      }),
+      prisma.chargeItem.create({
+        data: {
+          chargeBatchId: paidBatch.id,
+          unitId,
+          amount: 15_000,
+          paidAmount: 15_000,
+          status: 'PAID',
+        },
+      }),
+    ]);
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/obligations`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const byId = new Map(
+      res.body.data.map((item: { obligationId: string }) => [item.obligationId, item]),
+    );
+    expect(byId.get(septemberId)).toMatchObject({
+      remainingPayable: 100_000,
+      chargeKind: 'MONTHLY',
+      selectable: true,
+    });
+    expect(byId.get(octoberId)).toMatchObject({
+      remainingPayable: 120_000,
+      selectable: false,
+      unselectableReason: 'OLDER_MONTHLY_OBLIGATION_REQUIRED',
+    });
+    expect(byId.get(reserveId)).toMatchObject({ chargeKind: 'RESERVE', selectable: true });
+    expect(byId.get(adjustmentId)).toMatchObject({ type: 'ADJUSTMENT', selectable: true });
+    expect(byId.get(`CHARGE_ITEM:${independent.id}`)).toMatchObject({
+      chargeKind: 'MONTHLY',
+      selectable: true,
+    });
+    expect(byId.get(`CHARGE_ITEM:${historical.id}`)).toMatchObject({
+      chargeKind: null,
+      selectable: true,
+    });
+    expect(byId.has(`CHARGE_ITEM:${paid.id}`)).toBe(false);
+  });
+
+  it('enforces exact-unit authority for reads and submissions', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/obligations`)
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .send({ obligationIds: [reserveId], method: 'CASH', idempotencyKey: 'unauthorized' })
+      .expect(403);
+  });
+
+  it('rejects empty, duplicate, forged-total, and skipped-month submissions', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ obligationIds: [], method: 'CASH', idempotencyKey: 'empty' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ obligationIds: [reserveId, reserveId], method: 'CASH', idempotencyKey: 'duplicate' })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ obligationIds: [reserveId], amount: 1, method: 'CASH', idempotencyKey: 'forged' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ obligationIds: [octoberId], method: 'CASH', idempotencyKey: 'skip-month' })
+      .expect(422);
+  });
+
+  it('creates a canonical contiguous-prefix payment and makes retries idempotent', async () => {
+    const body = {
+      obligationIds: [septemberId, octoberId, reserveId, adjustmentId],
+      method: 'BANK_TRANSFER',
+      reference: 'bank-ref',
+      idempotencyKey: 'explicit-prefix-1',
+    };
+    const first = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send(body)
+      .expect(201);
+    explicitPaymentId = first.body.data.id;
+    expect(first.body.data).toMatchObject({
+      amount: 258_000,
+      selectionMode: 'EXPLICIT_SELECTION',
+      status: 'PENDING_APPROVAL',
+    });
+    expect(first.body.data.debtSelections).toHaveLength(4);
+    expect(
+      first.body.data.debtSelections.every(
+        (row: { reservationState: string }) => row.reservationState === 'ACTIVE',
+      ),
+    ).toBe(true);
+
+    const retry = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send(body)
+      .expect(201);
+    expect(retry.body.data.id).toBe(explicitPaymentId);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ ...body, obligationIds: [reserveId] })
+      .expect(409);
+  });
+
+  it('blocks independently submitting an ACTIVE-reserved obligation', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ obligationIds: [reserveId], method: 'CASH', idempotencyKey: 'double-reserve' })
+      .expect(409);
+  });
+
+  it('allows exactly one of two concurrent submissions for the same obligation', async () => {
+    const batch = await prisma.chargeBatch.create({
+      data: {
+        buildingId,
+        fundId,
+        title: 'Concurrent reservation charge',
+        kind: 'OTHER',
+        status: 'ISSUED',
+        createdById: manager.personId,
+      },
+    });
+    const item = await prisma.chargeItem.create({
+      data: { chargeBatchId: batch.id, unitId, amount: 6_000 },
+    });
+    const send = (idempotencyKey: string) =>
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({
+          obligationIds: [`CHARGE_ITEM:${item.id}`],
+          method: 'CASH',
+          idempotencyKey,
+        });
+
+    const responses = await Promise.all([send('concurrent-a'), send('concurrent-b')]);
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
+    expect(
+      await prisma.paymentDebtSelection.count({
+        where: { chargeItemId: item.id, reservationState: 'ACTIVE' },
+      }),
+    ).toBe(1);
+  });
+
+  it('approval converts exact selections into allocations once', async () => {
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/payments/${explicitPaymentId}/approve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const [allocations, selections, ledgers] = await Promise.all([
+      prisma.paymentAllocation.findMany({ where: { paymentId: explicitPaymentId } }),
+      prisma.paymentDebtSelection.findMany({ where: { paymentId: explicitPaymentId } }),
+      prisma.ledgerEntry.findMany({
+        where: { referenceType: 'Payment', referenceId: explicitPaymentId, entryType: 'PAYMENT' },
+      }),
+    ]);
+    expect(allocations).toHaveLength(4);
+    expect(allocations.reduce((sum, row) => sum + row.amount, 0)).toBe(258_000);
+    expect(selections.every((row) => row.reservationState === 'APPLIED')).toBe(true);
+    expect(ledgers).toHaveLength(1);
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/payments/${explicitPaymentId}/approve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(422);
+    expect(await prisma.paymentAllocation.count({ where: { paymentId: explicitPaymentId } })).toBe(
+      4,
+    );
+  });
+
+  it('rejection releases an ACTIVE reservation so it can be selected again', async () => {
+    const batch = await prisma.chargeBatch.create({
+      data: {
+        buildingId,
+        fundId,
+        title: 'Special charge',
+        kind: 'SPECIAL',
+        status: 'ISSUED',
+        createdById: manager.personId,
+      },
+    });
+    const item = await prisma.chargeItem.create({
+      data: { chargeBatchId: batch.id, unitId, amount: 9_000 },
+    });
+    const obligationId = `CHARGE_ITEM:${item.id}`;
+    const first = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ obligationIds: [obligationId], method: 'CASH', idempotencyKey: 'release-1' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/payments/${first.body.data.id}/reject`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ reason: 'Rejected fixture' })
+      .expect(200);
+    expect(
+      await prisma.paymentDebtSelection.findFirstOrThrow({
+        where: { paymentId: first.body.data.id },
+      }),
+    ).toMatchObject({ reservationState: 'RELEASED' });
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ obligationIds: [obligationId], method: 'CASH', idempotencyKey: 'release-2' })
+      .expect(201);
+  });
+
+  it('rejects cross-building and cross-unit obligation IDs', async () => {
+    const otherBuildingUnit = await prisma.unit.findFirstOrThrow({
+      where: { buildingId: otherBuildingId },
+    });
+    const otherFund = await prisma.fund.create({
+      data: { buildingId: otherBuildingId, name: 'Other fund', isDefault: true },
+    });
+    const otherAdjustment = await prisma.adjustment.create({
+      data: {
+        buildingId: otherBuildingId,
+        unitId: otherBuildingUnit.id,
+        fundId: otherFund.id,
+        amount: 10_000,
+        reason: 'Other building',
+        createdById: manager.personId,
+      },
+    });
+    const unitAdjustment = await prisma.adjustment.create({
+      data: {
+        buildingId,
+        unitId: otherUnitId,
+        fundId,
+        amount: 11_000,
+        reason: 'Other unit',
+        createdById: manager.personId,
+      },
+    });
+
+    for (const obligationId of [
+      `ADJUSTMENT:${otherAdjustment.id}`,
+      `ADJUSTMENT:${unitAdjustment.id}`,
+    ]) {
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ obligationIds: [obligationId], method: 'CASH', idempotencyKey: obligationId })
+        .expect(422);
+    }
+  });
+});
+
 describe('Finance (e2e) — Payment Lifecycle & Allocation (ADR-023/ADR-037/ADR-041 XP)', () => {
   // Budget: 2 calls to POST /auth/otp/request (manager + outsider).
   let app: INestApplication;
@@ -1222,9 +1648,7 @@ describe('Finance (e2e) — Opening Balance Correction (Finance Correction Pass,
       where: { unitId, sourceType: 'OPENING_BALANCE_CORRECTION', amount: { gt: 0 } },
     });
     expect(positiveCorrections.length).toBeGreaterThan(0);
-    expect(
-      positiveCorrections.every((a) => a.paidAmount === a.amount),
-    ).toBe(true);
+    expect(positiveCorrections.every((a) => a.paidAmount === a.amount)).toBe(true);
 
     const allocations = await prisma.paymentAllocation.findMany({ where: { paymentId } });
     const correctionAdjustmentIds = new Set(positiveCorrections.map((a) => a.id));
@@ -1360,9 +1784,9 @@ describe('Finance (e2e) — Charge Generation Phase 2 (ADR-095)', () => {
       })
       .expect(201);
 
-    expect(
-      res.body.data.items.some((i: { unitId: string }) => i.unitId === commercialUnitId),
-    ).toBe(false);
+    expect(res.body.data.items.some((i: { unitId: string }) => i.unitId === commercialUnitId)).toBe(
+      false,
+    );
     expect(res.body.data.totalUnitCount).toBe(4);
   });
 
@@ -1739,9 +2163,7 @@ describe('Finance (e2e) — Charge Generation Phase 2 (ADR-095)', () => {
       .get(`/api/v1/buildings/${buildingId}/units/${residentialUnitId}/charge-items`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
-    const listedItem = itemsRes.body.data.find(
-      (i: { id: string }) => i.id === lateFeeChargeItemId,
-    );
+    const listedItem = itemsRes.body.data.find((i: { id: string }) => i.id === lateFeeChargeItemId);
     expect(listedItem.lateFee).toEqual({ eligible: true, amount: 25_000 });
 
     const applyRes = await request(app.getHttpServer())
@@ -1929,14 +2351,7 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
     // so it reports manually (matching the same "voluntary payment while
     // remaining payable is already zero" intent the zero-debt/credit
     // Mobile flow explicitly allows).
-    paymentBId = await reportPayment(
-      app,
-      buildingId,
-      unitId,
-      manager.accessToken,
-      1_000_000,
-      true,
-    );
+    paymentBId = await reportPayment(app, buildingId, unitId, manager.accessToken, 1_000_000, true);
 
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/payments/${paymentBId}/reverse`)
@@ -2326,7 +2741,7 @@ describe('Finance (e2e) — Regression Hardening: Payer Snapshot Immutability (F
     expect(payers.map((p) => p.personId)).toEqual([ownerA.personId]);
   });
 
-  it('creating a tenancy after issuance does not retroactively change the already-issued ChargeItem\'s payer snapshot', async () => {
+  it("creating a tenancy after issuance does not retroactively change the already-issued ChargeItem's payer snapshot", async () => {
     newTenant = await registerPerson(app);
     createdPhones.push(newTenant.phone);
 
@@ -2392,7 +2807,7 @@ describe('Finance (e2e) — Regression Hardening: Payer Snapshot Immutability (F
     expect(payers.map((p) => p.personId)).toEqual([ownerA.personId]);
   });
 
-  it('transferring ownership after issuance does not change the old ChargeItem\'s payer snapshot', async () => {
+  it("transferring ownership after issuance does not change the old ChargeItem's payer snapshot", async () => {
     const newOwnerPhone = nextPhone();
 
     // Self-service — only the unit's own current owner may initiate
@@ -2517,9 +2932,15 @@ describe('Finance (e2e) — Regression Hardening: Cross-Building Isolation (Fina
     managerB = await registerPerson(app);
     createdPhones.push(managerB.phone);
 
-    buildingAId = await createBuilding(app, managerA.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    buildingAId = await createBuilding(app, managerA.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
     createdBuildingIds.push(buildingAId);
-    buildingBId = await createBuilding(app, managerB.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    buildingBId = await createBuilding(app, managerB.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
     createdBuildingIds.push(buildingBId);
 
     const unitsRes = await request(app.getHttpServer())
@@ -2606,7 +3027,7 @@ describe('Finance (e2e) — Regression Hardening: Cross-Building Isolation (Fina
     expect(res.body.errors[0].code).toBe('NOT_FOUND');
   });
 
-  it('GET financial-summary for Building B never reflects Building A\'s activity', async () => {
+  it("GET financial-summary for Building B never reflects Building A's activity", async () => {
     const res = await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingBId}/financial-summary`)
       .set('Authorization', `Bearer ${managerB.accessToken}`)
@@ -2690,7 +3111,12 @@ describe('Finance (e2e) — Fund Inactive Restriction Enforcement (Finance Harde
     const batchRes = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/charges`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
-      .send({ fundId, title: 'Pre-deactivation charge', calculationMethod: 'FIXED', amountPerUnit: 10_000 })
+      .send({
+        fundId,
+        title: 'Pre-deactivation charge',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 10_000,
+      })
       .expect(201);
     priorChargeBatchId = batchRes.body.data.id;
 
@@ -2722,7 +3148,12 @@ describe('Finance (e2e) — Fund Inactive Restriction Enforcement (Finance Harde
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/charges/preview`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
-      .send({ fundId, title: 'Should not preview', calculationMethod: 'FIXED', amountPerUnit: 5_000 })
+      .send({
+        fundId,
+        title: 'Should not preview',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 5_000,
+      })
       .expect(422);
     expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
@@ -2731,7 +3162,12 @@ describe('Finance (e2e) — Fund Inactive Restriction Enforcement (Finance Harde
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/charges`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
-      .send({ fundId, title: 'Should not create', calculationMethod: 'FIXED', amountPerUnit: 5_000 })
+      .send({
+        fundId,
+        title: 'Should not create',
+        calculationMethod: 'FIXED',
+        amountPerUnit: 5_000,
+      })
       .expect(422);
     expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
@@ -2754,7 +3190,7 @@ describe('Finance (e2e) — Fund Inactive Restriction Enforcement (Finance Harde
     expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
 
-  it('preserves historical reads of the deactivated fund\'s prior activity', async () => {
+  it("preserves historical reads of the deactivated fund's prior activity", async () => {
     const fundRes = await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingId}/funds/${fundId}`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
@@ -2826,9 +3262,15 @@ describe('Finance (e2e) — Pagination (ADR-072, Finance Hardening Pass)', () =>
     managerB = await registerPerson(app);
     createdPhones.push(managerB.phone);
 
-    buildingAId = await createBuilding(app, managerA.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    buildingAId = await createBuilding(app, managerA.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
     createdBuildingIds.push(buildingAId);
-    buildingBId = await createBuilding(app, managerB.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    buildingBId = await createBuilding(app, managerB.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
     createdBuildingIds.push(buildingBId);
 
     // Sequential, not Promise.all — `listFunds` orders by `createdAt: 'asc'`
@@ -2939,7 +3381,7 @@ describe('Finance (e2e) — Pagination (ADR-072, Finance Hardening Pass)', () =>
     expect(res.body.data).toHaveLength(20);
   });
 
-  it('never mixes Building A\'s funds into Building B\'s paginated list (isolation)', async () => {
+  it("never mixes Building A's funds into Building B's paginated list (isolation)", async () => {
     const res = await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingBId}/funds`)
       .set('Authorization', `Bearer ${managerB.accessToken}`)
@@ -3459,7 +3901,13 @@ describe('Finance (e2e) — Remaining Payable: Example B, partial payment pendin
     let debt = await getUnitDebtSnapshot(app, buildingId, unitBId, manager.accessToken);
     expect(debt.totalDebt).toBe(35_003_000);
 
-    const partialId = await reportPayment(app, buildingId, unitBId, manager.accessToken, 10_000_000);
+    const partialId = await reportPayment(
+      app,
+      buildingId,
+      unitBId,
+      manager.accessToken,
+      10_000_000,
+    );
 
     debt = await getUnitDebtSnapshot(app, buildingId, unitBId, manager.accessToken);
     expect(debt.remainingPayable).toBe(25_003_000);
@@ -3595,7 +4043,9 @@ describe('Finance (e2e) — Remaining Payable: concurrency (Finance QA Correctio
     expect(debt.pendingPaymentAmount).toBe(1_000_000);
     expect(debt.remainingPayable).toBe(0);
 
-    const pending = await prisma.payment.findMany({ where: { unitId, status: 'PENDING_APPROVAL' } });
+    const pending = await prisma.payment.findMany({
+      where: { unitId, status: 'PENDING_APPROVAL' },
+    });
     expect(pending).toHaveLength(1);
   });
 });

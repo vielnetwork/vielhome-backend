@@ -10,6 +10,7 @@ import { CreateFundDto } from './dto/create-fund.dto';
 import { UpdateFundDto } from './dto/update-fund.dto';
 import { CreateChargeBatchDto } from './dto/create-charge-batch.dto';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { CreateExplicitPaymentDto } from './dto/create-explicit-payment.dto';
 import { RejectPaymentDto } from './dto/reject-payment.dto';
 import { CreateAdjustmentDto } from './dto/create-adjustment.dto';
 import { CorrectOpeningBalanceDto } from './dto/correct-opening-balance.dto';
@@ -20,7 +21,9 @@ import { VoidExpenseDto } from './dto/void-expense.dto';
 import { ExpensePolicy } from '../domain/policies/expense.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import {
+  AuthorizationError,
   BusinessRuleViolationError,
+  ConflictError,
   DuplicateError,
   NotFoundAppError,
 } from '../../../common/errors/app-error';
@@ -993,7 +996,7 @@ export class FinanceService {
     const delta = dto.targetBalance - previousBalance;
     if (delta === 0) {
       throw new BusinessRuleViolationError(
-        'The requested opening balance matches the unit\'s current effective opening balance; no correction is needed.',
+        "The requested opening balance matches the unit's current effective opening balance; no correction is needed.",
       );
     }
 
@@ -1142,6 +1145,80 @@ export class FinanceService {
     });
 
     return payment;
+  }
+
+  private async assertCanPayExactUnit(
+    buildingId: string,
+    unitId: string,
+    personId: string,
+  ): Promise<void> {
+    await this.getOwnUnit(buildingId, unitId);
+    const [roles, isOwner, tenancy] = await Promise.all([
+      this.buildings.getRoles(personId, buildingId),
+      this.buildings.isCurrentOwnerOfUnit(unitId, personId),
+      this.buildings.findCurrentTenancyForUnit(unitId),
+    ]);
+    if (roles.includes('MANAGER') || isOwner || tenancy?.personId === personId) return;
+    throw new AuthorizationError('You do not have payment authority for this unit.');
+  }
+
+  private parseExplicitObligations(obligationIds: string[]) {
+    if (new Set(obligationIds).size !== obligationIds.length) {
+      throw new DuplicateError('Duplicate obligation identifiers are not allowed.');
+    }
+    return obligationIds.map((obligationId) => {
+      const separator = obligationId.indexOf(':');
+      const type = obligationId.slice(0, separator);
+      const id = obligationId.slice(separator + 1);
+      if (separator <= 0 || !id || (type !== 'CHARGE_ITEM' && type !== 'ADJUSTMENT')) {
+        throw new BusinessRuleViolationError('Invalid obligation identifier.');
+      }
+      return { type, id } as
+        { type: 'CHARGE_ITEM'; id: string } | { type: 'ADJUSTMENT'; id: string };
+    });
+  }
+
+  async getSelectableObligations(buildingId: string, unitId: string, actorPersonId: string) {
+    await this.assertCanPayExactUnit(buildingId, unitId, actorPersonId);
+    return this.finance.listSelectableObligations(unitId);
+  }
+
+  async createExplicitPayment(
+    buildingId: string,
+    unitId: string,
+    dto: CreateExplicitPaymentDto,
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    await this.assertCanPayExactUnit(buildingId, unitId, actorPersonId);
+    const targets = this.parseExplicitObligations(dto.obligationIds);
+    try {
+      const payment = await this.finance.createExplicitPayment({
+        buildingId,
+        unitId,
+        payerId: actorPersonId,
+        method: dto.method,
+        idempotencyKey: dto.idempotencyKey,
+        reference: dto.reference,
+        note: dto.note,
+        targets,
+      });
+      await this.audit.record({
+        actorId: actorPersonId,
+        buildingId,
+        action: 'ExplicitPaymentReported',
+        entityType: 'Payment',
+        entityId: payment.id,
+        requestId,
+        metadata: { unitId, amount: payment.amount, obligationCount: targets.length },
+      });
+      return payment;
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) {
+        throw new ConflictError('One or more obligations are already reserved.');
+      }
+      throw error;
+    }
   }
 
   /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. */

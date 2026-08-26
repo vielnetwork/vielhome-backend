@@ -5,6 +5,7 @@ import { CreateFundDto } from '../application/dto/create-fund.dto';
 import { UpdateFundDto } from '../application/dto/update-fund.dto';
 import { CreateChargeBatchDto } from '../application/dto/create-charge-batch.dto';
 import { CreatePaymentDto } from '../application/dto/create-payment.dto';
+import { CreateExplicitPaymentDto } from '../application/dto/create-explicit-payment.dto';
 import { RejectPaymentDto } from '../application/dto/reject-payment.dto';
 import { CreateAdjustmentDto } from '../application/dto/create-adjustment.dto';
 import { CorrectOpeningBalanceDto } from '../application/dto/correct-opening-balance.dto';
@@ -261,6 +262,28 @@ export class FinanceController {
     @RequestId() requestId: string,
   ) {
     return this.finance.createPayment(id, unitId, dto, user.sub, requestId);
+  }
+
+  @Get(':id/units/:unitId/obligations')
+  @UseGuards(MembershipGuard)
+  getSelectableObligations(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.finance.getSelectableObligations(id, unitId, user.sub);
+  }
+
+  @Post(':id/units/:unitId/payments/explicit')
+  @UseGuards(MembershipGuard)
+  createExplicitPayment(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CreateExplicitPaymentDto,
+    @RequestId() requestId: string,
+  ) {
+    return this.finance.createExplicitPayment(id, unitId, dto, user.sub, requestId);
   }
 
   // --- Adjustments (08.05 Rule 014 — see 21_ADRs > ADR-037) --------------------

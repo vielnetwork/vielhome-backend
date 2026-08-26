@@ -50,10 +50,13 @@ describe('FinanceRepository', () => {
     payment: {
       create: jest.Mock;
       update: jest.Mock;
+      findUnique: jest.Mock;
+      findFirst: jest.Mock;
       findMany: jest.Mock;
       count: jest.Mock;
       aggregate: jest.Mock;
     };
+    paymentDebtSelection: { updateMany: jest.Mock };
     refund: { aggregate: jest.Mock };
     chargeBatch: { count: jest.Mock };
     ledgerEntry: { create: jest.Mock };
@@ -101,10 +104,18 @@ describe('FinanceRepository', () => {
       payment: {
         create: jest.fn(),
         update: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'pay-1',
+          status: 'PENDING_APPROVAL',
+          selectionMode: 'LEGACY_AUTOMATIC',
+          debtSelections: [],
+        }),
+        findFirst: jest.fn(),
         findMany: jest.fn().mockResolvedValue([]),
         count: jest.fn(),
         aggregate: jest.fn(),
       },
+      paymentDebtSelection: { updateMany: jest.fn() },
       refund: { aggregate: jest.fn() },
       chargeBatch: { count: jest.fn() },
       ledgerEntry: { create: jest.fn() },
@@ -125,8 +136,18 @@ describe('FinanceRepository', () => {
     it('allocates across ChargeItems oldest-due-first until the payment is exhausted, writing one PaymentAllocation row per item touched', async () => {
       prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'APPROVED' });
       prisma.chargeItem.findMany.mockResolvedValue([
-        { id: 'item-old', amount: 100_000, paidAmount: 0, chargeBatch: { dueDate: new Date('2026-01-01') } },
-        { id: 'item-new', amount: 100_000, paidAmount: 0, chargeBatch: { dueDate: new Date('2026-02-01') } },
+        {
+          id: 'item-old',
+          amount: 100_000,
+          paidAmount: 0,
+          chargeBatch: { dueDate: new Date('2026-01-01') },
+        },
+        {
+          id: 'item-new',
+          amount: 100_000,
+          paidAmount: 0,
+          chargeBatch: { dueDate: new Date('2026-02-01') },
+        },
       ]);
       prisma.adjustment.findMany.mockResolvedValue([]);
       prisma.chargeItem.update.mockResolvedValue({});
@@ -164,7 +185,11 @@ describe('FinanceRepository', () => {
       expect(prisma.creditBalance.upsert).not.toHaveBeenCalled();
       // Single cash-moving ledger entry for the FULL payment amount, and Fund.balance bumped by it.
       expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ entryType: 'PAYMENT', direction: 'CREDIT', amount: 150_000 }),
+        data: expect.objectContaining({
+          entryType: 'PAYMENT',
+          direction: 'CREDIT',
+          amount: 150_000,
+        }),
       });
       expect(prisma.fund.update).toHaveBeenCalledWith({
         where: { id: 'fund-1' },
@@ -233,7 +258,11 @@ describe('FinanceRepository', () => {
       prisma.paymentAllocation.findMany.mockResolvedValue([
         { chargeItemId: 'item-1', adjustmentId: null, amount: 40_000 },
       ]);
-      prisma.chargeItem.findUnique.mockResolvedValue({ id: 'item-1', amount: 100_000, paidAmount: 40_000 });
+      prisma.chargeItem.findUnique.mockResolvedValue({
+        id: 'item-1',
+        amount: 100_000,
+        paidAmount: 40_000,
+      });
       prisma.chargeItem.update.mockResolvedValue({});
       prisma.creditBalance.findUnique.mockResolvedValue(null);
       prisma.ledgerEntry.create.mockResolvedValue({});
@@ -252,7 +281,11 @@ describe('FinanceRepository', () => {
         data: { paidAmount: 0, status: 'UNPAID' },
       });
       expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ entryType: 'REVERSAL', direction: 'DEBIT', amount: 40_000 }),
+        data: expect.objectContaining({
+          entryType: 'REVERSAL',
+          direction: 'DEBIT',
+          amount: 40_000,
+        }),
       });
       expect(prisma.fund.update).toHaveBeenCalledWith({
         where: { id: 'fund-1' },
@@ -291,7 +324,11 @@ describe('FinanceRepository', () => {
       prisma.paymentAllocation.findMany.mockResolvedValue([
         { chargeItemId: 'item-1', adjustmentId: null, amount: 60_000 },
       ]);
-      prisma.chargeItem.findUnique.mockResolvedValue({ id: 'item-1', amount: 60_000, paidAmount: 60_000 });
+      prisma.chargeItem.findUnique.mockResolvedValue({
+        id: 'item-1',
+        amount: 60_000,
+        paidAmount: 60_000,
+      });
       prisma.chargeItem.update.mockResolvedValue({});
       // Original payment was 100_000, only 60_000 allocated -> 40_000 overflow banked as credit.
       // But only 10_000 of that credit remains (the rest was already spent elsewhere).
@@ -319,7 +356,12 @@ describe('FinanceRepository', () => {
     it('applies a negative (waiver) adjustment oldest-debt-first across outstanding ChargeItems, never creating a PaymentAllocation row', async () => {
       prisma.adjustment.create.mockResolvedValue({ id: 'adj-1' });
       prisma.chargeItem.findMany.mockResolvedValue([
-        { id: 'item-1', amount: 50_000, paidAmount: 0, chargeBatch: { dueDate: new Date('2026-01-01') } },
+        {
+          id: 'item-1',
+          amount: 50_000,
+          paidAmount: 0,
+          chargeBatch: { dueDate: new Date('2026-01-01') },
+        },
       ]);
       prisma.chargeItem.update.mockResolvedValue({});
       prisma.ledgerEntry.create.mockResolvedValue({});
@@ -339,14 +381,23 @@ describe('FinanceRepository', () => {
       });
       expect(prisma.paymentAllocation.create).not.toHaveBeenCalled();
       expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ entryType: 'ADJUSTMENT', direction: 'CREDIT', amount: 20_000 }),
+        data: expect.objectContaining({
+          entryType: 'ADJUSTMENT',
+          direction: 'CREDIT',
+          amount: 20_000,
+        }),
       });
     });
 
     it('does not create CreditBalance when a waiver exceeds total outstanding debt (waiving is not the same as receiving cash)', async () => {
       prisma.adjustment.create.mockResolvedValue({ id: 'adj-1' });
       prisma.chargeItem.findMany.mockResolvedValue([
-        { id: 'item-1', amount: 10_000, paidAmount: 0, chargeBatch: { dueDate: new Date('2026-01-01') } },
+        {
+          id: 'item-1',
+          amount: 10_000,
+          paidAmount: 0,
+          chargeBatch: { dueDate: new Date('2026-01-01') },
+        },
       ]);
       prisma.chargeItem.update.mockResolvedValue({});
       prisma.ledgerEntry.create.mockResolvedValue({});
@@ -384,7 +435,11 @@ describe('FinanceRepository', () => {
       expect(prisma.chargeItem.findMany).not.toHaveBeenCalled();
       expect(prisma.chargeItem.update).not.toHaveBeenCalled();
       expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ entryType: 'ADJUSTMENT', direction: 'DEBIT', amount: 25_000 }),
+        data: expect.objectContaining({
+          entryType: 'ADJUSTMENT',
+          direction: 'DEBIT',
+          amount: 25_000,
+        }),
       });
     });
   });
@@ -418,11 +473,15 @@ describe('FinanceRepository', () => {
       expect(prisma.chargeItem.findMany).not.toHaveBeenCalled();
       expect(prisma.creditBalance.upsert).not.toHaveBeenCalled();
       expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ entryType: 'ADJUSTMENT', direction: 'DEBIT', amount: 500_000 }),
+        data: expect.objectContaining({
+          entryType: 'ADJUSTMENT',
+          direction: 'DEBIT',
+          amount: 500_000,
+        }),
       });
     });
 
-    it('a negative delta waives the unit\'s own prior OPENING_BALANCE_CORRECTION Adjustments oldest-first — never touching a ChargeItem, unlike createAdjustment', async () => {
+    it("a negative delta waives the unit's own prior OPENING_BALANCE_CORRECTION Adjustments oldest-first — never touching a ChargeItem, unlike createAdjustment", async () => {
       prisma.adjustment.create.mockResolvedValue({ id: 'adj-waiver' });
       prisma.adjustment.findMany.mockResolvedValue([
         { id: 'adj-old', amount: 500_000, paidAmount: 0, createdAt: new Date('2026-01-01') },
@@ -463,7 +522,11 @@ describe('FinanceRepository', () => {
       });
       expect(prisma.creditBalance.upsert).not.toHaveBeenCalled();
       expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ entryType: 'ADJUSTMENT', direction: 'CREDIT', amount: 200_000 }),
+        data: expect.objectContaining({
+          entryType: 'ADJUSTMENT',
+          direction: 'CREDIT',
+          amount: 200_000,
+        }),
       });
     });
 
@@ -496,7 +559,7 @@ describe('FinanceRepository', () => {
       expect(prisma.creditBalance.upsert).not.toHaveBeenCalled();
     });
 
-    it('routes any waiver amount beyond the unit\'s own prior corrections into CreditBalance — unlike createAdjustment, which discards excess', async () => {
+    it("routes any waiver amount beyond the unit's own prior corrections into CreditBalance — unlike createAdjustment, which discards excess", async () => {
       prisma.adjustment.create.mockResolvedValue({ id: 'adj-waiver' });
       prisma.adjustment.findMany.mockResolvedValue([
         { id: 'adj-old', amount: 100_000, paidAmount: 0, createdAt: new Date('2026-01-01') },
@@ -652,9 +715,7 @@ describe('FinanceRepository', () => {
       prisma.chargeItem.findMany.mockResolvedValue(chargeItems);
       prisma.adjustment.findMany.mockResolvedValue(adjustments);
       prisma.creditBalance.findUnique.mockResolvedValue({ balance: 50 });
-      prisma.creditBalance.findMany.mockResolvedValue([
-        { unitId: 'u1', balance: 50 },
-      ]);
+      prisma.creditBalance.findMany.mockResolvedValue([{ unitId: 'u1', balance: 50 }]);
       prisma.payment.findMany.mockResolvedValue(pendingPayments);
       prisma.unit.findMany.mockResolvedValue([{ id: 'u1' }]);
       prisma.unit.count.mockResolvedValue(1);
