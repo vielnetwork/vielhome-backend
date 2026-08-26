@@ -1,4 +1,10 @@
-import { ChargeKind, PaymentSelectionMode, Prisma, PrismaClient } from '@prisma/client';
+import {
+  ChargeKind,
+  PaymentDebtReservationState,
+  PaymentSelectionMode,
+  Prisma,
+  PrismaClient,
+} from '@prisma/client';
 
 /**
  * FIN-PAY-REDESIGN-02 database-contract coverage.
@@ -232,6 +238,177 @@ describe('FIN-PAY-REDESIGN-02 selected-debt payment foundation (e2e)', () => {
     });
 
     expect(selection.chargeItemId).toBe(chargeItemId);
+  });
+
+  it('keeps historical NULL reservation rows valid beside one ACTIVE ChargeItem reservation', async () => {
+    const historical = await prisma.paymentDebtSelection.findFirstOrThrow({
+      where: { chargeItemId, reservationState: null },
+    });
+    const payment = await createPayment({ selectionMode: PaymentSelectionMode.EXPLICIT_SELECTION });
+    const active = await prisma.paymentDebtSelection.create({
+      data: {
+        paymentId: payment.id,
+        chargeItemId,
+        selectedAmount: 19_000,
+        reservationState: PaymentDebtReservationState.ACTIVE,
+      },
+    });
+
+    expect(historical.reservationState).toBeNull();
+    expect(active.reservationState).toBe(PaymentDebtReservationState.ACTIVE);
+  });
+
+  it('rejects a second ACTIVE ChargeItem reservation, then RELEASED permits a new ACTIVE row', async () => {
+    const existing = await prisma.paymentDebtSelection.findFirstOrThrow({
+      where: { chargeItemId, reservationState: PaymentDebtReservationState.ACTIVE },
+    });
+    const competingPayment = await createPayment({
+      selectionMode: PaymentSelectionMode.EXPLICIT_SELECTION,
+    });
+
+    await expect(
+      prisma.paymentDebtSelection.create({
+        data: {
+          paymentId: competingPayment.id,
+          chargeItemId,
+          selectedAmount: 19_000,
+          reservationState: PaymentDebtReservationState.ACTIVE,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'P2002' });
+
+    await prisma.paymentDebtSelection.update({
+      where: { id: existing.id },
+      data: { reservationState: PaymentDebtReservationState.RELEASED },
+    });
+    await expect(
+      prisma.paymentDebtSelection.create({
+        data: {
+          paymentId: competingPayment.id,
+          chargeItemId,
+          selectedAmount: 19_000,
+          reservationState: PaymentDebtReservationState.ACTIVE,
+        },
+      }),
+    ).resolves.toMatchObject({ reservationState: PaymentDebtReservationState.ACTIVE });
+  });
+
+  it('rejects a second ACTIVE Adjustment reservation, while APPLIED permits a later ACTIVE row', async () => {
+    const firstPayment = await createPayment({
+      selectionMode: PaymentSelectionMode.EXPLICIT_SELECTION,
+    });
+    const first = await prisma.paymentDebtSelection.create({
+      data: {
+        paymentId: firstPayment.id,
+        adjustmentId,
+        selectedAmount: 30_000,
+        reservationState: PaymentDebtReservationState.ACTIVE,
+      },
+    });
+    const competingPayment = await createPayment({
+      selectionMode: PaymentSelectionMode.EXPLICIT_SELECTION,
+    });
+
+    await expect(
+      prisma.paymentDebtSelection.create({
+        data: {
+          paymentId: competingPayment.id,
+          adjustmentId,
+          selectedAmount: 30_000,
+          reservationState: PaymentDebtReservationState.ACTIVE,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'P2002' });
+
+    await prisma.paymentDebtSelection.update({
+      where: { id: first.id },
+      data: { reservationState: PaymentDebtReservationState.APPLIED },
+    });
+    await expect(
+      prisma.paymentDebtSelection.create({
+        data: {
+          paymentId: competingPayment.id,
+          adjustmentId,
+          selectedAmount: 30_000,
+          reservationState: PaymentDebtReservationState.ACTIVE,
+        },
+      }),
+    ).resolves.toMatchObject({ reservationState: PaymentDebtReservationState.ACTIVE });
+  });
+
+  it('still rejects duplicate same-target rows within one Payment regardless of reservation state', async () => {
+    const payment = await createPayment({ selectionMode: PaymentSelectionMode.EXPLICIT_SELECTION });
+    const extraAdjustment = await prisma.adjustment.create({
+      data: {
+        buildingId,
+        unitId,
+        fundId,
+        amount: 5_000,
+        reason: 'Per-payment uniqueness fixture',
+        createdById: personId,
+      },
+    });
+    await prisma.paymentDebtSelection.create({
+      data: {
+        paymentId: payment.id,
+        adjustmentId: extraAdjustment.id,
+        selectedAmount: 5_000,
+        reservationState: PaymentDebtReservationState.RELEASED,
+      },
+    });
+
+    await expect(
+      prisma.paymentDebtSelection.create({
+        data: {
+          paymentId: payment.id,
+          adjustmentId: extraAdjustment.id,
+          selectedAmount: 5_000,
+          reservationState: PaymentDebtReservationState.APPLIED,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'P2002' });
+  });
+
+  it('allows unrelated ChargeItem and Adjustment obligations to be ACTIVE simultaneously', async () => {
+    const batch = await prisma.chargeBatch.findFirstOrThrow({ where: { buildingId } });
+    const [otherItem, otherAdjustment, payment] = await Promise.all([
+      prisma.chargeItem.create({
+        data: { chargeBatchId: batch.id, unitId, amount: 7_000 },
+      }),
+      prisma.adjustment.create({
+        data: {
+          buildingId,
+          unitId,
+          fundId,
+          amount: 8_000,
+          reason: 'Independent active reservation fixture',
+          createdById: personId,
+        },
+      }),
+      createPayment({ selectionMode: PaymentSelectionMode.EXPLICIT_SELECTION }),
+    ]);
+
+    const selections = await prisma.$transaction([
+      prisma.paymentDebtSelection.create({
+        data: {
+          paymentId: payment.id,
+          chargeItemId: otherItem.id,
+          selectedAmount: 7_000,
+          reservationState: PaymentDebtReservationState.ACTIVE,
+        },
+      }),
+      prisma.paymentDebtSelection.create({
+        data: {
+          paymentId: payment.id,
+          adjustmentId: otherAdjustment.id,
+          selectedAmount: 8_000,
+          reservationState: PaymentDebtReservationState.ACTIVE,
+        },
+      }),
+    ]);
+
+    expect(selections).toHaveLength(2);
+    expect(selections.every((row) => row.reservationState === 'ACTIVE')).toBe(true);
   });
 
   it('keeps historical ChargeBatches unclassified and represents every stable ChargeKind', async () => {

@@ -1031,6 +1031,12 @@ enum PaymentSelectionMode {
   EXPLICIT_SELECTION
 }
 
+enum PaymentDebtReservationState {
+  ACTIVE
+  APPLIED
+  RELEASED
+}
+
 // A resident-reported payment (no online gateway at MVP — 05_Business_Rules
 // / 12_Finance_Architecture / v1.0 package all agree: Cash + Bank Transfer
 // only). Starts PENDING_APPROVAL; an ACCOUNTANT or MANAGER approves or
@@ -1091,6 +1097,7 @@ model PaymentDebtSelection {
   adjustmentId   String?
   adjustment     Adjustment? @relation(fields: [adjustmentId], references: [id], onDelete: Restrict)
   selectedAmount Int
+  reservationState PaymentDebtReservationState?
   createdAt      DateTime    @default(now())
 
   @@unique([paymentId, chargeItemId])
