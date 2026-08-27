@@ -1097,6 +1097,7 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
   let fundId: string;
   let septemberId: string;
   let octoberId: string;
+  let novemberId: string;
   let reserveId: string;
   let adjustmentId: string;
   let explicitPaymentId: string;
@@ -1136,7 +1137,7 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
     const series = await prisma.chargeSeries.create({
       data: { buildingId, name: 'Monthly dues' },
     });
-    const [september, october, reserve] = await Promise.all([
+    const [september, october, november, reserve] = await Promise.all([
       prisma.chargeBatch.create({
         data: {
           buildingId,
@@ -1165,6 +1166,18 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
         data: {
           buildingId,
           fundId,
+          title: 'November monthly charge',
+          kind: 'MONTHLY',
+          seriesId: series.id,
+          periodStart: new Date('2026-10-23T00:00:00.000Z'),
+          status: 'ISSUED',
+          createdById: manager.personId,
+        },
+      }),
+      prisma.chargeBatch.create({
+        data: {
+          buildingId,
+          fundId,
           title: 'Reserve charge',
           kind: 'RESERVE',
           status: 'ISSUED',
@@ -1172,9 +1185,10 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
         },
       }),
     ]);
-    const [septemberItem, octoberItem, reserveItem, adjustment] = await Promise.all([
+    const [septemberItem, octoberItem, novemberItem, reserveItem, adjustment] = await Promise.all([
       prisma.chargeItem.create({ data: { chargeBatchId: september.id, unitId, amount: 100_000 } }),
       prisma.chargeItem.create({ data: { chargeBatchId: october.id, unitId, amount: 120_000 } }),
+      prisma.chargeItem.create({ data: { chargeBatchId: november.id, unitId, amount: 130_000 } }),
       prisma.chargeItem.create({ data: { chargeBatchId: reserve.id, unitId, amount: 20_000 } }),
       prisma.adjustment.create({
         data: {
@@ -1189,6 +1203,7 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
     ]);
     septemberId = `CHARGE_ITEM:${septemberItem.id}`;
     octoberId = `CHARGE_ITEM:${octoberItem.id}`;
+    novemberId = `CHARGE_ITEM:${novemberItem.id}`;
     reserveId = `CHARGE_ITEM:${reserveItem.id}`;
     adjustmentId = `ADJUSTMENT:${adjustment.id}`;
   });
@@ -1270,6 +1285,13 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
       remainingPayable: 120_000,
       selectable: false,
       unselectableReason: 'OLDER_MONTHLY_OBLIGATION_REQUIRED',
+      blockedByObligationId: septemberId,
+    });
+    expect(byId.get(novemberId)).toMatchObject({
+      remainingPayable: 130_000,
+      selectable: false,
+      unselectableReason: 'OLDER_MONTHLY_OBLIGATION_REQUIRED',
+      blockedByObligationId: octoberId,
     });
     expect(byId.get(reserveId)).toMatchObject({ chargeKind: 'RESERVE', selectable: true });
     expect(byId.get(adjustmentId)).toMatchObject({ type: 'ADJUSTMENT', selectable: true });
@@ -1317,11 +1339,35 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({ obligationIds: [octoberId], method: 'CASH', idempotencyKey: 'skip-month' })
       .expect(422);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        obligationIds: [septemberId, novemberId],
+        method: 'CASH',
+        idempotencyKey: 'gap-month',
+      })
+      .expect(422);
+  });
+
+  it('accepts each oldest-first contiguous monthly prefix in one payment', async () => {
+    for (const [index, obligationIds] of [[septemberId], [septemberId, octoberId]].entries()) {
+      const payment = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ obligationIds, method: 'CASH', idempotencyKey: `prefix-${index + 1}` })
+        .expect(201);
+      await request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/payments/${payment.body.data.id}/reject`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ reason: 'Release prefix fixture' })
+        .expect(200);
+    }
   });
 
   it('creates a canonical contiguous-prefix payment and makes retries idempotent', async () => {
     const body = {
-      obligationIds: [septemberId, octoberId, reserveId, adjustmentId],
+      obligationIds: [septemberId, octoberId, novemberId, reserveId, adjustmentId],
       method: 'BANK_TRANSFER',
       reference: 'bank-ref',
       idempotencyKey: 'explicit-prefix-1',
@@ -1333,11 +1379,11 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
       .expect(201);
     explicitPaymentId = first.body.data.id;
     expect(first.body.data).toMatchObject({
-      amount: 258_000,
+      amount: 388_000,
       selectionMode: 'EXPLICIT_SELECTION',
       status: 'PENDING_APPROVAL',
     });
-    expect(first.body.data.debtSelections).toHaveLength(4);
+    expect(first.body.data.debtSelections).toHaveLength(5);
     expect(
       first.body.data.debtSelections.every(
         (row: { reservationState: string }) => row.reservationState === 'ACTIVE',
@@ -1399,6 +1445,73 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
     ).toBe(1);
   });
 
+  it('does not let an ACTIVE-reserved predecessor be bypassed', async () => {
+    const series = await prisma.chargeSeries.create({
+      data: { buildingId, name: 'Reserved predecessor series' },
+    });
+    const [firstBatch, secondBatch] = await Promise.all([
+      prisma.chargeBatch.create({
+        data: {
+          buildingId,
+          fundId,
+          title: 'Reserved predecessor',
+          kind: 'MONTHLY',
+          seriesId: series.id,
+          periodStart: new Date('2027-01-01T00:00:00.000Z'),
+          status: 'ISSUED',
+          createdById: manager.personId,
+        },
+      }),
+      prisma.chargeBatch.create({
+        data: {
+          buildingId,
+          fundId,
+          title: 'Blocked successor',
+          kind: 'MONTHLY',
+          seriesId: series.id,
+          periodStart: new Date('2027-02-01T00:00:00.000Z'),
+          status: 'ISSUED',
+          createdById: manager.personId,
+        },
+      }),
+    ]);
+    const [firstItem, secondItem] = await Promise.all([
+      prisma.chargeItem.create({ data: { chargeBatchId: firstBatch.id, unitId, amount: 7_000 } }),
+      prisma.chargeItem.create({ data: { chargeBatchId: secondBatch.id, unitId, amount: 8_000 } }),
+    ]);
+    const firstId = `CHARGE_ITEM:${firstItem.id}`;
+    const secondId = `CHARGE_ITEM:${secondItem.id}`;
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ obligationIds: [firstId], method: 'CASH', idempotencyKey: 'reserved-predecessor' })
+      .expect(201);
+
+    const listed = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/obligations`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const byId = new Map(
+      listed.body.data.map((item: { obligationId: string }) => [item.obligationId, item]),
+    );
+    expect(byId.get(firstId)).toMatchObject({
+      selectable: false,
+      unselectableReason: 'PENDING_RESERVATION',
+      blockedByObligationId: null,
+    });
+    expect(byId.get(secondId)).toMatchObject({
+      selectable: false,
+      unselectableReason: 'OLDER_MONTHLY_OBLIGATION_REQUIRED',
+      blockedByObligationId: firstId,
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ obligationIds: [secondId], method: 'CASH', idempotencyKey: 'bypass-reservation' })
+      .expect(422);
+  });
+
   it('approval converts exact selections into allocations once', async () => {
     await request(app.getHttpServer())
       .patch(`/api/v1/buildings/${buildingId}/payments/${explicitPaymentId}/approve`)
@@ -1412,8 +1525,8 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
         where: { referenceType: 'Payment', referenceId: explicitPaymentId, entryType: 'PAYMENT' },
       }),
     ]);
-    expect(allocations).toHaveLength(4);
-    expect(allocations.reduce((sum, row) => sum + row.amount, 0)).toBe(258_000);
+    expect(allocations).toHaveLength(5);
+    expect(allocations.reduce((sum, row) => sum + row.amount, 0)).toBe(388_000);
     expect(selections.every((row) => row.reservationState === 'APPLIED')).toBe(true);
     expect(ledgers).toHaveLength(1);
 
@@ -1422,7 +1535,7 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(422);
     expect(await prisma.paymentAllocation.count({ where: { paymentId: explicitPaymentId } })).toBe(
-      4,
+      5,
     );
   });
 

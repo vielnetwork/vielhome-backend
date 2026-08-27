@@ -682,18 +682,15 @@ export class FinanceRepository {
       }),
     ]);
 
-    const monthlyFirstAvailable = new Map<string, string>();
+    const monthlyPredecessor = new Map<string, string>();
+    const monthlyLatestOutstanding = new Map<string, string>();
     for (const item of items) {
       const remaining = item.amount - item.paidAmount;
       const seriesId = item.chargeBatch.seriesId;
-      if (
-        remaining > 0 &&
-        item.chargeBatch.kind === ChargeKind.MONTHLY &&
-        seriesId &&
-        item.debtSelections.length === 0 &&
-        !monthlyFirstAvailable.has(seriesId)
-      ) {
-        monthlyFirstAvailable.set(seriesId, item.id);
+      if (remaining > 0 && item.chargeBatch.kind === ChargeKind.MONTHLY && seriesId) {
+        const predecessorId = monthlyLatestOutstanding.get(seriesId);
+        if (predecessorId) monthlyPredecessor.set(item.id, predecessorId);
+        monthlyLatestOutstanding.set(seriesId, item.id);
       }
     }
 
@@ -702,10 +699,8 @@ export class FinanceRepository {
         .map((item) => {
           const remainingPayable = item.amount - item.paidAmount;
           const reserved = item.debtSelections.length > 0;
-          const monthlyBlocked =
-            item.chargeBatch.kind === ChargeKind.MONTHLY &&
-            !!item.chargeBatch.seriesId &&
-            monthlyFirstAvailable.get(item.chargeBatch.seriesId) !== item.id;
+          const predecessorId = monthlyPredecessor.get(item.id);
+          const monthlyBlocked = predecessorId !== undefined;
           const reason = reserved
             ? 'PENDING_RESERVATION'
             : monthlyBlocked
@@ -724,6 +719,10 @@ export class FinanceRepository {
             periodStart: item.chargeBatch.periodStart,
             selectable: reason === null,
             unselectableReason: reason,
+            blockedByObligationId:
+              monthlyBlocked && !reserved
+                ? encodeObligationId({ type: 'CHARGE_ITEM', id: predecessorId! })
+                : null,
           };
         })
         .filter((item) => item.remainingPayable > 0),
@@ -744,6 +743,7 @@ export class FinanceRepository {
             periodStart: null,
             selectable: !reserved,
             unselectableReason: reserved ? 'PENDING_RESERVATION' : null,
+            blockedByObligationId: null,
           };
         })
         .filter((item) => item.remainingPayable > 0),
@@ -855,7 +855,6 @@ export class FinanceRepository {
             unitId: params.unitId,
             status: { not: 'PAID' },
             chargeBatch: { seriesId, kind: 'MONTHLY', status: { in: ['ISSUED', 'CLOSED'] } },
-            debtSelections: { none: { reservationState: 'ACTIVE' } },
           },
           include: { chargeBatch: { select: { periodStart: true } } },
           orderBy: { chargeBatch: { periodStart: 'asc' } },

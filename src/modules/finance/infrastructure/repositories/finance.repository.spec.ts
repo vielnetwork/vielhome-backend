@@ -144,6 +144,106 @@ describe('FinanceRepository', () => {
     repo = new FinanceRepository(prisma as unknown as PrismaService);
   });
 
+  describe('sequential monthly payment selection', () => {
+    const batch = (overrides: Record<string, unknown> = {}) => ({
+      buildingId: 'b1',
+      title: 'Monthly charge',
+      description: null,
+      kind: 'MONTHLY',
+      seriesId: 'series-1',
+      periodStart: new Date('2026-08-23T00:00:00.000Z'),
+      status: 'ISSUED',
+      fundId: 'fund-1',
+      fund: { id: 'fund-1', name: 'Current', type: 'CURRENT' },
+      ...overrides,
+    });
+
+    it('returns stable direct predecessor dependencies for later periods', async () => {
+      prisma.chargeItem.findMany.mockResolvedValue([
+        {
+          id: 'sep',
+          unitId: 'u1',
+          amount: 100,
+          paidAmount: 0,
+          createdAt: new Date('2026-08-23T00:00:00.000Z'),
+          chargeBatch: batch(),
+          debtSelections: [],
+        },
+        {
+          id: 'oct',
+          unitId: 'u1',
+          amount: 110,
+          paidAmount: 0,
+          createdAt: new Date('2026-09-23T00:00:00.000Z'),
+          chargeBatch: batch({ periodStart: new Date('2026-09-23T00:00:00.000Z') }),
+          debtSelections: [],
+        },
+        {
+          id: 'nov',
+          unitId: 'u1',
+          amount: 120,
+          paidAmount: 0,
+          createdAt: new Date('2026-10-23T00:00:00.000Z'),
+          chargeBatch: batch({ periodStart: new Date('2026-10-23T00:00:00.000Z') }),
+          debtSelections: [],
+        },
+      ]);
+      prisma.adjustment.findMany.mockResolvedValue([]);
+
+      await expect(repo.listSelectableObligations('u1')).resolves.toMatchObject([
+        { obligationId: 'CHARGE_ITEM:sep', selectable: true, blockedByObligationId: null },
+        {
+          obligationId: 'CHARGE_ITEM:oct',
+          selectable: false,
+          unselectableReason: 'OLDER_MONTHLY_OBLIGATION_REQUIRED',
+          blockedByObligationId: 'CHARGE_ITEM:sep',
+        },
+        {
+          obligationId: 'CHARGE_ITEM:nov',
+          selectable: false,
+          unselectableReason: 'OLDER_MONTHLY_OBLIGATION_REQUIRED',
+          blockedByObligationId: 'CHARGE_ITEM:oct',
+        },
+      ]);
+    });
+
+    it('rejects bypassing an ACTIVE-reserved monthly predecessor', async () => {
+      const first = {
+        id: 'sep',
+        unitId: 'u1',
+        amount: 100,
+        paidAmount: 0,
+        chargeBatch: batch(),
+        debtSelections: [{ id: 'reservation-1' }],
+      };
+      const second = {
+        id: 'oct',
+        unitId: 'u1',
+        amount: 110,
+        paidAmount: 0,
+        chargeBatch: batch({ periodStart: new Date('2026-09-23T00:00:00.000Z') }),
+        debtSelections: [],
+      };
+      prisma.payment.findFirst.mockResolvedValue(null);
+      prisma.chargeItem.findMany
+        .mockResolvedValueOnce([second])
+        .mockResolvedValueOnce([first, second]);
+      prisma.adjustment.findMany.mockResolvedValue([]);
+
+      await expect(
+        repo.createExplicitPayment({
+          buildingId: 'b1',
+          unitId: 'u1',
+          payerId: 'person-1',
+          method: 'CASH',
+          idempotencyKey: 'cannot-bypass',
+          targets: [{ type: 'CHARGE_ITEM', id: 'oct' }],
+        }),
+      ).rejects.toThrow('Monthly obligations must be selected oldest first without gaps.');
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe('classified charge fund race guard', () => {
     const params = {
       buildingId: 'b1',
