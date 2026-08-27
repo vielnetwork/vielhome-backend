@@ -360,21 +360,39 @@ describe('ChargePolicy', () => {
       ).not.toThrow();
     });
 
-    it('rejects non-first-day/timezone-shifted periods and non-monthly metadata', () => {
-      expect(() =>
-        policy.assertValidClassification({
-          chargeKind: 'MONTHLY',
-          seriesId: 's1',
-          periodStart: '2026-09-02T00:00:00.000Z',
-        }),
-      ).toThrow(BusinessRuleViolationError);
-      expect(() =>
-        policy.assertValidClassification({
-          chargeKind: 'MONTHLY',
-          seriesId: 's1',
-          periodStart: '2026-09-01T03:30:00+03:30',
-        }),
-      ).not.toThrow();
+    it('accepts Gregorian and calendar-neutral UTC-midnight boundaries', () => {
+      for (const periodStart of [
+        '2026-09-01T00:00:00.000Z',
+        '2026-08-23T00:00:00.000Z',
+        '2026-09-01T03:30:00+03:30',
+      ]) {
+        expect(() =>
+          policy.assertValidClassification({
+            chargeKind: 'MONTHLY',
+            seriesId: 's1',
+            periodStart,
+          }),
+        ).not.toThrow();
+      }
+    });
+
+    it('rejects non-midnight times including seconds and milliseconds', () => {
+      for (const periodStart of [
+        '2026-08-23T12:30:00.000Z',
+        '2026-08-23T00:00:01.000Z',
+        '2026-08-23T00:00:00.001Z',
+      ]) {
+        expect(() =>
+          policy.assertValidClassification({
+            chargeKind: 'MONTHLY',
+            seriesId: 's1',
+            periodStart,
+          }),
+        ).toThrow(BusinessRuleViolationError);
+      }
+    });
+
+    it('rejects monthly metadata on non-monthly classifications', () => {
       expect(() =>
         policy.assertValidClassification({
           chargeKind: 'RESERVE',

@@ -791,7 +791,7 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
       totalAmount: 100_000,
       chargeKind: 'MONTHLY',
       seriesId: monthlySeriesId,
-      periodStart: '2026-09-01T00:00:00.000Z',
+      periodStart: '2026-08-23T00:00:00.000Z',
     };
     const before = await prisma.chargeBatch.count({ where: { buildingId } });
     const preview = await request(app.getHttpServer())
@@ -818,6 +818,15 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
       expect.objectContaining({ kind: 'MONTHLY', seriesId: monthlySeriesId }),
     );
     expect(new Date(created.body.data.periodStart).toISOString()).toBe(dto.periodStart);
+
+    const distinctBoundary = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ ...dto, title: 'Next Jalali month', periodStart: '2026-09-23T00:00:00.000Z' })
+      .expect(201);
+    expect(new Date(distinctBoundary.body.data.periodStart).toISOString()).toBe(
+      '2026-09-23T00:00:00.000Z',
+    );
 
     const duplicate = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/charges`)
@@ -855,7 +864,7 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
         ...base,
         chargeKind: 'MONTHLY',
         seriesId: monthlySeriesId,
-        periodStart: '2026-10-02T00:00:00.000Z',
+        periodStart: '2026-10-23T12:30:00.000Z',
       },
       { ...base, chargeKind: 'RESERVE', seriesId: monthlySeriesId },
       { ...base, chargeKind: 'REPAIR', periodStart: '2026-10-01T00:00:00.000Z' },
@@ -949,7 +958,7 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
           title: 'September monthly charge',
           kind: 'MONTHLY',
           seriesId: series.id,
-          periodStart: new Date('2026-09-01T00:00:00.000Z'),
+          periodStart: new Date('2026-08-23T00:00:00.000Z'),
           status: 'ISSUED',
           createdById: manager.personId,
         },
@@ -961,7 +970,7 @@ describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', 
           title: 'October monthly charge',
           kind: 'MONTHLY',
           seriesId: series.id,
-          periodStart: new Date('2026-10-01T00:00:00.000Z'),
+          periodStart: new Date('2026-09-23T00:00:00.000Z'),
           status: 'ISSUED',
           createdById: manager.personId,
         },

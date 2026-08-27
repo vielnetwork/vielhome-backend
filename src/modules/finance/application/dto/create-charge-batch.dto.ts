@@ -79,7 +79,12 @@ export class CreateChargeBatchDto {
   @IsIn(CHARGE_KINDS)
   chargeKind?: (typeof CHARGE_KINDS)[number];
 
-  @ApiProperty({ required: false })
+  @ApiProperty({
+    required: false,
+    description:
+      'Canonical UTC boundary of the selected accounting period. For MONTHLY charges this must be an ISO instant at 00:00:00.000Z; the Gregorian date may represent the first civil day selected in any client calendar.',
+    example: '2026-08-23T00:00:00.000Z',
+  })
   @IsOptional()
   @IsString()
   seriesId?: string;

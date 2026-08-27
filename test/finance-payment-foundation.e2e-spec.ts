@@ -436,7 +436,7 @@ describe('FIN-PAY-REDESIGN-02 selected-debt payment foundation (e2e)', () => {
       data: { buildingId, name: `Monthly dues ${runId}` },
     });
     seriesId = series.id;
-    const periodStart = new Date('2026-08-01T00:00:00.000Z');
+    const periodStart = new Date('2026-08-23T00:00:00.000Z');
     const monthly = await prisma.chargeBatch.create({
       data: {
         buildingId,

@@ -155,7 +155,7 @@ describe('FinanceService', () => {
         ...baseDto,
         chargeKind: 'MONTHLY' as const,
         seriesId: 's1',
-        periodStart: '2026-09-01T00:00:00.000Z',
+        periodStart: '2026-08-23T00:00:00.000Z',
       };
       finance.findChargeSeriesById.mockResolvedValue(series);
       finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);

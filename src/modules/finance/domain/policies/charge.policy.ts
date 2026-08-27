@@ -36,14 +36,13 @@ export class ChargePolicy {
       const date = new Date(input.periodStart);
       if (
         Number.isNaN(date.getTime()) ||
-        date.getUTCDate() !== 1 ||
         date.getUTCHours() !== 0 ||
         date.getUTCMinutes() !== 0 ||
         date.getUTCSeconds() !== 0 ||
         date.getUTCMilliseconds() !== 0
       ) {
         throw new BusinessRuleViolationError(
-          'periodStart must be the first day of the accounting month at 00:00:00.000Z.',
+          'periodStart must be the canonical UTC boundary of the selected accounting period at 00:00:00.000Z.',
         );
       }
       return;
