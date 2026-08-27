@@ -836,7 +836,7 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
     expect(duplicate.body.errors[0].code).toBe('DUPLICATE');
   });
 
-  it('preserves legacy/unclassified and all independent ChargeKind values', async () => {
+  it('preserves legacy omission and enforces every authoritative ChargeKind/FundType mapping', async () => {
     const legacy = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/charges`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
@@ -844,15 +844,201 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
       .expect(201);
     expect(legacy.body.data.kind).toBeNull();
 
-    for (const chargeKind of ['RESERVE', 'REPAIR', 'SPECIAL', 'OTHER']) {
+    const current = await prisma.fund.findFirstOrThrow({ where: { buildingId, type: 'CURRENT' } });
+    const mappings = [
+      ['RESERVE', 'RESERVE'],
+      ['REPAIR', 'RENOVATION'],
+      ['EMERGENCY', 'EMERGENCY'],
+      ['INSURANCE', 'INSURANCE'],
+      ['OTHER', 'CUSTOM'],
+    ] as const;
+    const mappedFunds = await Promise.all(
+      mappings.map(([kind, type]) =>
+        prisma.fund.create({
+          data: { buildingId, name: `${kind} fund`, type },
+        }),
+      ),
+    );
+
+    for (const [index, [chargeKind]] of mappings.entries()) {
       const response = await request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId}/charges`)
         .set('Authorization', `Bearer ${manager.accessToken}`)
-        .send({ title: chargeKind, calculationMethod: 'FIXED', totalAmount: 10_000, chargeKind })
+        .send({
+          title: chargeKind,
+          calculationMethod: 'FIXED',
+          totalAmount: 10_000,
+          chargeKind,
+          fundId: mappedFunds[index].id,
+        })
         .expect(201);
       expect(response.body.data.kind).toBe(chargeKind);
       expect(response.body.data.seriesId).toBeNull();
     }
+
+    const monthlyOptions = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charge-options`)
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(200);
+    expect(
+      monthlyOptions.body.data.chargeKinds.map((option: { kind: string }) => option.kind),
+    ).toEqual(['MONTHLY', 'RESERVE', 'REPAIR', 'EMERGENCY', 'INSURANCE', 'OTHER']);
+    expect(
+      monthlyOptions.body.data.chargeKinds.some(
+        (option: { kind: string }) => option.kind === 'SPECIAL',
+      ),
+    ).toBe(false);
+    for (const [index, [kind, type]] of mappings.entries()) {
+      const option = monthlyOptions.body.data.chargeKinds.find(
+        (candidate: { kind: string }) => candidate.kind === kind,
+      );
+      expect(option.funds).toContainEqual({
+        id: mappedFunds[index].id,
+        name: `${kind} fund`,
+        type,
+      });
+    }
+
+    const mismatch = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Mismatch',
+        calculationMethod: 'FIXED',
+        totalAmount: 10_000,
+        chargeKind: 'REPAIR',
+        fundId: current.id,
+      })
+      .expect(422);
+    expect(mismatch.body.errors[0].code).toBe('INCOMPATIBLE_CHARGE_FUND');
+
+    const special = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'New special',
+        calculationMethod: 'FIXED',
+        totalAmount: 10_000,
+        chargeKind: 'SPECIAL',
+        fundId: current.id,
+      })
+      .expect(422);
+    expect(special.body.errors[0].code).toBe('DEPRECATED_CHARGE_KIND');
+
+    const historicalSpecial = await prisma.chargeBatch.create({
+      data: {
+        buildingId,
+        fundId: current.id,
+        title: 'Historical special',
+        calculationMethod: 'FIXED',
+        kind: 'SPECIAL',
+        createdById: manager.personId,
+      },
+    });
+    const historicalRead = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charges/${historicalSpecial.id}`)
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(200);
+    expect(historicalRead.body.data.kind).toBe('SPECIAL');
+  });
+
+  it('keeps charge options active/building scoped and reflects ambiguity, deactivation, and retype', async () => {
+    const repairFund = await prisma.fund.findFirstOrThrow({
+      where: { buildingId, type: 'RENOVATION' },
+    });
+    const secondRepair = await prisma.fund.create({
+      data: { buildingId, name: 'Another repair fund', type: 'RENOVATION' },
+    });
+    const inactiveRepair = await prisma.fund.create({
+      data: { buildingId, name: 'Inactive repair fund', type: 'RENOVATION', isActive: false },
+    });
+
+    let options = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charge-options`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    let repair = options.body.data.chargeKinds.find(
+      (option: { kind: string }) => option.kind === 'REPAIR',
+    );
+    const expectedActiveRepairIds = (
+      await prisma.fund.findMany({
+        where: { buildingId, type: 'RENOVATION', isActive: true },
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      })
+    ).map((fund) => fund.id);
+    expect(repair.funds.map((fund: { id: string }) => fund.id)).toEqual(expectedActiveRepairIds);
+    expect(repair.funds.some((fund: { id: string }) => fund.id === inactiveRepair.id)).toBe(false);
+
+    const ambiguous = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Ambiguous repair',
+        calculationMethod: 'FIXED',
+        totalAmount: 10_000,
+        chargeKind: 'REPAIR',
+      })
+      .expect(422);
+    expect(ambiguous.body.errors[0].code).toBe('CHARGE_FUND_SELECTION_REQUIRED');
+    expect(ambiguous.body.errors[0].details.reason).toBe('AMBIGUOUS_COMPATIBLE_FUND');
+
+    await prisma.fund.update({ where: { id: secondRepair.id }, data: { type: 'INSURANCE' } });
+    await prisma.fund.updateMany({
+      where: { buildingId, type: 'RENOVATION', id: { not: repairFund.id } },
+      data: { isActive: false },
+    });
+    options = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charge-options`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    repair = options.body.data.chargeKinds.find(
+      (option: { kind: string }) => option.kind === 'REPAIR',
+    );
+    expect(repair.funds.map((fund: { id: string }) => fund.id)).toEqual([repairFund.id]);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Unambiguous repair',
+        calculationMethod: 'FIXED',
+        totalAmount: 10_000,
+        chargeKind: 'REPAIR',
+      })
+      .expect(201);
+
+    await prisma.fund.updateMany({
+      where: { buildingId, type: 'RESERVE' },
+      data: { isActive: false },
+    });
+    options = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charge-options`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(
+      options.body.data.chargeKinds.some((option: { kind: string }) => option.kind === 'RESERVE'),
+    ).toBe(false);
+
+    const foreignFund = await prisma.fund.create({
+      data: {
+        buildingId: createdBuildingIds[1],
+        name: 'Foreign current fund',
+        type: 'CURRENT',
+      },
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        title: 'Foreign fund',
+        calculationMethod: 'FIXED',
+        totalAmount: 10_000,
+        chargeKind: 'MONTHLY',
+        seriesId: monthlySeriesId,
+        periodStart: '2026-11-22T00:00:00.000Z',
+        fundId: foreignFund.id,
+      })
+      .expect(404);
   });
 
   it('rejects incomplete, non-canonical, non-monthly, and cross-building classification metadata', async () => {

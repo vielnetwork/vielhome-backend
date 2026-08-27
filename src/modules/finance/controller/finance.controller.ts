@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { FinanceService } from '../application/finance.service';
 import { CreateFundDto } from '../application/dto/create-fund.dto';
 import { UpdateFundDto } from '../application/dto/update-fund.dto';
@@ -14,6 +14,7 @@ import { ReversePaymentDto } from '../application/dto/reverse-payment.dto';
 import { RefundPaymentDto } from '../application/dto/refund-payment.dto';
 import { CreateExpenseDto } from '../application/dto/create-expense.dto';
 import { VoidExpenseDto } from '../application/dto/void-expense.dto';
+import { ChargeOptionsDto } from '../application/dto/charge-options.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
@@ -147,6 +148,13 @@ export class FinanceController {
   }
 
   // --- Charge Batches ----------------------------------------------------------
+
+  @Get(':id/charge-options')
+  @UseGuards(MembershipGuard)
+  @ApiOkResponse({ type: ChargeOptionsDto })
+  getChargeOptions(@Param('id') id: string) {
+    return this.finance.getChargeOptions(id);
+  }
 
   @Get(':id/charge-series')
   @UseGuards(MembershipGuard)

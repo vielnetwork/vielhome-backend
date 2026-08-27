@@ -420,6 +420,8 @@ describe('FIN-PAY-REDESIGN-02 selected-debt payment foundation (e2e)', () => {
     for (const kind of [
       ChargeKind.RESERVE,
       ChargeKind.REPAIR,
+      ChargeKind.EMERGENCY,
+      ChargeKind.INSURANCE,
       ChargeKind.SPECIAL,
       ChargeKind.OTHER,
     ]) {

@@ -23,7 +23,15 @@ const UNIT_SCOPES = ['ALL', 'RESIDENTIAL', 'COMMERCIAL', 'PARKING', 'STORAGE', '
 // resolves identically to RESIDENT (see FinanceService.resolvePayers).
 const PAYER_TYPES = ['OWNER', 'RESIDENT', 'TENANT'] as const;
 const LATE_FEE_TYPES = ['FIXED', 'PERCENTAGE'] as const;
-const CHARGE_KINDS = ['MONTHLY', 'RESERVE', 'REPAIR', 'SPECIAL', 'OTHER'] as const;
+const CHARGE_KINDS = [
+  'MONTHLY',
+  'RESERVE',
+  'REPAIR',
+  'EMERGENCY',
+  'INSURANCE',
+  'SPECIAL',
+  'OTHER',
+] as const;
 
 export class ChargeBatchItemDto {
   @ApiProperty()
@@ -74,7 +82,12 @@ export class ChargeBatchItemDto {
  *                 exact, explicit total; see `ChargePolicy`.
  */
 export class CreateChargeBatchDto {
-  @ApiProperty({ required: false, enum: CHARGE_KINDS })
+  @ApiProperty({
+    required: false,
+    enum: CHARGE_KINDS,
+    description:
+      'Classification for new charges. SPECIAL is retained only for historical compatibility and is rejected on new preview/create requests.',
+  })
   @IsOptional()
   @IsIn(CHARGE_KINDS)
   chargeKind?: (typeof CHARGE_KINDS)[number];

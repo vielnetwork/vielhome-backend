@@ -800,6 +800,10 @@ enum ChargeKind {
   MONTHLY
   RESERVE
   REPAIR
+  EMERGENCY
+  INSURANCE
+  // Legacy classification retained for historical rows. New creation is
+  // rejected by ChargeFundAlignmentPolicy.
   SPECIAL
   OTHER
 }

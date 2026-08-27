@@ -7,11 +7,15 @@ import { ChargePolicy } from '../domain/policies/charge.policy';
 import { PaymentPolicy } from '../domain/policies/payment.policy';
 import { FundPolicy } from '../domain/policies/fund.policy';
 import { ExpensePolicy } from '../domain/policies/expense.policy';
+import { ChargeFundAlignmentPolicy } from '../domain/policies/charge-fund-alignment.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import {
   BusinessRuleViolationError,
+  ChargeFundSelectionRequiredError,
   ConflictError,
+  DeprecatedChargeKindError,
   DuplicateError,
+  IncompatibleChargeFundError,
   NotFoundAppError,
 } from '../../../common/errors/app-error';
 
@@ -45,13 +49,21 @@ describe('FinanceService', () => {
   let events: { emit: jest.Mock };
   let service: FinanceService;
 
-  const ACTIVE_FUND = { id: 'fund-1', buildingId: 'b1', isActive: true, isDefault: false };
-  const INACTIVE_FUND = { id: 'fund-2', buildingId: 'b1', isActive: false, isDefault: false };
-  const DEFAULT_FUND = { id: 'fund-default', buildingId: 'b1', isActive: true, isDefault: true };
+  const ACTIVE_FUND = {
+    id: 'fund-1',
+    name: 'Current',
+    type: 'CURRENT' as const,
+    buildingId: 'b1',
+    isActive: true,
+    isDefault: false,
+  };
+  const INACTIVE_FUND = { ...ACTIVE_FUND, id: 'fund-2', isActive: false };
+  const DEFAULT_FUND = { ...ACTIVE_FUND, id: 'fund-default', isDefault: true };
 
   beforeEach(() => {
     finance = {
       findFundById: jest.fn(),
+      listActiveChargeOptionFunds: jest.fn(),
       getOrCreateDefaultFund: jest.fn(),
       findDefaultFund: jest.fn(),
       createFund: jest.fn(),
@@ -116,6 +128,7 @@ describe('FinanceService', () => {
       new PaymentPolicy(),
       new FundPolicy(),
       new ExpensePolicy(),
+      new ChargeFundAlignmentPolicy(),
       audit as unknown as AuditService,
       events as unknown as EventEmitter2,
     );
@@ -158,7 +171,7 @@ describe('FinanceService', () => {
         periodStart: '2026-08-23T00:00:00.000Z',
       };
       finance.findChargeSeriesById.mockResolvedValue(series);
-      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      finance.listActiveChargeOptionFunds.mockResolvedValue([DEFAULT_FUND]);
       buildings.listUnits.mockResolvedValue([{ id: 'u1', type: 'RESIDENTIAL', areaSqm: null }]);
       finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
 
@@ -171,7 +184,6 @@ describe('FinanceService', () => {
         }),
       );
 
-      finance.findDefaultFund.mockResolvedValue(DEFAULT_FUND);
       const preview = await service.previewChargeBatch('b1', dto);
       expect(preview).toEqual(
         expect.objectContaining({
@@ -201,6 +213,74 @@ describe('FinanceService', () => {
         NotFoundAppError,
       );
       expect(finance.createChargeBatch).not.toHaveBeenCalled();
+    });
+
+    it('returns only supported kinds backed by active funds, in frozen order', async () => {
+      finance.listActiveChargeOptionFunds.mockResolvedValue([
+        { id: 'custom-2', name: 'Z custom', type: 'CUSTOM' },
+        { id: 'current-1', name: 'Current', type: 'CURRENT' },
+        { id: 'custom-1', name: 'A custom', type: 'CUSTOM' },
+      ]);
+
+      await expect(service.getChargeOptions('b1')).resolves.toEqual({
+        chargeKinds: [
+          {
+            kind: 'MONTHLY',
+            funds: [{ id: 'current-1', name: 'Current', type: 'CURRENT' }],
+          },
+          {
+            kind: 'OTHER',
+            funds: [
+              { id: 'custom-2', name: 'Z custom', type: 'CUSTOM' },
+              { id: 'custom-1', name: 'A custom', type: 'CUSTOM' },
+            ],
+          },
+        ],
+      });
+    });
+
+    it('auto-resolves one compatible fund but requires fundId for zero or multiple matches', async () => {
+      const dto = { ...baseDto, chargeKind: 'REPAIR' as const };
+      buildings.listUnits.mockResolvedValue([{ id: 'u1', type: 'RESIDENTIAL', areaSqm: null }]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+      finance.listActiveChargeOptionFunds.mockResolvedValue([
+        { ...ACTIVE_FUND, id: 'renovation-1', type: 'RENOVATION' },
+      ]);
+      await service.createChargeBatch('b1', dto, 'a1', 'r1');
+      expect(finance.createChargeBatch).toHaveBeenCalledWith(
+        expect.objectContaining({ fundId: 'renovation-1', expectedFundType: 'RENOVATION' }),
+      );
+
+      finance.listActiveChargeOptionFunds.mockResolvedValue([]);
+      await expect(service.previewChargeBatch('b1', dto)).rejects.toBeInstanceOf(
+        ChargeFundSelectionRequiredError,
+      );
+      finance.listActiveChargeOptionFunds.mockResolvedValue([
+        { ...ACTIVE_FUND, id: 'r1', type: 'RENOVATION' },
+        { ...ACTIVE_FUND, id: 'r2', type: 'RENOVATION' },
+      ]);
+      await expect(service.previewChargeBatch('b1', dto)).rejects.toBeInstanceOf(
+        ChargeFundSelectionRequiredError,
+      );
+    });
+
+    it('rejects mismatches and SPECIAL in both preview and create', async () => {
+      finance.findFundById.mockResolvedValue(ACTIVE_FUND);
+      const mismatch = { ...baseDto, chargeKind: 'REPAIR' as const, fundId: 'fund-1' };
+      await expect(service.previewChargeBatch('b1', mismatch)).rejects.toBeInstanceOf(
+        IncompatibleChargeFundError,
+      );
+      await expect(service.createChargeBatch('b1', mismatch, 'a1', 'r1')).rejects.toBeInstanceOf(
+        IncompatibleChargeFundError,
+      );
+
+      const special = { ...baseDto, chargeKind: 'SPECIAL' as const, fundId: 'fund-1' };
+      await expect(service.previewChargeBatch('b1', special)).rejects.toBeInstanceOf(
+        DeprecatedChargeKindError,
+      );
+      await expect(service.createChargeBatch('b1', special, 'a1', 'r1')).rejects.toBeInstanceOf(
+        DeprecatedChargeKindError,
+      );
     });
   });
 
@@ -621,7 +701,7 @@ describe('FinanceService', () => {
 
       const result = await service.previewChargeBatch('b1', dto);
 
-      expect(result.fund).toEqual({ id: 'fund-default', name: undefined });
+      expect(result.fund).toEqual({ id: 'fund-default', name: 'Current' });
       expect(result.willCreateDefaultFund).toBe(false);
     });
   });

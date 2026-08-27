@@ -12,6 +12,9 @@ export type AppErrorCode =
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'BUSINESS_RULE_VIOLATION'
+  | 'INCOMPATIBLE_CHARGE_FUND'
+  | 'DEPRECATED_CHARGE_KIND'
+  | 'CHARGE_FUND_SELECTION_REQUIRED'
   | 'DUPLICATE'
   | 'RATE_LIMIT'
   | 'NOT_IMPLEMENTED'
@@ -58,6 +61,21 @@ export class ConflictError extends AppError {
  */
 export class BusinessRuleViolationError extends AppError {
   readonly code: AppErrorCode = 'BUSINESS_RULE_VIOLATION';
+  readonly httpStatus = 422;
+}
+
+export class IncompatibleChargeFundError extends AppError {
+  readonly code: AppErrorCode = 'INCOMPATIBLE_CHARGE_FUND';
+  readonly httpStatus = 422;
+}
+
+export class DeprecatedChargeKindError extends AppError {
+  readonly code: AppErrorCode = 'DEPRECATED_CHARGE_KIND';
+  readonly httpStatus = 422;
+}
+
+export class ChargeFundSelectionRequiredError extends AppError {
+  readonly code: AppErrorCode = 'CHARGE_FUND_SELECTION_REQUIRED';
   readonly httpStatus = 422;
 }
 

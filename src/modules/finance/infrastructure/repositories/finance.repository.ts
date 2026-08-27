@@ -125,6 +125,14 @@ export class FinanceRepository {
     return this.prisma.fund.findUnique({ where: { id: fundId } });
   }
 
+  listActiveChargeOptionFunds(buildingId: string) {
+    return this.prisma.fund.findMany({
+      where: { buildingId, isActive: true },
+      select: { id: true, name: true, type: true },
+      orderBy: [{ type: 'asc' }, { name: 'asc' }, { id: 'asc' }],
+    });
+  }
+
   /**
    * ADR-094 (Sprint 29) — `initialBalance` is never written directly to
    * `Fund.balance`; when positive, this posts a real `OPENING_BALANCE`
@@ -250,6 +258,7 @@ export class FinanceRepository {
     description?: string;
     calculationMethod: ChargeCalculationMethod;
     kind?: ChargeKind;
+    expectedFundType?: FundType;
     seriesId?: string;
     periodStart?: Date;
     periodEnd?: Date;
@@ -266,6 +275,28 @@ export class FinanceRepository {
     const totalAmount = params.items.reduce((sum, i) => sum + i.amount, 0);
 
     return this.prisma.$transaction(async (tx) => {
+      if (params.kind && params.expectedFundType) {
+        // The row lock makes this the authoritative compatibility check:
+        // a concurrent deactivate/retype waits until this transaction has
+        // persisted the batch, while a mutation that won first makes the
+        // query return no row and the stale request fail cleanly.
+        const compatibleFunds = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id"
+          FROM "funds"
+          WHERE "id" = ${params.fundId}
+            AND "buildingId" = ${params.buildingId}
+            AND "isActive" = true
+            AND "type"::text = ${params.expectedFundType}
+          FOR UPDATE
+        `);
+        if (compatibleFunds.length !== 1) {
+          throw new ConflictError(
+            'The selected fund changed after it was validated. Refresh charge options and try again.',
+            { reason: 'STALE_CHARGE_FUND_SELECTION' },
+          );
+        }
+      }
+
       const batch = await tx.chargeBatch.create({
         data: {
           buildingId: params.buildingId,

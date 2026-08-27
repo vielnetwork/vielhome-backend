@@ -25,6 +25,7 @@ describe('FinanceRepository', () => {
   let prisma: {
     $transaction: jest.Mock;
     $executeRaw: jest.Mock;
+    $queryRaw: jest.Mock;
     unit: { findMany: jest.Mock; count: jest.Mock };
     fund: {
       findUnique: jest.Mock;
@@ -32,7 +33,12 @@ describe('FinanceRepository', () => {
       findMany: jest.Mock;
       update: jest.Mock;
     };
-    chargeItem: { findMany: jest.Mock; findUnique: jest.Mock; update: jest.Mock };
+    chargeItem: {
+      findMany: jest.Mock;
+      findUnique: jest.Mock;
+      update: jest.Mock;
+      createMany: jest.Mock;
+    };
     adjustment: {
       findMany: jest.Mock;
       findUnique: jest.Mock;
@@ -58,7 +64,7 @@ describe('FinanceRepository', () => {
     };
     paymentDebtSelection: { updateMany: jest.Mock };
     refund: { aggregate: jest.Mock };
-    chargeBatch: { count: jest.Mock };
+    chargeBatch: { count: jest.Mock; create: jest.Mock };
     ledgerEntry: { create: jest.Mock };
     expense: {
       create: jest.Mock;
@@ -79,6 +85,7 @@ describe('FinanceRepository', () => {
       // `tx.$executeRaw\`...\`` (tagged template form, not a function call
       // with a query object), so this must accept that call shape.
       $executeRaw: jest.fn().mockResolvedValue(undefined),
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'fund-1' }]),
       unit: { findMany: jest.fn(), count: jest.fn() },
       fund: {
         findUnique: jest.fn(),
@@ -86,7 +93,12 @@ describe('FinanceRepository', () => {
         findMany: jest.fn(),
         update: jest.fn(),
       },
-      chargeItem: { findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+      chargeItem: {
+        findMany: jest.fn(),
+        findUnique: jest.fn(),
+        update: jest.fn(),
+        createMany: jest.fn(),
+      },
       adjustment: {
         findMany: jest.fn(),
         findUnique: jest.fn(),
@@ -117,7 +129,7 @@ describe('FinanceRepository', () => {
       },
       paymentDebtSelection: { updateMany: jest.fn() },
       refund: { aggregate: jest.fn() },
-      chargeBatch: { count: jest.fn() },
+      chargeBatch: { count: jest.fn(), create: jest.fn() },
       ledgerEntry: { create: jest.fn() },
       expense: {
         create: jest.fn(),
@@ -130,6 +142,32 @@ describe('FinanceRepository', () => {
       },
     };
     repo = new FinanceRepository(prisma as unknown as PrismaService);
+  });
+
+  describe('classified charge fund race guard', () => {
+    const params = {
+      buildingId: 'b1',
+      fundId: 'fund-1',
+      title: 'Repair',
+      calculationMethod: 'FIXED' as const,
+      kind: 'REPAIR' as const,
+      expectedFundType: 'RENOVATION' as const,
+      createdById: 'person-1',
+      items: [{ unitId: 'unit-1', amount: 10_000 }],
+    };
+
+    it('locks and rechecks the active compatible fund before persisting', async () => {
+      prisma.chargeBatch.create.mockResolvedValue({ id: 'batch-1' });
+      await repo.createChargeBatch(params);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.chargeBatch.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a concurrently deactivated or retyped fund before persistence', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      await expect(repo.createChargeBatch(params)).rejects.toBeInstanceOf(ConflictError);
+      expect(prisma.chargeBatch.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('approvePayment — oldest-debt-first allocation order (ChargeItems, then Adjustments, then CreditBalance)', () => {

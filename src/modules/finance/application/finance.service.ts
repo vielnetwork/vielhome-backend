@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma, PaymentStatus, ExpenseCategory, ExpenseStatus } from '@prisma/client';
+import { ChargeKind, Prisma, PaymentStatus, ExpenseCategory, ExpenseStatus } from '@prisma/client';
 import { FinanceRepository } from '../infrastructure/repositories/finance.repository';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { ChargePolicy } from '../domain/policies/charge.policy';
@@ -20,10 +20,15 @@ import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { VoidExpenseDto } from './dto/void-expense.dto';
 import { ExpensePolicy } from '../domain/policies/expense.policy';
+import {
+  ChargeFundAlignmentPolicy,
+  NEW_CHARGE_KIND_ORDER,
+} from '../domain/policies/charge-fund-alignment.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import {
   AuthorizationError,
   BusinessRuleViolationError,
+  ChargeFundSelectionRequiredError,
   ConflictError,
   DuplicateError,
   NotFoundAppError,
@@ -142,6 +147,7 @@ export class FinanceService {
     private readonly paymentPolicy: PaymentPolicy,
     private readonly fundPolicy: FundPolicy,
     private readonly expensePolicy: ExpensePolicy,
+    private readonly chargeFundAlignment: ChargeFundAlignmentPolicy,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
   ) {}
@@ -181,6 +187,56 @@ export class FinanceService {
     }
     this.fundPolicy.assertActive(fund.isActive);
     return fund;
+  }
+
+  private async resolveChargeFund(
+    buildingId: string,
+    dto: CreateChargeBatchDto,
+    mode: 'preview' | 'create',
+  ) {
+    if (!dto.chargeKind) {
+      if (mode === 'create') {
+        return {
+          fund: await this.resolveFundForWrite(buildingId, dto.fundId),
+          willCreateDefaultFund: false,
+        };
+      }
+      if (dto.fundId) {
+        const fund = await this.finance.findFundById(dto.fundId);
+        if (!fund || fund.buildingId !== buildingId) throw new NotFoundAppError('Fund not found.');
+        this.fundPolicy.assertActive(fund.isActive);
+        return { fund, willCreateDefaultFund: false };
+      }
+      const fund = await this.finance.findDefaultFund(buildingId);
+      if (fund) this.fundPolicy.assertActive(fund.isActive);
+      return { fund, willCreateDefaultFund: fund === null };
+    }
+
+    const chargeKind = dto.chargeKind as ChargeKind;
+    this.chargeFundAlignment.assertSupportedForNewCreation(chargeKind);
+    if (dto.fundId) {
+      const fund = await this.finance.findFundById(dto.fundId);
+      if (!fund || fund.buildingId !== buildingId) throw new NotFoundAppError('Fund not found.');
+      this.fundPolicy.assertActive(fund.isActive);
+      this.chargeFundAlignment.assertFundCompatible(chargeKind, fund.type);
+      return { fund, willCreateDefaultFund: false };
+    }
+
+    const compatibleFunds = (await this.finance.listActiveChargeOptionFunds(buildingId)).filter(
+      (fund) => this.chargeFundAlignment.isFundCompatible(chargeKind, fund.type),
+    );
+    if (compatibleFunds.length !== 1) {
+      throw new ChargeFundSelectionRequiredError(
+        compatibleFunds.length === 0
+          ? 'No active compatible fund exists for this charge type.'
+          : 'Multiple active compatible funds exist; fundId is required.',
+        {
+          reason: compatibleFunds.length === 0 ? 'NO_COMPATIBLE_FUND' : 'AMBIGUOUS_COMPATIBLE_FUND',
+          chargeKind,
+        },
+      );
+    }
+    return { fund: compatibleFunds[0], willCreateDefaultFund: false };
   }
 
   // --- Funds -----------------------------------------------------------------
@@ -493,7 +549,10 @@ export class FinanceService {
 
     await this.resolveChargeClassification(buildingId, dto);
 
-    const fund = await this.resolveFundForWrite(buildingId, dto.fundId);
+    const { fund: resolvedFund } = await this.resolveChargeFund(buildingId, dto, 'create');
+    // Create-mode legacy resolution creates a default when needed, while
+    // classified resolution either returns one exact fund or throws.
+    const fund = resolvedFund!;
 
     const { items, effectiveUnitScope } = await this.resolveChargeItems(buildingId, dto);
 
@@ -506,6 +565,7 @@ export class FinanceService {
         description: dto.description,
         calculationMethod: dto.calculationMethod,
         kind: dto.chargeKind,
+        expectedFundType: dto.chargeKind ? fund.type : undefined,
         seriesId: dto.seriesId,
         periodStart: dto.periodStart ? new Date(dto.periodStart) : undefined,
         periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : undefined,
@@ -558,34 +618,12 @@ export class FinanceService {
     await this.getBuilding(buildingId);
     const series = await this.resolveChargeClassification(buildingId, dto);
 
-    let fund: { id: string; name: string } | null = null;
-    let willCreateDefaultFund = false;
-    if (dto.fundId) {
-      const found = await this.finance.findFundById(dto.fundId);
-      if (!found || found.buildingId !== buildingId) {
-        throw new NotFoundAppError('Fund not found.');
-      }
-      // Finance Hardening Pass — preview must reject an inactive fund the
-      // same way the real `createChargeBatch` now does (via
-      // `resolveFundForWrite`), so preview output never promises a batch
-      // the real create would then refuse. See `resolveFundForWrite`'s own
-      // doc comment for the full rationale.
-      this.fundPolicy.assertActive(found.isActive);
-      fund = { id: found.id, name: found.name };
-    } else {
-      const found = await this.finance.findDefaultFund(buildingId);
-      if (found) {
-        // Defensive, not expected to ever trip in practice — a default
-        // fund cannot be deactivated (`FundPolicy.assertDeactivatable`) —
-        // but kept for the same "explicit id or default resolution, same
-        // check" symmetry `resolveFundForWrite` establishes for the real
-        // create path.
-        this.fundPolicy.assertActive(found.isActive);
-        fund = { id: found.id, name: found.name };
-      } else {
-        willCreateDefaultFund = true;
-      }
-    }
+    const { fund: resolvedFund, willCreateDefaultFund } = await this.resolveChargeFund(
+      buildingId,
+      dto,
+      'preview',
+    );
+    const fund = resolvedFund ? { id: resolvedFund.id, name: resolvedFund.name } : null;
 
     const { items, effectiveUnitScope, areaUnitsSkippedForMissingArea } =
       await this.resolveChargeItems(buildingId, dto);
@@ -1658,6 +1696,17 @@ export class FinanceService {
   async listChargeSeries(buildingId: string) {
     await this.getBuilding(buildingId);
     return this.finance.listChargeSeries(buildingId);
+  }
+
+  async getChargeOptions(buildingId: string) {
+    await this.getBuilding(buildingId);
+    const funds = await this.finance.listActiveChargeOptionFunds(buildingId);
+    return {
+      chargeKinds: NEW_CHARGE_KIND_ORDER.map((kind) => ({
+        kind,
+        funds: funds.filter((fund) => this.chargeFundAlignment.isFundCompatible(kind, fund.type)),
+      })).filter((option) => option.funds.length > 0),
+    };
   }
 
   async createChargeSeries(buildingId: string, dto: CreateChargeSeriesDto) {
