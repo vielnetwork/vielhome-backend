@@ -1081,6 +1081,7 @@ model Payment {
   allocations    PaymentAllocation[]
   debtSelections PaymentDebtSelection[]
   refunds        Refund[]
+  receiptUploadIntents DocumentUploadIntent[] @relation("PaymentReceiptUploadIntent")
 
   @@unique([payerId, buildingId, idempotencyKey])
   @@index([buildingId])
@@ -1997,6 +1998,7 @@ enum DocumentReferenceEntityType {
 enum DocumentUploadPurpose {
   CREATE_DOCUMENT
   CREATE_VERSION
+  PAYMENT_RECEIPT
 }
 
 model Document {
@@ -2122,6 +2124,8 @@ model DocumentUploadIntent {
   // exist yet at request time.
   documentId    String?
   document      Document?             @relation("DocumentUploadIntentDocument", fields: [documentId], references: [id])
+  paymentId     String?
+  payment       Payment?              @relation("PaymentReceiptUploadIntent", fields: [paymentId], references: [id], onDelete: Restrict)
   fileName      String
   fileType      String
   fileSize      Int
@@ -2140,6 +2144,7 @@ model DocumentUploadIntent {
   @@index([buildingId, consumedAt, expiresAt])
   @@index([requestedById, consumedAt, expiresAt])
   @@index([documentId])
+  @@index([paymentId])
   @@map("document_upload_intents")
 }
 
