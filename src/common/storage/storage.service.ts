@@ -132,6 +132,26 @@ export class StorageService {
   }
 
   /**
+   * FIN-REC-01B — `payments/{buildingId}/{paymentId}/{unique}-{sanitizedFileName}`.
+   * Server-generated only, same as `buildObjectKey`/
+   * `buildAdvertisingCampaignObjectKey` above — callers never supply a key
+   * directly. Including `paymentId` in the path (not just `buildingId`) is
+   * deliberate: `StorageService.deleteObject` takes a bare key with no
+   * ownership/ACL check of its own (see that method's own doc comment), so
+   * this is what lets a cleanup call for one payment's rejected/invalid
+   * receipt object be scoped to exactly that payment's own key — never
+   * broad enough to risk touching a different payment's receipt.
+   */
+  buildPaymentReceiptObjectKey(buildingId: string, paymentId: string, fileName: string): string {
+    const sanitized = fileName
+      .trim()
+      .replace(/[^a-zA-Z0-9._-]+/g, '_')
+      .replace(/_{2,}/g, '_')
+      .slice(-140);
+    return `payments/${buildingId}/${paymentId}/${generateKeySuffix()}-${sanitized}`;
+  }
+
+  /**
    * Presigned PUT — the client uploads directly to storage, never
    * proxying file bytes through this API server (avoids the memory/
    * timeout cost of streaming large files through Nest for what would

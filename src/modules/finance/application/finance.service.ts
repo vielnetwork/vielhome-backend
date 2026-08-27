@@ -1284,22 +1284,116 @@ export class FinanceService {
       toSkipTake(pagination),
       status,
     );
-    return { items, meta: buildPaginationMeta(pagination, total) };
+    // FIN-REC-01B — hasReceipt/receipt enrichment, see `attachReceiptMetadata`'s own doc comment.
+    const enriched = await this.attachReceiptMetadata(items);
+    return { items: enriched, meta: buildPaginationMeta(pagination, total) };
   }
 
   /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. */
   async listUnitPayments(buildingId: string, unitId: string, pagination: PaginationParams) {
     await this.getOwnUnit(buildingId, unitId);
     const { items, total } = await this.finance.listPaymentsByUnit(unitId, toSkipTake(pagination));
-    return { items, meta: buildPaginationMeta(pagination, total) };
+    // FIN-REC-01B — hasReceipt/receipt enrichment, see `attachReceiptMetadata`'s own doc comment.
+    const enriched = await this.attachReceiptMetadata(items);
+    return { items: enriched, meta: buildPaginationMeta(pagination, total) };
   }
 
-  private async getOwnPayment(buildingId: string, paymentId: string) {
+  /**
+   * Public (FIN-REC-01B) — `PaymentReceiptService` and
+   * `DocumentsService.assertPaymentReferenceAccess` both need the exact
+   * same "does this paymentId really belong to this building" re-check
+   * `approvePayment`/`rejectPayment` already rely on (see the class doc
+   * comment's Authorization mapping and 21_ADRs > ADR-022's
+   * "role-on-URL-building PLUS service-level re-check" pattern) — kept as
+   * one method, not duplicated, so every caller gets the identical
+   * not-found semantics.
+   */
+  async getOwnPayment(buildingId: string, paymentId: string) {
     const payment = await this.finance.findPaymentById(paymentId);
     if (!payment || payment.buildingId !== buildingId) {
       throw new NotFoundAppError('Payment not found.');
     }
     return payment;
+  }
+
+  /**
+   * FIN-REC-01B — the exact "payer or finance reviewer of this Payment's
+   * own building" authorization rule, shared by the payment-receipt
+   * endpoints (`PaymentReceiptService`) and Documents' PAYMENT-reference
+   * inherited-access check (`DocumentsService.assertPaymentReferenceAccess`).
+   * "The payer" means exactly `Payment.payerId === actorPersonId` (see
+   * `createPayment`/`createExplicitPayment`'s own doc comments — the payer
+   * may be a manager acting on someone's behalf, not necessarily the real
+   * money-payer); "finance reviewer" means exactly the same
+   * `MANAGER`/`ACCOUNTANT`-on-this-building check `RolesGuard` +
+   * `getOwnPayment` already enforce for approve/reject, re-derived from
+   * `payment.buildingId` (never the caller's URL segment alone) — never
+   * broadened to OWNER/TENANT/BOARD_MEMBER, and never satisfied by a
+   * MANAGER/ACCOUNTANT of a different building.
+   */
+  async getPaymentForViewer(buildingId: string, paymentId: string, actorPersonId: string) {
+    const payment = await this.getOwnPayment(buildingId, paymentId);
+    if (payment.payerId !== actorPersonId) {
+      const roles = await this.buildings.getRoles(actorPersonId, payment.buildingId);
+      const isFinanceReviewer = roles.includes('MANAGER') || roles.includes('ACCOUNTANT');
+      if (!isFinanceReviewer) {
+        throw new AuthorizationError(
+          'Only the payer or a Manager/Accountant of this building may access this payment receipt.',
+        );
+      }
+    }
+    return payment;
+  }
+
+  /**
+   * FIN-REC-01B — batched `hasReceipt`/`receipt` enrichment for
+   * `listPayments`/`listUnitPayments`. There are no dedicated Payment
+   * response DTOs in this codebase (raw Prisma rows are returned as-is —
+   * see those methods' own doc comments), so this attaches the two new
+   * fields onto the existing raw row rather than introducing a full
+   * DTO/mapper layer that doesn't exist today. Never attaches
+   * `storageKey`/bucket/path/URL — only the compact metadata a client
+   * needs to know a receipt exists and show its filename/size/date.
+   */
+  private async attachReceiptMetadata<T extends { id: string }>(
+    items: T[],
+  ): Promise<
+    Array<
+      T & {
+        hasReceipt: boolean;
+        receipt: {
+          id: string;
+          filename: string;
+          contentType: string;
+          size: number;
+          createdAt: Date;
+        } | null;
+      }
+    >
+  > {
+    if (items.length === 0) return [];
+    const references = await this.finance.listPaymentReceiptsByPaymentIds(
+      items.map((item) => item.id),
+    );
+    const referenceByPaymentId = new Map(
+      references.map((reference) => [reference.entityId, reference]),
+    );
+    return items.map((item) => {
+      const reference = referenceByPaymentId.get(item.id);
+      return {
+        ...item,
+        hasReceipt: Boolean(reference),
+        receipt: reference
+          ? {
+              id: reference.documentVersion.documentId,
+              filename: reference.documentVersion.fileName,
+              contentType: reference.documentVersion.fileType,
+              size: reference.documentVersion.fileSize,
+              createdAt: reference.documentVersion.uploadedAt,
+            }
+          : null,
+      };
+    });
   }
 
   async approvePayment(

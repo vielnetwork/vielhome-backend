@@ -116,12 +116,24 @@ export class DocumentRepository {
     requestedById: string;
     purpose: DocumentUploadPurpose;
     documentId?: string;
+    /** FIN-REC-01B — set only for `purpose: 'PAYMENT_RECEIPT'`; mirrors `documentId`'s optionality above for the other two purposes. */
+    paymentId?: string;
     fileName: string;
     fileType: string;
     fileSize: number;
     expiresAt: Date;
   }) {
     return this.prisma.documentUploadIntent.create({ data: params });
+  }
+
+  /**
+   * FIN-REC-01B — looked up by id (not `storageKey`) because the receipt
+   * finalize endpoint identifies the intent via `uploadIntentId` in its
+   * request body, never a client-supplied storage key (see
+   * `PaymentReceiptService.finalize`'s own doc comment on why).
+   */
+  findUploadIntentById(id: string) {
+    return this.prisma.documentUploadIntent.findUnique({ where: { id } });
   }
 
   /**
@@ -349,6 +361,110 @@ export class DocumentRepository {
       distinct: ['entityId'],
     });
     return references.map((reference) => reference.entityId);
+  }
+
+  /** FIN-REC-01B — the PAYMENT-typed counterpart to `listCaseReferenceTargetsForDocument` above, for `DocumentsService.assertPaymentReferenceAccess`. */
+  async listPaymentReferenceTargetsForDocument(documentId: string): Promise<string[]> {
+    const references = await this.prisma.documentReference.findMany({
+      where: {
+        entityType: 'PAYMENT',
+        documentVersion: { documentId },
+      },
+      select: { entityId: true },
+      distinct: ['entityId'],
+    });
+    return references.map((reference) => reference.entityId);
+  }
+
+  /**
+   * FIN-REC-01B — the at-most-one-row-per-payment PAYMENT reference,
+   * backed by the DB partial unique index
+   * `document_references_payment_entityId_key` (`ON document_references(entityId)
+   * WHERE entityType = 'PAYMENT'` — see the FIN-REC-00A foundation
+   * migration). `findFirst`, not `findUnique`, because that index is a raw
+   * partial index added via migration SQL, not a Prisma-level `@@unique`
+   * the client can address directly — the DB still enforces at most one
+   * row, this just reads it the same way any other filtered lookup would.
+   */
+  findPaymentReceiptReference(paymentId: string) {
+    return this.prisma.documentReference.findFirst({
+      where: { entityType: 'PAYMENT', entityId: paymentId },
+      include: { documentVersion: true },
+    });
+  }
+
+  /**
+   * FIN-REC-01B — atomic consume-intent + create Document/DocumentVersion/
+   * DocumentReference(entityType=PAYMENT), mirroring
+   * `createDocumentWithFirstVersion`'s own two-phase pattern (see that
+   * method's doc comment): magic-byte validation and the "does a receipt
+   * already exist" pre-check both happen in `PaymentReceiptService`,
+   * OUTSIDE this transaction, before this is ever called — this method
+   * itself does no network I/O and no policy checks, keeping the
+   * transaction itself short, exactly like every other consume+create
+   * method in this class.
+   *
+   * The DB partial unique index (see `findPaymentReceiptReference`'s own
+   * doc comment) is the true concurrency backstop for two finalize calls
+   * for the SAME payment racing past `PaymentReceiptService`'s own
+   * pre-check simultaneously — `documentReference.create` below will
+   * raise `P2002` for the loser, which `PaymentReceiptService` catches and
+   * translates to the same stable "receipt already exists" conflict its
+   * pre-check throws. This never leaves a partially-created receipt: the
+   * whole transaction (intent consumption included) rolls back together.
+   */
+  createPaymentReceipt(params: {
+    buildingId: string;
+    paymentId: string;
+    createdById: string;
+    fileUrl: string;
+    fileName: string;
+    fileType: string;
+    fileSize: number;
+    uploadIntentId: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.consumeUploadIntent(tx, params.uploadIntentId);
+
+      const document = await tx.document.create({
+        data: {
+          buildingId: params.buildingId,
+          category: 'FINANCIAL',
+          // MEMBERS_ONLY (not MANAGEMENT_ONLY): the real narrowing rule for
+          // a receipt is payer-or-finance-reviewer
+          // (`DocumentsService.assertPaymentReferenceAccess`, backed by
+          // `FinanceService.getPaymentForViewer`), which is stricter than
+          // "any privileged role" in one direction (a BOARD_MEMBER with no
+          // MANAGER/ACCOUNTANT role can't see it) and looser in another
+          // (the payer, who may hold no privileged role at all, can). Using
+          // MANAGEMENT_ONLY here would block the payer from ever reaching
+          // that check via the generic `/documents/:documentId` routes.
+          visibility: 'MEMBERS_ONLY',
+          title: `Payment receipt — ${params.fileName}`,
+          createdById: params.createdById,
+        },
+      });
+      const version = await tx.documentVersion.create({
+        data: {
+          documentId: document.id,
+          versionNumber: 1,
+          fileUrl: params.fileUrl,
+          fileName: params.fileName,
+          fileType: params.fileType.toUpperCase(),
+          fileSize: params.fileSize,
+          uploadedById: params.createdById,
+          isCurrent: true,
+        },
+      });
+      await tx.documentReference.create({
+        data: {
+          documentVersionId: version.id,
+          entityType: 'PAYMENT',
+          entityId: params.paymentId,
+        },
+      });
+      return { document, version };
+    });
   }
 
   recordDownload(documentVersionId: string, downloadedById: string) {

@@ -139,6 +139,42 @@ describe('StorageService', () => {
     });
   });
 
+  describe('buildPaymentReceiptObjectKey (FIN-REC-01B — group 2 durable-binding item 2.3)', () => {
+    const service = new StorageService(makeConfigService(CONFIGURED));
+
+    it('is server-generated and receipt-scoped: contains both buildingId and paymentId, and no path-traversal from the file name', () => {
+      const key = service.buildPaymentReceiptObjectKey(
+        'building-1',
+        'payment-1',
+        '../../etc/passwd.pdf',
+      );
+      expect(key).toMatch(/^payments\/building-1\/payment-1\/[0-9a-z]{12}-.*\.pdf$/);
+      expect(key.startsWith('payments/building-1/payment-1/')).toBe(true);
+      // The file-name portion's own slashes are stripped/sanitized to `_`
+      // — the key can never grow an extra path segment beyond the fixed
+      // `payments/{buildingId}/{paymentId}/{suffix}` shape, so a client
+      // supplying `../../etc/passwd.pdf` as fileName can never escape the
+      // payment-scoped prefix (only the fixed 3 slashes from the prefix
+      // survive; the sanitized suffix itself contains none).
+      const suffix = key.slice('payments/building-1/payment-1/'.length);
+      expect(suffix).not.toContain('/');
+    });
+
+    it('scopes two different payments in the same building to disjoint key prefixes (so a cleanup delete for one payment can never reach another)', () => {
+      const keyA = service.buildPaymentReceiptObjectKey('building-1', 'payment-A', 'r.pdf');
+      const keyB = service.buildPaymentReceiptObjectKey('building-1', 'payment-B', 'r.pdf');
+      expect(keyA.startsWith('payments/building-1/payment-A/')).toBe(true);
+      expect(keyB.startsWith('payments/building-1/payment-B/')).toBe(true);
+      expect(keyA).not.toBe(keyB);
+    });
+
+    it('produces a different key each call, even for the same building/payment/file name (collision-safe)', () => {
+      const a = service.buildPaymentReceiptObjectKey('building-1', 'payment-1', 'r.pdf');
+      const b = service.buildPaymentReceiptObjectKey('building-1', 'payment-1', 'r.pdf');
+      expect(a).not.toBe(b);
+    });
+  });
+
   describe('object content and cleanup operations', () => {
     const originalFetch = global.fetch;
     afterEach(() => {

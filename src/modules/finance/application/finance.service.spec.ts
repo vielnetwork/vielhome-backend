@@ -10,6 +10,7 @@ import { ExpensePolicy } from '../domain/policies/expense.policy';
 import { ChargeFundAlignmentPolicy } from '../domain/policies/charge-fund-alignment.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import {
+  AuthorizationError,
   BusinessRuleViolationError,
   ChargeFundSelectionRequiredError,
   ConflictError,
@@ -93,6 +94,7 @@ describe('FinanceService', () => {
       createPayment: jest.fn(),
       listPayments: jest.fn(),
       listPaymentsByUnit: jest.fn(),
+      listPaymentReceiptsByPaymentIds: jest.fn().mockResolvedValue([]),
       findPaymentById: jest.fn(),
       approvePayment: jest.fn(),
       rejectPayment: jest.fn(),
@@ -117,6 +119,7 @@ describe('FinanceService', () => {
       findUnitById: jest.fn(),
       findCurrentTenancyForUnit: jest.fn().mockResolvedValue(null),
       getCurrentOwnerPersonIds: jest.fn().mockResolvedValue([]),
+      getRoles: jest.fn().mockResolvedValue([]),
     };
     audit = { record: jest.fn() };
     events = { emit: jest.fn() };
@@ -1529,6 +1532,236 @@ describe('FinanceService', () => {
     });
   });
 
+  describe('getPaymentForViewer — FIN-REC-01B payer-or-finance-reviewer authorization', () => {
+    const PAYMENT = {
+      id: 'pay-1',
+      buildingId: 'b1',
+      payerId: 'payer-1',
+      method: 'BANK_TRANSFER' as const,
+      status: 'PENDING_APPROVAL' as const,
+    };
+
+    beforeEach(() => {
+      finance.findPaymentById.mockResolvedValue(PAYMENT);
+    });
+
+    it('[1.1/7.1] allows the payer of the payment regardless of their building role', async () => {
+      buildings.getRoles.mockResolvedValue([]);
+
+      const result = await service.getPaymentForViewer('b1', 'pay-1', 'payer-1');
+
+      expect(result).toEqual(PAYMENT);
+      expect(buildings.getRoles).not.toHaveBeenCalled();
+    });
+
+    it('[1.2/7.2] allows a MANAGER of the same building who is not the payer', async () => {
+      buildings.getRoles.mockResolvedValue(['MANAGER']);
+
+      await expect(service.getPaymentForViewer('b1', 'pay-1', 'manager-1')).resolves.toEqual(
+        PAYMENT,
+      );
+      expect(buildings.getRoles).toHaveBeenCalledWith('manager-1', 'b1');
+    });
+
+    it('[1.3/7.3] allows an ACCOUNTANT of the same building who is not the payer', async () => {
+      buildings.getRoles.mockResolvedValue(['ACCOUNTANT']);
+
+      await expect(service.getPaymentForViewer('b1', 'pay-1', 'accountant-1')).resolves.toEqual(
+        PAYMENT,
+      );
+    });
+
+    it('[1.4/7.4] rejects a MANAGER/ACCOUNTANT whose role is on a DIFFERENT building — roles are re-derived from payment.buildingId, never trusted from the caller', async () => {
+      // This actor may well be MANAGER of some other building — but
+      // `buildings.getRoles` is called with `payment.buildingId`, and for
+      // THIS building the actor holds no role at all.
+      buildings.getRoles.mockResolvedValue([]);
+
+      await expect(
+        service.getPaymentForViewer('b1', 'pay-1', 'manager-of-other-building'),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+      expect(buildings.getRoles).toHaveBeenCalledWith('manager-of-other-building', 'b1');
+    });
+
+    it('[1.5/7.5] rejects a BOARD_MEMBER of the same building who is not the payer and not a finance reviewer', async () => {
+      buildings.getRoles.mockResolvedValue(['BOARD_MEMBER']);
+
+      await expect(
+        service.getPaymentForViewer('b1', 'pay-1', 'board-member-1'),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+    });
+
+    it('[1.6/7.6] rejects an OWNER/TENANT of the unit who is not the payer', async () => {
+      buildings.getRoles.mockResolvedValue(['OWNER']);
+
+      await expect(
+        service.getPaymentForViewer('b1', 'pay-1', 'owner-not-payer'),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+    });
+
+    it('[1.7/7.7] rejects an actor with no membership on this building at all', async () => {
+      buildings.getRoles.mockResolvedValue([]);
+
+      await expect(service.getPaymentForViewer('b1', 'pay-1', 'stranger-1')).rejects.toBeInstanceOf(
+        AuthorizationError,
+      );
+    });
+
+    it('propagates the stable NotFoundAppError for a payment that does not belong to this building (mirrors getOwnPayment)', async () => {
+      finance.findPaymentById.mockResolvedValue({ ...PAYMENT, buildingId: 'other-building' });
+
+      await expect(service.getPaymentForViewer('b1', 'pay-1', 'payer-1')).rejects.toBeInstanceOf(
+        NotFoundAppError,
+      );
+    });
+
+    it('propagates the stable NotFoundAppError for a nonexistent payment', async () => {
+      finance.findPaymentById.mockResolvedValue(null);
+
+      await expect(service.getPaymentForViewer('b1', 'missing', 'payer-1')).rejects.toBeInstanceOf(
+        NotFoundAppError,
+      );
+    });
+  });
+
+  describe('attachReceiptMetadata — FIN-REC-01B list-response enrichment (via listPayments/listUnitPayments)', () => {
+    beforeEach(() => {
+      buildings.findUnitById.mockResolvedValue({ id: 'u1', buildingId: 'b1' });
+    });
+
+    it('[6.1] hasReceipt is false and receipt is null before any receipt exists', async () => {
+      finance.listPayments.mockResolvedValue({ items: [{ id: 'p1' }, { id: 'p2' }], total: 2 });
+      finance.listPaymentReceiptsByPaymentIds.mockResolvedValue([]);
+
+      const result = await service.listPayments('b1', { page: 1, limit: 20 });
+
+      expect(result.items).toEqual([
+        { id: 'p1', hasReceipt: false, receipt: null },
+        { id: 'p2', hasReceipt: false, receipt: null },
+      ]);
+    });
+
+    it('[6.2] hasReceipt is true with the compact {id, filename, contentType, size, createdAt} shape once a receipt exists', async () => {
+      const uploadedAt = new Date('2026-08-20T00:00:00.000Z');
+      finance.listPayments.mockResolvedValue({ items: [{ id: 'p1' }], total: 1 });
+      finance.listPaymentReceiptsByPaymentIds.mockResolvedValue([
+        {
+          entityId: 'p1',
+          documentVersion: {
+            documentId: 'doc-1',
+            fileName: 'receipt.pdf',
+            fileType: 'PDF',
+            fileSize: 2048,
+            uploadedAt,
+          },
+        },
+      ]);
+
+      const result = await service.listPayments('b1', { page: 1, limit: 20 });
+
+      expect(result.items).toEqual([
+        {
+          id: 'p1',
+          hasReceipt: true,
+          receipt: {
+            id: 'doc-1',
+            filename: 'receipt.pdf',
+            contentType: 'PDF',
+            size: 2048,
+            createdAt: uploadedAt,
+          },
+        },
+      ]);
+    });
+
+    it('[6.3] never attaches storageKey/bucket/fileUrl/any presigned or permanent URL to the enriched item', async () => {
+      finance.listPayments.mockResolvedValue({ items: [{ id: 'p1' }], total: 1 });
+      finance.listPaymentReceiptsByPaymentIds.mockResolvedValue([
+        {
+          entityId: 'p1',
+          documentVersion: {
+            documentId: 'doc-1',
+            fileName: 'receipt.pdf',
+            fileType: 'PDF',
+            fileSize: 2048,
+            fileUrl: 'payments/b1/p1/secret-storage-key.pdf',
+            uploadedAt: new Date(),
+          },
+        },
+      ]);
+
+      const result = await service.listPayments('b1', { page: 1, limit: 20 });
+
+      const serialized = JSON.stringify(result.items);
+      expect(serialized).not.toContain('secret-storage-key');
+      expect(serialized).not.toContain('storageKey');
+      expect(serialized).not.toContain('bucket');
+      expect(Object.keys(result.items[0].receipt as object)).toEqual([
+        'id',
+        'filename',
+        'contentType',
+        'size',
+        'createdAt',
+      ]);
+    });
+
+    it('[6.4] a receipt reference for a payment id not in the current page/building batch does not bleed onto an unrelated item (batched lookup keyed strictly by id)', async () => {
+      finance.listPayments.mockResolvedValue({ items: [{ id: 'p1' }], total: 1 });
+      // Simulate a defensive/adversarial repository response that includes
+      // an entry for a payment id that was never requested (e.g. a
+      // different building's payment) — the enrichment must key strictly
+      // off the ids it was given, never leak an unrelated entry onto p1.
+      finance.listPaymentReceiptsByPaymentIds.mockResolvedValue([
+        {
+          entityId: 'p-from-another-building',
+          documentVersion: {
+            documentId: 'doc-other',
+            fileName: 'other.pdf',
+            fileType: 'PDF',
+            fileSize: 1,
+            uploadedAt: new Date(),
+          },
+        },
+      ]);
+
+      const result = await service.listPayments('b1', { page: 1, limit: 20 });
+
+      expect(result.items).toEqual([{ id: 'p1', hasReceipt: false, receipt: null }]);
+      expect(finance.listPaymentReceiptsByPaymentIds).toHaveBeenCalledWith(['p1']);
+    });
+
+    it('[6.5] enrichment is one batched lookup call, not one call per payment (N+1 sanity)', async () => {
+      finance.listPayments.mockResolvedValue({
+        items: [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }],
+        total: 3,
+      });
+      finance.listPaymentReceiptsByPaymentIds.mockResolvedValue([]);
+
+      await service.listPayments('b1', { page: 1, limit: 20 });
+
+      expect(finance.listPaymentReceiptsByPaymentIds).toHaveBeenCalledTimes(1);
+      expect(finance.listPaymentReceiptsByPaymentIds).toHaveBeenCalledWith(['p1', 'p2', 'p3']);
+    });
+
+    it('an empty page never calls the batched lookup at all', async () => {
+      finance.listPayments.mockResolvedValue({ items: [], total: 0 });
+
+      const result = await service.listPayments('b1', { page: 1, limit: 20 });
+
+      expect(finance.listPaymentReceiptsByPaymentIds).not.toHaveBeenCalled();
+      expect(result.items).toEqual([]);
+    });
+
+    it('listUnitPayments gets the same hasReceipt/receipt enrichment as listPayments', async () => {
+      finance.listPaymentsByUnit.mockResolvedValue({ items: [{ id: 'p1' }], total: 1 });
+      finance.listPaymentReceiptsByPaymentIds.mockResolvedValue([]);
+
+      const result = await service.listUnitPayments('b1', 'u1', { page: 1, limit: 20 });
+
+      expect(result.items).toEqual([{ id: 'p1', hasReceipt: false, receipt: null }]);
+    });
+  });
+
   describe('reversePayment / refundPayment — options.auditAction passthrough (ADR-113)', () => {
     it('reversePayment records the default PaymentReversed action when options is omitted', async () => {
       finance.findPaymentById.mockResolvedValue({
@@ -1753,7 +1986,7 @@ describe('FinanceService', () => {
         { skip: 0, take: 20 },
         'PENDING_APPROVAL',
       );
-      expect(result.items).toEqual([{ id: 'p1' }]);
+      expect(result.items).toEqual([{ id: 'p1', hasReceipt: false, receipt: null }]);
     });
 
     it('listPayments passes status through as undefined when omitted, unchanged from pre-existing behavior', async () => {

@@ -924,6 +924,31 @@ export class FinanceRepository {
   }
 
   /**
+   * FIN-REC-01B — batched lookup backing `FinanceService.attachReceiptMetadata`'s
+   * `hasReceipt`/`receipt` list-response enrichment. Reads
+   * `document_references`/`document_versions` directly through the shared
+   * Prisma client rather than going through `DocumentRepository`/
+   * `DocumentsService` — no new dependency on `DocumentsModule` is needed
+   * for a plain read, and it avoids the reverse-direction module import
+   * that would risk a cycle with `DocumentsModule` (which already imports
+   * `FinanceModule` for `FinanceService`, see that module's own comment).
+   * `Payment` has no typed Prisma relation to `DocumentReference` (its
+   * `entityId` is a deliberately untyped string — see that model's own
+   * schema comment), so this is a manual `entityId IN (...)` filter, not a
+   * relation `include`. At most one PAYMENT-typed reference exists per
+   * `entityId` (the partial unique index `document_references_payment_entityId_key`
+   * guarantees it — see the FIN-REC-00A foundation migration), so no
+   * de-duplication is needed on the result.
+   */
+  async listPaymentReceiptsByPaymentIds(paymentIds: string[]) {
+    if (paymentIds.length === 0) return [];
+    return this.prisma.documentReference.findMany({
+      where: { entityType: 'PAYMENT', entityId: { in: paymentIds } },
+      include: { documentVersion: true },
+    });
+  }
+
+  /**
    * Finance Hardening Pass — paginated, see `listFunds`'s own doc comment.
    * Backend ↔ Mobile Contract Alignment — optional `status` filter, backed
    * by the pre-existing `@@index([buildingId, status])` on `Payment`

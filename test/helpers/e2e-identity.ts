@@ -103,6 +103,8 @@ export const E2E_SUITE_ID = {
   ADVERTISING_ADMINISTRATION: 34,
   // Governance Staff Admin Backend Enablement.
   GOVERNANCE_ADMINISTRATION: 35,
+  // FIN-REC-01B — payment receipt upload/finalize/download.
+  PAYMENT_RECEIPT: 36,
 } as const;
 
 export type E2eSuiteName = keyof typeof E2E_SUITE_ID;

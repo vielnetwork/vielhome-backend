@@ -5,6 +5,7 @@ import { BuildingRepository } from '../../building/infrastructure/repositories/b
 import { DocumentPolicy } from '../domain/policies/document.policy';
 import { AuditService } from '../../../common/audit/audit.service';
 import { StorageService } from '../../../common/storage/storage.service';
+import { FinanceService } from '../../finance/application/finance.service';
 import {
   AuthorizationError,
   BusinessRuleViolationError,
@@ -66,6 +67,7 @@ describe('DocumentsService — listDocuments / searchDocuments pagination', () =
       buildings as unknown as BuildingRepository,
       new DocumentPolicy(),
       { getCase: jest.fn() } as never,
+      { getPaymentForViewer: jest.fn() } as never,
       audit as unknown as AuditService,
       events as unknown as EventEmitter2,
       storage as unknown as StorageService,
@@ -189,6 +191,7 @@ describe('DocumentsService — version history', () => {
         total: 3,
       }),
       listCaseReferenceTargetsForDocument: jest.fn().mockResolvedValue([]),
+      listPaymentReferenceTargetsForDocument: jest.fn().mockResolvedValue([]),
     };
     buildings = {
       getRoles: jest.fn().mockResolvedValue(['TENANT']),
@@ -198,6 +201,7 @@ describe('DocumentsService — version history', () => {
       buildings as unknown as BuildingRepository,
       new DocumentPolicy(),
       { getCase: jest.fn() } as never,
+      { getPaymentForViewer: jest.fn() } as never,
       { record: jest.fn() } as unknown as AuditService,
       { emit: jest.fn() } as unknown as EventEmitter2,
       { isConfigured: jest.fn().mockReturnValue(false) } as unknown as StorageService,
@@ -289,6 +293,7 @@ describe('DocumentsService — CASE attachment authorization', () => {
       { getRoles: jest.fn().mockResolvedValue(['TENANT']) } as unknown as BuildingRepository,
       new DocumentPolicy(),
       cases as never,
+      { getPaymentForViewer: jest.fn() } as never,
       { record: jest.fn() } as unknown as AuditService,
       { emit: jest.fn() } as unknown as EventEmitter2,
       { isConfigured: jest.fn().mockReturnValue(false) } as unknown as StorageService,
@@ -427,6 +432,7 @@ describe('DocumentsService — upload-intent trust-boundary closure (Sections B-
       buildings as unknown as BuildingRepository,
       new DocumentPolicy(),
       { getCase: jest.fn() } as never,
+      { getPaymentForViewer: jest.fn() } as never,
       audit as unknown as AuditService,
       events as unknown as EventEmitter2,
       storage as unknown as StorageService,
@@ -564,9 +570,9 @@ describe('DocumentsService — upload-intent trust-boundary closure (Sections B-
     it('rejects direct finalization when the caller is no longer Manager', async () => {
       buildings.getRoles.mockResolvedValue(['OWNER']);
 
-      await expect(
-        service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1'),
-      ).rejects.toThrow(AuthorizationError);
+      await expect(service.createDocument(BUILDING_ID, baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        AuthorizationError,
+      );
       expect(documents.createDocumentWithFirstVersion).not.toHaveBeenCalled();
     });
     const baseDto = {
@@ -702,9 +708,9 @@ describe('DocumentsService — upload-intent trust-boundary closure (Sections B-
       });
       buildings.getRoles.mockResolvedValue(['ACCOUNTANT']);
 
-      await expect(
-        service.uploadVersion('doc-1', baseDto, ACTOR_ID, 'req-1'),
-      ).rejects.toThrow(AuthorizationError);
+      await expect(service.uploadVersion('doc-1', baseDto, ACTOR_ID, 'req-1')).rejects.toThrow(
+        AuthorizationError,
+      );
       expect(documents.addVersion).not.toHaveBeenCalled();
     });
     const baseDto = {
@@ -811,6 +817,195 @@ describe('DocumentsService — upload-intent trust-boundary closure (Sections B-
           error: expect.objectContaining({ code: 'NOT_FOUND' }),
         }),
       );
+    });
+  });
+});
+
+describe('DocumentsService — FIN-REC-01B PAYMENT-reference inherited authorization (group 8: generic-document-bypass prevention)', () => {
+  const RECEIPT_DOCUMENT = {
+    id: 'doc-receipt-1',
+    buildingId: 'building-1',
+    visibility: 'MEMBERS_ONLY' as const,
+    status: 'ACTIVE' as const,
+  };
+  const PAYMENT_ID = 'payment-1';
+
+  let documents: Record<string, jest.Mock>;
+  let finance: { getPaymentForViewer: jest.Mock };
+  let service: DocumentsService;
+
+  beforeEach(() => {
+    documents = {
+      findDocumentById: jest.fn().mockResolvedValue(RECEIPT_DOCUMENT),
+      getCurrentVersion: jest.fn().mockResolvedValue({ id: 'version-1' }),
+      listDocumentVersions: jest.fn().mockResolvedValue({ items: [{ id: 'version-1' }], total: 1 }),
+      findVersionWithDocument: jest.fn().mockResolvedValue({
+        id: 'version-1',
+        documentId: RECEIPT_DOCUMENT.id,
+        document: RECEIPT_DOCUMENT,
+        fileUrl: 'payments/building-1/payment-1/secret-key.pdf',
+        fileName: 'receipt.pdf',
+        fileType: 'PDF',
+      }),
+      listCaseReferenceTargetsForDocument: jest.fn().mockResolvedValue([]),
+      listPaymentReferenceTargetsForDocument: jest.fn().mockResolvedValue([PAYMENT_ID]),
+      recordDownload: jest.fn().mockResolvedValue(undefined),
+    };
+    finance = { getPaymentForViewer: jest.fn() };
+    service = new DocumentsService(
+      documents as unknown as DocumentRepository,
+      // A privileged-enough role for the generic MANAGEMENT_ONLY gate is
+      // irrelevant here — the document's own visibility is MEMBERS_ONLY
+      // (see `DocumentRepository.createPaymentReceipt`'s own comment on
+      // why), so `buildings.getRoles` only needs to make `assertMember`
+      // pass; the real narrowing gate under test is `getPaymentForViewer`.
+      { getRoles: jest.fn().mockResolvedValue(['BOARD_MEMBER']) } as unknown as BuildingRepository,
+      new DocumentPolicy(),
+      { getCase: jest.fn() } as never,
+      finance as unknown as FinanceService,
+      { record: jest.fn() } as unknown as AuditService,
+      { emit: jest.fn() } as unknown as EventEmitter2,
+      {
+        isConfigured: jest.fn().mockReturnValue(true),
+        getPresignedDownloadUrl: jest.fn().mockReturnValue('https://signed'),
+      } as unknown as StorageService,
+    );
+  });
+
+  it('[8.1] a BOARD_MEMBER (privileged for generic MANAGEMENT_ONLY visibility) CANNOT fetch a receipt document via the generic getDocument(documentId) path', async () => {
+    finance.getPaymentForViewer.mockRejectedValue(
+      new AuthorizationError(
+        'Only the payer or a Manager/Accountant of this building may access this payment receipt.',
+      ),
+    );
+
+    await expect(service.getDocument(RECEIPT_DOCUMENT.id, 'board-member-1')).rejects.toBeInstanceOf(
+      AuthorizationError,
+    );
+    expect(finance.getPaymentForViewer).toHaveBeenCalledWith(
+      RECEIPT_DOCUMENT.buildingId,
+      PAYMENT_ID,
+      'board-member-1',
+    );
+  });
+
+  it('[8.2] a BOARD_MEMBER CANNOT list its versions via the generic version-list path', async () => {
+    finance.getPaymentForViewer.mockRejectedValue(new AuthorizationError('denied'));
+
+    await expect(
+      service.listDocumentVersions(RECEIPT_DOCUMENT.id, 'board-member-1', { page: 1, limit: 20 }),
+    ).rejects.toBeInstanceOf(AuthorizationError);
+    expect(documents.listDocumentVersions).not.toHaveBeenCalled();
+  });
+
+  it('[8.3] a BOARD_MEMBER CANNOT get a presigned download via the generic downloadVersion path, even with a known/correct version id', async () => {
+    finance.getPaymentForViewer.mockRejectedValue(new AuthorizationError('denied'));
+
+    await expect(
+      service.downloadVersion('version-1', 'board-member-1', 'req-1'),
+    ).rejects.toBeInstanceOf(AuthorizationError);
+    expect(documents.recordDownload).not.toHaveBeenCalled();
+  });
+
+  it('[8.4] the payer/reviewer of that specific payment CAN still access the same document via getDocument/listDocumentVersions/downloadVersion — the new check narrows, it does not block everyone', async () => {
+    finance.getPaymentForViewer.mockResolvedValue({
+      id: PAYMENT_ID,
+      buildingId: RECEIPT_DOCUMENT.buildingId,
+      payerId: 'payer-1',
+      method: 'BANK_TRANSFER',
+    });
+
+    await expect(service.getDocument(RECEIPT_DOCUMENT.id, 'payer-1')).resolves.toEqual(
+      expect.objectContaining({ id: RECEIPT_DOCUMENT.id }),
+    );
+    await expect(
+      service.listDocumentVersions(RECEIPT_DOCUMENT.id, 'payer-1', { page: 1, limit: 20 }),
+    ).resolves.toEqual(expect.objectContaining({ items: [{ id: 'version-1' }] }));
+    await expect(service.downloadVersion('version-1', 'payer-1', 'req-1')).resolves.toEqual(
+      expect.objectContaining({ fileUrl: 'https://signed' }),
+    );
+    expect(documents.recordDownload).toHaveBeenCalledWith('version-1', 'payer-1');
+  });
+
+  it('a document with no PAYMENT reference at all is entirely unaffected (assertPaymentReferenceAccess is a no-op)', async () => {
+    documents.listPaymentReferenceTargetsForDocument.mockResolvedValue([]);
+
+    await expect(service.getDocument(RECEIPT_DOCUMENT.id, 'anyone-1')).resolves.toEqual(
+      expect.objectContaining({ id: RECEIPT_DOCUMENT.id }),
+    );
+    expect(finance.getPaymentForViewer).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService — FIN-REC-01B generic-reference hardening (group 5)', () => {
+  const document = {
+    id: 'doc-1',
+    buildingId: 'building-1',
+    visibility: 'MEMBERS_ONLY' as const,
+    status: 'ACTIVE' as const,
+  };
+  let documents: Record<string, jest.Mock>;
+  let finance: { getPaymentForViewer: jest.Mock };
+  let service: DocumentsService;
+
+  beforeEach(() => {
+    documents = {
+      findDocumentById: jest.fn().mockResolvedValue(document),
+      getCurrentVersion: jest.fn().mockResolvedValue({ id: 'version-1' }),
+      findVersionWithDocument: jest.fn(),
+      createReference: jest.fn().mockResolvedValue({ id: 'reference-1' }),
+    };
+    finance = { getPaymentForViewer: jest.fn() };
+    service = new DocumentsService(
+      documents as unknown as DocumentRepository,
+      { getRoles: jest.fn().mockResolvedValue(['TENANT']) } as unknown as BuildingRepository,
+      new DocumentPolicy(),
+      { getCase: jest.fn().mockResolvedValue({ id: 'case-1' }) } as never,
+      finance as unknown as FinanceService,
+      { record: jest.fn() } as unknown as AuditService,
+      { emit: jest.fn() } as unknown as EventEmitter2,
+      { isConfigured: jest.fn().mockReturnValue(false) } as unknown as StorageService,
+    );
+  });
+
+  it('[5.1] the generic createReference path CANNOT be used to attach an arbitrary entityType: PAYMENT reference — only the trusted finalize flow (DocumentRepository.createPaymentReceipt) can', async () => {
+    await expect(
+      service.createReference(
+        'doc-1',
+        { entityType: 'PAYMENT', entityId: 'payment-1' } as never,
+        'person-1',
+        'request-1',
+      ),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(documents.createReference).not.toHaveBeenCalled();
+    expect(finance.getPaymentForViewer).not.toHaveBeenCalled();
+  });
+
+  it('[5.2] non-PAYMENT reference creation is completely unaffected (regression: CASE still works)', async () => {
+    await service.createReference(
+      'doc-1',
+      { entityType: 'CASE', entityId: 'case-1' },
+      'person-1',
+      'request-1',
+    );
+    expect(documents.createReference).toHaveBeenCalledWith({
+      documentVersionId: 'version-1',
+      entityType: 'CASE',
+      entityId: 'case-1',
+    });
+  });
+
+  it('[5.2b] non-PAYMENT reference creation is unaffected for another existing type (VOTE)', async () => {
+    await service.createReference(
+      'doc-1',
+      { entityType: 'VOTE', entityId: 'vote-1' },
+      'person-1',
+      'request-1',
+    );
+    expect(documents.createReference).toHaveBeenCalledWith({
+      documentVersionId: 'version-1',
+      entityType: 'VOTE',
+      entityId: 'vote-1',
     });
   });
 });

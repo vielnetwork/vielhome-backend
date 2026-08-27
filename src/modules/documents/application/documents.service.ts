@@ -12,6 +12,7 @@ import { DocumentRepository } from '../infrastructure/repositories/document.repo
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { DocumentPolicy } from '../domain/policies/document.policy';
 import { CasesService } from '../../cases/application/cases.service';
+import { FinanceService } from '../../finance/application/finance.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { BulkCreateDocumentDto } from './dto/bulk-create-document.dto';
 import { UploadVersionDto } from './dto/upload-version.dto';
@@ -50,6 +51,7 @@ export class DocumentsService {
     private readonly buildings: BuildingRepository,
     private readonly policy: DocumentPolicy,
     private readonly cases: CasesService,
+    private readonly finance: FinanceService,
     private readonly audit: AuditService,
     private readonly events: EventEmitter2,
     private readonly storage: StorageService,
@@ -64,6 +66,36 @@ export class DocumentsService {
     const caseIds = await this.documents.listCaseReferenceTargetsForDocument(documentId);
     await Promise.all(
       caseIds.map((caseId) => this.cases.getCase(buildingId, caseId, actorPersonId)),
+    );
+  }
+
+  /**
+   * FIN-REC-01B — the PAYMENT counterpart to `assertCaseReferenceAccess`
+   * above, same shape: find every `entityType: 'PAYMENT'` reference for
+   * this document (at most one, per the DB partial unique index — see
+   * `DocumentRepository.findPaymentReceiptReference`'s own doc comment),
+   * and for each, apply the exact same payer-or-finance-reviewer rule the
+   * dedicated receipt endpoints use
+   * (`FinanceService.getPaymentForViewer` — real cross-module reuse, not
+   * duplicated logic, same as `cases.getCase` above). If any referenced
+   * payment rejects the actor, the whole check rejects — a document
+   * referenced by even one payment the actor can't see is entirely
+   * inaccessible via the generic Document routes, regardless of the
+   * Document's own `visibility`. Called alongside
+   * `assertCaseReferenceAccess` (not instead of it) from every read path
+   * that already calls it — a document could in principle carry both
+   * kinds of references.
+   */
+  private async assertPaymentReferenceAccess(
+    documentId: string,
+    buildingId: string,
+    actorPersonId: string,
+  ): Promise<void> {
+    const paymentIds = await this.documents.listPaymentReferenceTargetsForDocument(documentId);
+    await Promise.all(
+      paymentIds.map((paymentId) =>
+        this.finance.getPaymentForViewer(buildingId, paymentId, actorPersonId),
+      ),
     );
   }
 
@@ -526,6 +558,7 @@ export class DocumentsService {
     const privileged = await this.isPrivileged(actorPersonId, found.buildingId);
     this.policy.assertVisible(found.visibility, privileged);
     await this.assertCaseReferenceAccess(documentId, found.buildingId, actorPersonId);
+    await this.assertPaymentReferenceAccess(documentId, found.buildingId, actorPersonId);
 
     const currentVersion = await this.documents.getCurrentVersion(documentId);
     return { ...found, currentVersion };
@@ -541,6 +574,7 @@ export class DocumentsService {
     const privileged = await this.isPrivileged(actorPersonId, found.buildingId);
     this.policy.assertVisible(found.visibility, privileged);
     await this.assertCaseReferenceAccess(documentId, found.buildingId, actorPersonId);
+    await this.assertPaymentReferenceAccess(documentId, found.buildingId, actorPersonId);
 
     const { items, total } = await this.documents.listDocumentVersions(
       documentId,
@@ -649,6 +683,21 @@ export class DocumentsService {
     const privileged = await this.isPrivileged(actorPersonId, found.buildingId);
     this.policy.assertVisible(found.visibility, privileged);
 
+    // FIN-REC-01B — PAYMENT references are created ONLY by the trusted
+    // `PaymentReceiptService.finalize` flow (via `DocumentRepository.createPaymentReceipt`,
+    // a separate atomic transaction this generic path never calls), which
+    // has already verified the actor is payer-or-finance-reviewer and the
+    // file's real magic bytes match its declared type before ever writing
+    // a DocumentReference row. This generic, client-facing path has none
+    // of those guarantees, so it must never be used to attach an arbitrary
+    // PAYMENT reference to a document — closing the gap flagged in the
+    // FIN-REC-01B pre-implementation audit (item 20/28).
+    if (dto.entityType === 'PAYMENT') {
+      throw new ValidationError(
+        'Payment receipt references can only be created through the payment-receipt finalize endpoint.',
+      );
+    }
+
     if (dto.entityType === 'CASE') {
       await this.cases.getCase(found.buildingId, dto.entityId, actorPersonId);
     }
@@ -736,6 +785,11 @@ export class DocumentsService {
     const privileged = await this.isPrivileged(actorPersonId, version.document.buildingId);
     this.policy.assertVisible(version.document.visibility, privileged);
     await this.assertCaseReferenceAccess(
+      version.document.id,
+      version.document.buildingId,
+      actorPersonId,
+    );
+    await this.assertPaymentReferenceAccess(
       version.document.id,
       version.document.buildingId,
       actorPersonId,
