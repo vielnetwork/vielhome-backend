@@ -15,6 +15,46 @@ export interface ChargeBatchLike {
  */
 @Injectable()
 export class ChargePolicy {
+  assertValidClassification(input: {
+    chargeKind?: string;
+    seriesId?: string;
+    periodStart?: string;
+  }): void {
+    if (!input.chargeKind) {
+      if (input.seriesId !== undefined) {
+        throw new BusinessRuleViolationError('seriesId requires an explicit chargeKind.');
+      }
+      return;
+    }
+    if (input.chargeKind === 'MONTHLY') {
+      if (!input.seriesId) {
+        throw new BusinessRuleViolationError('A MONTHLY charge requires seriesId.');
+      }
+      if (!input.periodStart) {
+        throw new BusinessRuleViolationError('A MONTHLY charge requires periodStart.');
+      }
+      const date = new Date(input.periodStart);
+      if (
+        Number.isNaN(date.getTime()) ||
+        date.getUTCDate() !== 1 ||
+        date.getUTCHours() !== 0 ||
+        date.getUTCMinutes() !== 0 ||
+        date.getUTCSeconds() !== 0 ||
+        date.getUTCMilliseconds() !== 0
+      ) {
+        throw new BusinessRuleViolationError(
+          'periodStart must be the first day of the accounting month at 00:00:00.000Z.',
+        );
+      }
+      return;
+    }
+    if (input.seriesId !== undefined || input.periodStart !== undefined) {
+      throw new BusinessRuleViolationError(
+        'seriesId and periodStart are only allowed for MONTHLY charges.',
+      );
+    }
+  }
+
   /**
    * Exactly one calculation input set must be present, matching the
    * method.
@@ -120,7 +160,10 @@ export class ChargePolicy {
    * `FinanceService.resolveChargeItems` instead, once the building's real
    * unit list is fetched — this policy stays persistence-free.
    */
-  private assertValidUnitScopeInputs(unitScope: string | undefined, unitIds: string[] | undefined): void {
+  private assertValidUnitScopeInputs(
+    unitScope: string | undefined,
+    unitIds: string[] | undefined,
+  ): void {
     if (unitScope !== 'MANUAL') return;
     if (!unitIds || unitIds.length === 0) {
       throw new BusinessRuleViolationError('unitScope MANUAL requires a non-empty unitIds array.');

@@ -1,4 +1,5 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Prisma } from '@prisma/client';
 import { FinanceService } from './finance.service';
 import { FinanceRepository } from '../infrastructure/repositories/finance.repository';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
@@ -58,6 +59,9 @@ describe('FinanceService', () => {
       updateFund: jest.fn(),
       setFundActive: jest.fn(),
       createChargeBatch: jest.fn(),
+      listChargeSeries: jest.fn(),
+      createChargeSeries: jest.fn(),
+      findChargeSeriesById: jest.fn(),
       listChargeBatches: jest.fn(),
       findChargeBatchById: jest.fn(),
       issueChargeBatch: jest.fn(),
@@ -115,6 +119,89 @@ describe('FinanceService', () => {
       audit as unknown as AuditService,
       events as unknown as EventEmitter2,
     );
+  });
+
+  describe('charge classification and series', () => {
+    const baseDto = {
+      title: 'Monthly charge',
+      calculationMethod: 'FIXED' as const,
+      totalAmount: 100_000,
+    };
+
+    it('lists active series through the building-scoped repository query', async () => {
+      finance.listChargeSeries.mockResolvedValue([{ id: 's1', name: 'Monthly' }]);
+      await expect(service.listChargeSeries('b1')).resolves.toEqual([
+        { id: 's1', name: 'Monthly' },
+      ]);
+      expect(finance.listChargeSeries).toHaveBeenCalledWith('b1');
+    });
+
+    it('creates a trimmed series and maps duplicate names to DuplicateError', async () => {
+      finance.createChargeSeries.mockResolvedValueOnce({ id: 's1', name: 'Monthly' });
+      await service.createChargeSeries('b1', { name: '  Monthly  ' });
+      expect(finance.createChargeSeries).toHaveBeenCalledWith('b1', 'Monthly');
+
+      const race = Object.assign(new Error('unique'), { code: 'P2002', clientVersion: '5.22.0' });
+      Object.setPrototypeOf(race, Prisma.PrismaClientKnownRequestError.prototype);
+      finance.createChargeSeries.mockRejectedValueOnce(race);
+      await expect(service.createChargeSeries('b1', { name: 'Monthly' })).rejects.toBeInstanceOf(
+        DuplicateError,
+      );
+    });
+
+    it('persists MONTHLY metadata and returns the same classification from preview', async () => {
+      const series = { id: 's1', buildingId: 'b1', name: 'Monthly', isActive: true };
+      const dto = {
+        ...baseDto,
+        chargeKind: 'MONTHLY' as const,
+        seriesId: 's1',
+        periodStart: '2026-09-01T00:00:00.000Z',
+      };
+      finance.findChargeSeriesById.mockResolvedValue(series);
+      finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      buildings.listUnits.mockResolvedValue([{ id: 'u1', type: 'RESIDENTIAL', areaSqm: null }]);
+      finance.createChargeBatch.mockResolvedValue({ id: 'batch-1' });
+
+      await service.createChargeBatch('b1', dto, 'actor-1', 'req-1');
+      expect(finance.createChargeBatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'MONTHLY',
+          seriesId: 's1',
+          periodStart: new Date(dto.periodStart),
+        }),
+      );
+
+      finance.findDefaultFund.mockResolvedValue(DEFAULT_FUND);
+      const preview = await service.previewChargeBatch('b1', dto);
+      expect(preview).toEqual(
+        expect.objectContaining({
+          chargeKind: 'MONTHLY',
+          series: { id: 's1', name: 'Monthly' },
+          periodStart: dto.periodStart,
+          grandTotal: 100_000,
+        }),
+      );
+    });
+
+    it('rejects a series from another building in both preview and create', async () => {
+      finance.findChargeSeriesById.mockResolvedValue({
+        id: 's2',
+        buildingId: 'b2',
+        name: 'Other',
+        isActive: true,
+      });
+      const dto = {
+        ...baseDto,
+        chargeKind: 'MONTHLY' as const,
+        seriesId: 's2',
+        periodStart: '2026-09-01T00:00:00.000Z',
+      };
+      await expect(service.previewChargeBatch('b1', dto)).rejects.toBeInstanceOf(NotFoundAppError);
+      await expect(service.createChargeBatch('b1', dto, 'a1', 'r1')).rejects.toBeInstanceOf(
+        NotFoundAppError,
+      );
+      expect(finance.createChargeBatch).not.toHaveBeenCalled();
+    });
   });
 
   describe('resolveFundForWrite (via createChargeBatch/createPayment/createAdjustment)', () => {
@@ -240,7 +327,9 @@ describe('FinanceService', () => {
       finance.findFundById.mockResolvedValue(ACTIVE_FUND);
       buildings.findUnitById.mockResolvedValue({ id: 'u1', buildingId: 'b1' });
       finance.createPayment.mockRejectedValue(
-        new BusinessRuleViolationError("This amount exceeds the unit's remaining payable amount (0)."),
+        new BusinessRuleViolationError(
+          "This amount exceeds the unit's remaining payable amount (0).",
+        ),
       );
 
       await expect(
@@ -1213,7 +1302,11 @@ describe('FinanceService', () => {
     });
 
     it('cancels and emits ChargeBatchCancelledEvent when no payments have been applied', async () => {
-      finance.findChargeBatchById.mockResolvedValue({ id: 'batch-1', buildingId: 'b1', status: 'ISSUED' });
+      finance.findChargeBatchById.mockResolvedValue({
+        id: 'batch-1',
+        buildingId: 'b1',
+        status: 'ISSUED',
+      });
       finance.hasAnyPaidChargeItems.mockResolvedValue(false);
       finance.cancelChargeBatch.mockResolvedValue({ id: 'batch-1', status: 'CANCELLED' });
 
@@ -1330,7 +1423,12 @@ describe('FinanceService', () => {
       await service.approvePayment('b1', 'pay-1', 'manager-1', 'req-1');
 
       expect(finance.approvePayment).toHaveBeenCalledWith(
-        expect.objectContaining({ paymentId: 'pay-1', unitId: 'u1', fundId: 'fund-1', amount: 300_000 }),
+        expect.objectContaining({
+          paymentId: 'pay-1',
+          unitId: 'u1',
+          fundId: 'fund-1',
+          amount: 300_000,
+        }),
       );
       expect(events.emit).toHaveBeenCalledWith(
         'PaymentApproved',
@@ -1339,7 +1437,11 @@ describe('FinanceService', () => {
     });
 
     it('rejects rejecting an already-rejected payment', async () => {
-      finance.findPaymentById.mockResolvedValue({ id: 'pay-1', buildingId: 'b1', status: 'REJECTED' });
+      finance.findPaymentById.mockResolvedValue({
+        id: 'pay-1',
+        buildingId: 'b1',
+        status: 'REJECTED',
+      });
 
       await expect(
         service.rejectPayment('b1', 'pay-1', { reason: 'dup' }, 'actor-1', 'req-1'),
@@ -1377,9 +1479,16 @@ describe('FinanceService', () => {
       });
       finance.reversePayment.mockResolvedValue({ id: 'pay-1', status: 'REVERSED' });
 
-      await service.reversePayment('b1', 'pay-1', { reason: 'staff override' }, 'staff-1', 'req-1', {
-        auditAction: 'PaymentReversedByAdmin',
-      });
+      await service.reversePayment(
+        'b1',
+        'pay-1',
+        { reason: 'staff override' },
+        'staff-1',
+        'req-1',
+        {
+          auditAction: 'PaymentReversedByAdmin',
+        },
+      );
 
       expect(audit.record).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'PaymentReversedByAdmin' }),
@@ -1414,14 +1523,9 @@ describe('FinanceService', () => {
       finance.findRefundsByPayment.mockResolvedValue([]);
       finance.createRefund.mockResolvedValue({ id: 'refund-1' });
 
-      await service.refundPayment(
-        'b1',
-        'pay-1',
-        { reason: 'goodwill' },
-        'staff-1',
-        'req-1',
-        { auditAction: 'PaymentRefundedByAdmin' },
-      );
+      await service.refundPayment('b1', 'pay-1', { reason: 'goodwill' }, 'staff-1', 'req-1', {
+        auditAction: 'PaymentRefundedByAdmin',
+      });
 
       expect(audit.record).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'PaymentRefundedByAdmin' }),
@@ -1528,9 +1632,7 @@ describe('FinanceService', () => {
         take: 100,
       });
       expect(result.meta).toEqual({ page: 2, limit: 100, total: 101, totalPages: 2 });
-      expect(result.items).toEqual([
-        { unitId: 'u1', remainingPayable: 25_003_000 },
-      ]);
+      expect(result.items).toEqual([{ unitId: 'u1', remainingPayable: 25_003_000 }]);
     });
 
     it('listFunds converts page/limit into skip/take and returns { items, meta } built from the repository total', async () => {

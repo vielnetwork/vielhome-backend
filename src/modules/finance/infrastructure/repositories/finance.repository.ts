@@ -227,6 +227,21 @@ export class FinanceRepository {
 
   // --- Charge Batches / Charge Items ----------------------------------------
 
+  listChargeSeries(buildingId: string) {
+    return this.prisma.chargeSeries.findMany({
+      where: { buildingId, isActive: true },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    });
+  }
+
+  findChargeSeriesById(id: string) {
+    return this.prisma.chargeSeries.findUnique({ where: { id } });
+  }
+
+  createChargeSeries(buildingId: string, name: string) {
+    return this.prisma.chargeSeries.create({ data: { buildingId, name } });
+  }
+
   /** Creates a DRAFT batch and its ChargeItems atomically; totalAmount is the sum of `items`. */
   createChargeBatch(params: {
     buildingId: string;
@@ -234,6 +249,8 @@ export class FinanceRepository {
     title: string;
     description?: string;
     calculationMethod: ChargeCalculationMethod;
+    kind?: ChargeKind;
+    seriesId?: string;
     periodStart?: Date;
     periodEnd?: Date;
     dueDate?: Date;
@@ -256,6 +273,8 @@ export class FinanceRepository {
           title: params.title,
           description: params.description,
           calculationMethod: params.calculationMethod,
+          kind: params.kind,
+          seriesId: params.seriesId,
           periodStart: params.periodStart,
           periodEnd: params.periodEnd,
           dueDate: params.dueDate,

@@ -718,6 +718,174 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
 
     expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
+
+  let monthlySeriesId: string;
+
+  it('creates and deterministically lists active ChargeSeries; members may list but not create', async () => {
+    const zeta = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charge-series`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ name: 'Zeta Monthly' })
+      .expect(201);
+    const alpha = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charge-series`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ name: '  Alpha Monthly  ' })
+      .expect(201);
+    monthlySeriesId = alpha.body.data.id;
+
+    const list = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charge-series`)
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(200);
+    expect(list.body.data.map((series: { name: string }) => series.name)).toEqual([
+      'Alpha Monthly',
+      'Zeta Monthly',
+    ]);
+    expect(
+      list.body.data.find((series: { id: string }) => series.id === zeta.body.data.id),
+    ).toBeDefined();
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charge-series`)
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .send({ name: 'Forbidden' })
+      .expect(403);
+
+    const duplicate = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charge-series`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ name: 'Alpha Monthly' })
+      .expect(409);
+    expect(duplicate.body.errors[0].code).toBe('DUPLICATE');
+  });
+
+  it('keeps ChargeSeries building-scoped and excludes inactive series from listing', async () => {
+    const otherBuildingId = await createBuilding(app, manager.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
+    createdBuildingIds.push(otherBuildingId);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${otherBuildingId}/charge-series`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toEqual([]));
+
+    await prisma.chargeSeries.update({ where: { id: monthlySeriesId }, data: { isActive: false } });
+    const list = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charge-series`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(list.body.data.some((series: { id: string }) => series.id === monthlySeriesId)).toBe(
+      false,
+    );
+    await prisma.chargeSeries.update({ where: { id: monthlySeriesId }, data: { isActive: true } });
+  });
+
+  it('validates preview and create identically, returns context, and keeps preview write-free', async () => {
+    const dto = {
+      title: 'September monthly',
+      calculationMethod: 'FIXED',
+      totalAmount: 100_000,
+      chargeKind: 'MONTHLY',
+      seriesId: monthlySeriesId,
+      periodStart: '2026-09-01T00:00:00.000Z',
+    };
+    const before = await prisma.chargeBatch.count({ where: { buildingId } });
+    const preview = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send(dto)
+      .expect(201);
+    expect(preview.body.data).toEqual(
+      expect.objectContaining({
+        chargeKind: 'MONTHLY',
+        series: { id: monthlySeriesId, name: 'Alpha Monthly' },
+        periodStart: dto.periodStart,
+        grandTotal: 100_000,
+      }),
+    );
+    expect(await prisma.chargeBatch.count({ where: { buildingId } })).toBe(before);
+
+    const created = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send(dto)
+      .expect(201);
+    expect(created.body.data).toEqual(
+      expect.objectContaining({ kind: 'MONTHLY', seriesId: monthlySeriesId }),
+    );
+    expect(new Date(created.body.data.periodStart).toISOString()).toBe(dto.periodStart);
+
+    const duplicate = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ ...dto, title: 'Duplicate September' })
+      .expect(409);
+    expect(duplicate.body.errors[0].code).toBe('DUPLICATE');
+  });
+
+  it('preserves legacy/unclassified and all independent ChargeKind values', async () => {
+    const legacy = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ title: 'Legacy', calculationMethod: 'FIXED', totalAmount: 50_000 })
+      .expect(201);
+    expect(legacy.body.data.kind).toBeNull();
+
+    for (const chargeKind of ['RESERVE', 'REPAIR', 'SPECIAL', 'OTHER']) {
+      const response = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/charges`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ title: chargeKind, calculationMethod: 'FIXED', totalAmount: 10_000, chargeKind })
+        .expect(201);
+      expect(response.body.data.kind).toBe(chargeKind);
+      expect(response.body.data.seriesId).toBeNull();
+    }
+  });
+
+  it('rejects incomplete, non-canonical, non-monthly, and cross-building classification metadata', async () => {
+    const base = { title: 'Invalid', calculationMethod: 'FIXED', totalAmount: 10_000 };
+    for (const payload of [
+      { ...base, chargeKind: 'MONTHLY', periodStart: '2026-10-01T00:00:00.000Z' },
+      { ...base, chargeKind: 'MONTHLY', seriesId: monthlySeriesId },
+      {
+        ...base,
+        chargeKind: 'MONTHLY',
+        seriesId: monthlySeriesId,
+        periodStart: '2026-10-02T00:00:00.000Z',
+      },
+      { ...base, chargeKind: 'RESERVE', seriesId: monthlySeriesId },
+      { ...base, chargeKind: 'REPAIR', periodStart: '2026-10-01T00:00:00.000Z' },
+    ]) {
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/charges/preview`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send(payload)
+        .expect(422);
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/charges`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send(payload)
+        .expect(422);
+    }
+
+    const foreign = await prisma.chargeSeries.create({
+      data: { buildingId: createdBuildingIds[1], name: 'Foreign Monthly' },
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/charges`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        ...base,
+        chargeKind: 'MONTHLY',
+        seriesId: foreign.id,
+        periodStart: '2026-10-01T00:00:00.000Z',
+      })
+      .expect(404);
+  });
 });
 
 describe('Finance (e2e) — FIN-PAY-REDESIGN-03 explicit selected obligations', () => {

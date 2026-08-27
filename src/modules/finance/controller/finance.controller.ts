@@ -4,6 +4,7 @@ import { FinanceService } from '../application/finance.service';
 import { CreateFundDto } from '../application/dto/create-fund.dto';
 import { UpdateFundDto } from '../application/dto/update-fund.dto';
 import { CreateChargeBatchDto } from '../application/dto/create-charge-batch.dto';
+import { CreateChargeSeriesDto } from '../application/dto/create-charge-series.dto';
 import { CreatePaymentDto } from '../application/dto/create-payment.dto';
 import { CreateExplicitPaymentDto } from '../application/dto/create-explicit-payment.dto';
 import { RejectPaymentDto } from '../application/dto/reject-payment.dto';
@@ -146,6 +147,19 @@ export class FinanceController {
   }
 
   // --- Charge Batches ----------------------------------------------------------
+
+  @Get(':id/charge-series')
+  @UseGuards(MembershipGuard)
+  listChargeSeries(@Param('id') id: string) {
+    return this.finance.listChargeSeries(id);
+  }
+
+  @Post(':id/charge-series')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER')
+  createChargeSeries(@Param('id') id: string, @Body() dto: CreateChargeSeriesDto) {
+    return this.finance.createChargeSeries(id, dto);
+  }
 
   @Post(':id/charges')
   @UseGuards(RolesGuard)

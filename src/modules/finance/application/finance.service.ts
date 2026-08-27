@@ -9,6 +9,7 @@ import { FundPolicy } from '../domain/policies/fund.policy';
 import { CreateFundDto } from './dto/create-fund.dto';
 import { UpdateFundDto } from './dto/update-fund.dto';
 import { CreateChargeBatchDto } from './dto/create-charge-batch.dto';
+import { CreateChargeSeriesDto } from './dto/create-charge-series.dto';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { CreateExplicitPaymentDto } from './dto/create-explicit-payment.dto';
 import { RejectPaymentDto } from './dto/reject-payment.dto';
@@ -490,27 +491,39 @@ export class FinanceService {
   ) {
     await this.getBuilding(buildingId);
 
+    await this.resolveChargeClassification(buildingId, dto);
+
     const fund = await this.resolveFundForWrite(buildingId, dto.fundId);
 
     const { items, effectiveUnitScope } = await this.resolveChargeItems(buildingId, dto);
 
-    const batch = await this.finance.createChargeBatch({
-      buildingId,
-      fundId: fund.id,
-      title: dto.title,
-      description: dto.description,
-      calculationMethod: dto.calculationMethod,
-      periodStart: dto.periodStart ? new Date(dto.periodStart) : undefined,
-      periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : undefined,
-      dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined,
-      createdById: actorPersonId,
-      items,
-      unitScope: effectiveUnitScope ?? undefined,
-      payerType: dto.payerType,
-      lateFeeType: dto.lateFeeType,
-      lateFeeValue: dto.lateFeeValue,
-      lateFeeGraceDays: dto.lateFeeGraceDays,
-    });
+    let batch;
+    try {
+      batch = await this.finance.createChargeBatch({
+        buildingId,
+        fundId: fund.id,
+        title: dto.title,
+        description: dto.description,
+        calculationMethod: dto.calculationMethod,
+        kind: dto.chargeKind,
+        seriesId: dto.seriesId,
+        periodStart: dto.periodStart ? new Date(dto.periodStart) : undefined,
+        periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : undefined,
+        dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined,
+        createdById: actorPersonId,
+        items,
+        unitScope: effectiveUnitScope ?? undefined,
+        payerType: dto.payerType,
+        lateFeeType: dto.lateFeeType,
+        lateFeeValue: dto.lateFeeValue,
+        lateFeeGraceDays: dto.lateFeeGraceDays,
+      });
+    } catch (error) {
+      if (isUniqueConstraintViolation(error) && dto.chargeKind === 'MONTHLY') {
+        throw new DuplicateError('This charge series already has a charge for this period.');
+      }
+      throw error;
+    }
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -543,6 +556,7 @@ export class FinanceService {
    */
   async previewChargeBatch(buildingId: string, dto: CreateChargeBatchDto) {
     await this.getBuilding(buildingId);
+    const series = await this.resolveChargeClassification(buildingId, dto);
 
     let fund: { id: string; name: string } | null = null;
     let willCreateDefaultFund = false;
@@ -622,6 +636,9 @@ export class FinanceService {
     }
 
     return {
+      chargeKind: dto.chargeKind ?? null,
+      series: series ? { id: series.id, name: series.name } : null,
+      periodStart: dto.periodStart ?? null,
       fund,
       willCreateDefaultFund,
       unitScope: effectiveUnitScope,
@@ -1636,5 +1653,36 @@ export class FinanceService {
   async getPaymentRegistrationRate(buildingId: string, fromDate?: Date, toDate?: Date) {
     await this.getBuilding(buildingId);
     return this.finance.getPaymentRegistrationRate(buildingId, fromDate, toDate);
+  }
+
+  async listChargeSeries(buildingId: string) {
+    await this.getBuilding(buildingId);
+    return this.finance.listChargeSeries(buildingId);
+  }
+
+  async createChargeSeries(buildingId: string, dto: CreateChargeSeriesDto) {
+    await this.getBuilding(buildingId);
+    const name = dto.name.trim();
+    try {
+      return await this.finance.createChargeSeries(buildingId, name);
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) {
+        throw new DuplicateError('A charge series with this name already exists.');
+      }
+      throw error;
+    }
+  }
+
+  private async resolveChargeClassification(buildingId: string, dto: CreateChargeBatchDto) {
+    this.chargePolicy.assertValidClassification(dto);
+    if (dto.chargeKind !== 'MONTHLY') return null;
+    const series = await this.finance.findChargeSeriesById(dto.seriesId!);
+    if (!series || series.buildingId !== buildingId) {
+      throw new NotFoundAppError('Charge series not found.');
+    }
+    if (!series.isActive) {
+      throw new BusinessRuleViolationError('An inactive charge series cannot receive new charges.');
+    }
+    return series;
   }
 }

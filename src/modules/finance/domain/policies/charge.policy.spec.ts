@@ -76,7 +76,10 @@ describe('ChargePolicy', () => {
 
     it('rejects unitScope MANUAL with no unitIds', () => {
       expect(() =>
-        policy.assertValidCalculationInputs('FIXED', { amountPerUnit: 100_000, unitScope: 'MANUAL' }),
+        policy.assertValidCalculationInputs('FIXED', {
+          amountPerUnit: 100_000,
+          unitScope: 'MANUAL',
+        }),
       ).toThrow(BusinessRuleViolationError);
     });
 
@@ -216,13 +219,21 @@ describe('ChargePolicy', () => {
 
     it('is null when the batch is not ISSUED', () => {
       expect(
-        policy.computeLateFeeEligibility({ ...base, batchStatus: 'DRAFT', now: new Date('2026-02-01T00:00:00Z') }),
+        policy.computeLateFeeEligibility({
+          ...base,
+          batchStatus: 'DRAFT',
+          now: new Date('2026-02-01T00:00:00Z'),
+        }),
       ).toBeNull();
     });
 
     it('is null when no late-fee policy exists', () => {
       expect(
-        policy.computeLateFeeEligibility({ ...base, lateFeeType: null, now: new Date('2026-02-01T00:00:00Z') }),
+        policy.computeLateFeeEligibility({
+          ...base,
+          lateFeeType: null,
+          now: new Date('2026-02-01T00:00:00Z'),
+        }),
       ).toBeNull();
     });
 
@@ -233,7 +244,10 @@ describe('ChargePolicy', () => {
     });
 
     it('is eligible once dueDate + graceDays has passed, with outstanding principal', () => {
-      const result = policy.computeLateFeeEligibility({ ...base, now: new Date('2026-01-05T00:00:00Z') });
+      const result = policy.computeLateFeeEligibility({
+        ...base,
+        now: new Date('2026-01-05T00:00:00Z'),
+      });
       expect(result).toEqual({ eligible: true, amount: 20_000 });
     });
 
@@ -319,6 +333,57 @@ describe('ChargePolicy', () => {
 
     it('rejects a zero adjustment amount', () => {
       expect(() => policy.assertValidAdjustmentAmount(0)).toThrow(BusinessRuleViolationError);
+    });
+  });
+
+  describe('assertValidClassification', () => {
+    it('preserves legacy omission and accepts every independent non-monthly kind', () => {
+      expect(() => policy.assertValidClassification({})).not.toThrow();
+      for (const chargeKind of ['RESERVE', 'REPAIR', 'SPECIAL', 'OTHER']) {
+        expect(() => policy.assertValidClassification({ chargeKind })).not.toThrow();
+      }
+    });
+
+    it('requires complete canonical MONTHLY metadata', () => {
+      expect(() => policy.assertValidClassification({ chargeKind: 'MONTHLY' })).toThrow(
+        BusinessRuleViolationError,
+      );
+      expect(() =>
+        policy.assertValidClassification({ chargeKind: 'MONTHLY', seriesId: 's1' }),
+      ).toThrow(BusinessRuleViolationError);
+      expect(() =>
+        policy.assertValidClassification({
+          chargeKind: 'MONTHLY',
+          seriesId: 's1',
+          periodStart: '2026-09-01T00:00:00.000Z',
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects non-first-day/timezone-shifted periods and non-monthly metadata', () => {
+      expect(() =>
+        policy.assertValidClassification({
+          chargeKind: 'MONTHLY',
+          seriesId: 's1',
+          periodStart: '2026-09-02T00:00:00.000Z',
+        }),
+      ).toThrow(BusinessRuleViolationError);
+      expect(() =>
+        policy.assertValidClassification({
+          chargeKind: 'MONTHLY',
+          seriesId: 's1',
+          periodStart: '2026-09-01T03:30:00+03:30',
+        }),
+      ).not.toThrow();
+      expect(() =>
+        policy.assertValidClassification({
+          chargeKind: 'RESERVE',
+          periodStart: '2026-09-01T00:00:00.000Z',
+        }),
+      ).toThrow(BusinessRuleViolationError);
+      expect(() =>
+        policy.assertValidClassification({ chargeKind: 'OTHER', seriesId: 's1' }),
+      ).toThrow(BusinessRuleViolationError);
     });
   });
 });
