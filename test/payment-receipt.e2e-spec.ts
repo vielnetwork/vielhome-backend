@@ -74,7 +74,46 @@ async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: Pris
   return { app, prisma: app.get(PrismaService) };
 }
 
+// E2E-cleanup fix (FIN-REC-01B triage, complete Person dependency audit):
+// `cleanupBuildings` above runs FIRST in `afterAll` and already removes
+// every Person-referencing row that also carries a path to `buildingId`
+// (Membership, MembershipRequest, Payment, Document/DocumentVersion/
+// DocumentDownload/DocumentUploadIntent, ManagerVerificationCase/
+// Approval) — those FKs to Person (`memberships_personId_fkey`,
+// `payments_payerId_fkey`, `documents_createdById_fkey`, etc., all
+// confirmed RESTRICT in the baseline migration) are therefore already
+// satisfied by the time this function runs. What's left, and what this
+// batch must cover, is the "registration-event-chain gap" every mature
+// E2E file in this repo already documents (see `documents.e2e-spec.ts`'s
+// identical comment on its own `deleteOncePerPhoneBatch`): rows that
+// reference Person directly and are NOT reachable through any
+// `buildingId` scope, produced as fire-and-forget side effects of
+// `registerPerson`'s login/registration (and, for the building creator,
+// the setup-draft flow) — `PersonAuthenticated` -> Gamification's
+// `awardXp` (`XpTransaction`, `PersonAchievement`), the welcome/XP-bonus/
+// achievement-unlocked notifications (`Notification` ->
+// `NotificationDelivery`, plus each person's own `NotificationPreference`
+// row), and `BuildingSetupDraft` (created by `POST /setup/draft`,
+// independent of whether that draft was ever submitted into a real
+// Building row). All of `notifications_recipientId_fkey`,
+// `notification_deliveries_notificationId_fkey`,
+// `notification_preferences_personId_fkey`,
+// `xp_transactions_personId_fkey`, `person_achievements_personId_fkey`,
+// and `building_setup_drafts_personId_fkey` are RESTRICT in the baseline
+// migration, so every one of them blocks `person.deleteMany` below unless
+// deleted first, scoped to these same test phones — same order
+// `documents.e2e-spec.ts`'s own `deleteOncePerPhoneBatch` already uses.
 async function deleteOncePerPhoneBatch(prisma: PrismaService, phones: string[]): Promise<void> {
+  await prisma.notificationDelivery.deleteMany({
+    where: { notification: { recipient: { phone: { in: phones } } } },
+  });
+  await prisma.notification.deleteMany({ where: { recipient: { phone: { in: phones } } } });
+  await prisma.notificationPreference.deleteMany({
+    where: { person: { phone: { in: phones } } },
+  });
+  await prisma.personAchievement.deleteMany({ where: { person: { phone: { in: phones } } } });
+  await prisma.xpTransaction.deleteMany({ where: { person: { phone: { in: phones } } } });
+  await prisma.buildingSetupDraft.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
