@@ -116,6 +116,22 @@ async function deleteBuildingsOnceBatch(
   });
   await prisma.payment.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.fund.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  // E2E-cleanup fix (FIN-REC-01B triage): `createBuilding`'s MANAGER-role
+  // flow provisions a real `ManagerVerificationCase` bound to that
+  // manager's own `Membership` row (`ManagerVerificationCase.membershipId`,
+  // RESTRICT FK — no cascade in the schema, by design). Deleting the
+  // Membership before its case exists dies with
+  // `manager_verification_cases_membershipId_fkey`. `ManagerVerificationApproval`
+  // is deleted first because it in turn references the case
+  // (`ManagerVerificationApproval.caseId`). Same dependency-safe order
+  // `documents.e2e-spec.ts`'s own `deleteBuildingsOnceBatch` already uses
+  // for exactly this reason — this file's leaner cleanup had simply never
+  // carried it over. Test-only cleanup ordering; no FK/cascade/schema
+  // change.
+  await prisma.managerVerificationApproval.deleteMany({
+    where: { case: { buildingId: { in: buildingIds } } },
+  });
+  await prisma.managerVerificationCase.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.membershipRequest.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.membership.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.unit.deleteMany({ where: { buildingId: { in: buildingIds } } });
