@@ -24,17 +24,20 @@ import {
  * `PaymentPolicy` already get in `documents.service.spec.ts`/
  * `finance.service.spec.ts`.
  *
- * The full payer-or-finance-reviewer ROLE MATRIX (payer / same-building
- * MANAGER / same-building ACCOUNTANT / different-building MANAGER-or-
- * ACCOUNTANT / same-building BOARD_MEMBER / non-payer OWNER-or-TENANT /
- * no-membership) is exercised once, authoritatively, against the real
- * `FinanceService.getPaymentForViewer` implementation in
- * `finance.service.spec.ts` (describe block "getPaymentForViewer —
- * FIN-REC-01B payer-or-finance-reviewer authorization") — both the
- * upload-intent/finalize endpoints (group 1) and the download endpoint
- * (group 7) delegate to that exact method, so re-asserting the same
- * matrix a second time here against a mocked `getPaymentForViewer` would
- * only prove the mock does what it's told, not real authorization logic.
+ * Two distinct authorization role matrices are exercised once,
+ * authoritatively, against their real `FinanceService` implementations in
+ * `finance.service.spec.ts` — re-asserting either matrix a second time
+ * here against a mock would only prove the mock does what it's told, not
+ * real authorization logic:
+ *   - "getPaymentForPayer — FIN-REC-01B exact-payer-only authorization
+ *     (receipt UPLOAD)": the STRICT rule for upload-intent/finalize
+ *     (group 1/2/4 below) — exact payer only; a Manager/Accountant
+ *     reviewer is DENIED (authorization-audit correction — a receipt is
+ *     the payer's own attestation, never uploadable on their behalf).
+ *   - "getPaymentForViewer — FIN-REC-01B payer-or-finance-reviewer
+ *     authorization": the broader rule for download (group 7) and for
+ *     Documents' PAYMENT-reference inherited-access check — payer OR a
+ *     same-building MANAGER/ACCOUNTANT.
  * What THIS file verifies instead is the delegation/wiring itself (each
  * endpoint really does call `getPaymentForViewer(buildingId, paymentId,
  * actorPersonId)` and really does propagate its rejection) plus every
@@ -45,7 +48,7 @@ import {
  */
 describe('PaymentReceiptService', () => {
   let documents: Record<string, jest.Mock>;
-  let finance: { getPaymentForViewer: jest.Mock };
+  let finance: { getPaymentForPayer: jest.Mock; getPaymentForViewer: jest.Mock };
   let storage: Record<string, jest.Mock>;
   let audit: { record: jest.Mock };
   let service: PaymentReceiptService;
@@ -116,6 +119,7 @@ describe('PaymentReceiptService', () => {
       recordDownload: jest.fn().mockResolvedValue(undefined),
     };
     finance = {
+      getPaymentForPayer: jest.fn().mockResolvedValue(BANK_TRANSFER_PAYMENT),
       getPaymentForViewer: jest.fn().mockResolvedValue(BANK_TRANSFER_PAYMENT),
     };
     storage = {
@@ -141,11 +145,9 @@ describe('PaymentReceiptService', () => {
   });
 
   describe('requestUploadIntent — group 1 (upload-intent authorization)', () => {
-    it('[1.wiring] delegates to FinanceService.getPaymentForViewer with (buildingId, paymentId, actorPersonId) and propagates its rejection untouched', async () => {
-      finance.getPaymentForViewer.mockRejectedValue(
-        new AuthorizationError(
-          'Only the payer or a Manager/Accountant of this building may access this payment receipt.',
-        ),
+    it('[1.wiring] delegates to FinanceService.getPaymentForPayer (exact-payer-only, NOT getPaymentForViewer) with (buildingId, paymentId, actorPersonId), and propagates its rejection untouched', async () => {
+      finance.getPaymentForPayer.mockRejectedValue(
+        new AuthorizationError('Only the original payer may upload a receipt for this payment.'),
       );
 
       await expect(
@@ -157,13 +159,48 @@ describe('PaymentReceiptService', () => {
         ),
       ).rejects.toBeInstanceOf(AuthorizationError);
 
-      expect(finance.getPaymentForViewer).toHaveBeenCalledWith(BUILDING_ID, PAYMENT_ID, ACTOR_ID);
+      expect(finance.getPaymentForPayer).toHaveBeenCalledWith(BUILDING_ID, PAYMENT_ID, ACTOR_ID);
+      // Authorization-audit regression guard: upload-intent must NEVER
+      // fall back to the broader payer-or-reviewer check.
+      expect(finance.getPaymentForViewer).not.toHaveBeenCalled();
       expect(documents.createUploadIntent).not.toHaveBeenCalled();
       expect(storage.getPresignedUploadUrl).not.toHaveBeenCalled();
     });
 
+    it('[1.2] a MANAGER (reviewer, not payer) is DENIED — receipts may only be uploaded by the exact payer, never a reviewer on their behalf', async () => {
+      finance.getPaymentForPayer.mockRejectedValue(
+        new AuthorizationError('Only the original payer may upload a receipt for this payment.'),
+      );
+
+      await expect(
+        service.requestUploadIntent(
+          BUILDING_ID,
+          PAYMENT_ID,
+          { fileName: 'r.pdf', fileType: 'PDF', fileSize: 100 },
+          'manager-1',
+        ),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+      expect(documents.createUploadIntent).not.toHaveBeenCalled();
+    });
+
+    it('[1.3] an ACCOUNTANT (reviewer, not payer) is DENIED — receipts may only be uploaded by the exact payer, never a reviewer on their behalf', async () => {
+      finance.getPaymentForPayer.mockRejectedValue(
+        new AuthorizationError('Only the original payer may upload a receipt for this payment.'),
+      );
+
+      await expect(
+        service.requestUploadIntent(
+          BUILDING_ID,
+          PAYMENT_ID,
+          { fileName: 'r.pdf', fileType: 'PDF', fileSize: 100 },
+          'accountant-1',
+        ),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+      expect(documents.createUploadIntent).not.toHaveBeenCalled();
+    });
+
     it('[1.8] rejects a CASH-method payment with the stable BusinessRuleViolationError, never touching storage/intents', async () => {
-      finance.getPaymentForViewer.mockResolvedValue(CASH_PAYMENT);
+      finance.getPaymentForPayer.mockResolvedValue(CASH_PAYMENT);
 
       await expect(
         service.requestUploadIntent(
@@ -245,6 +282,26 @@ describe('PaymentReceiptService', () => {
   });
 
   describe('finalize — group 2 (durable binding)', () => {
+    it('[wiring] finalize also delegates to FinanceService.getPaymentForPayer (exact-payer-only), never getPaymentForViewer — the same strict upload-side rule as requestUploadIntent', async () => {
+      finance.getPaymentForPayer.mockRejectedValue(
+        new AuthorizationError('Only the original payer may upload a receipt for this payment.'),
+      );
+
+      await expect(
+        service.finalize(
+          BUILDING_ID,
+          PAYMENT_ID,
+          { uploadIntentId: 'intent-1' },
+          ACTOR_ID,
+          'req-1',
+        ),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+
+      expect(finance.getPaymentForPayer).toHaveBeenCalledWith(BUILDING_ID, PAYMENT_ID, ACTOR_ID);
+      expect(finance.getPaymentForViewer).not.toHaveBeenCalled();
+      expect(documents.findUploadIntentById).not.toHaveBeenCalled();
+    });
+
     it('[2.1] cross-checks intent.paymentId against the URL :paymentId and rejects a mismatch with a stable not-found error', async () => {
       documents.findUploadIntentById.mockResolvedValue(
         validIntent({ paymentId: 'some-other-payment' }),
@@ -282,7 +339,7 @@ describe('PaymentReceiptService', () => {
 
     it('[2.4] an intent created for one payment cannot be finalized against a different payment, even when the actor is independently authorized for both payments', async () => {
       const OTHER_PAYMENT_ID = 'payment-2';
-      finance.getPaymentForViewer.mockImplementation(async (_b: string, paymentId: string) => ({
+      finance.getPaymentForPayer.mockImplementation(async (_b: string, paymentId: string) => ({
         ...BANK_TRANSFER_PAYMENT,
         id: paymentId,
       }));
@@ -539,7 +596,7 @@ describe('PaymentReceiptService', () => {
     });
 
     it('[4.6] a CASH-method payment cannot be finalized even if a receipt intent somehow exists', async () => {
-      finance.getPaymentForViewer.mockResolvedValue(CASH_PAYMENT);
+      finance.getPaymentForPayer.mockResolvedValue(CASH_PAYMENT);
 
       await expect(
         service.finalize(

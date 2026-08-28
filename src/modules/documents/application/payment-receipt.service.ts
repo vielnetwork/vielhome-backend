@@ -55,18 +55,26 @@ export class PaymentReceiptService {
   ) {}
 
   /**
-   * Payer-or-finance-reviewer of THIS building (`FinanceService.getPaymentForViewer`)
-   * plus the receipt-specific `method === BANK_TRANSFER` business rule —
-   * receipts are optional and bank-transfer-only; a receipt operation
-   * against a CASH payment fails with a stable, specific error rather than
-   * silently allowing it or 500ing. Never touches Payment creation itself.
+   * FIN-REC-01B authorization-audit correction: UPLOAD (upload-intent and
+   * finalize) is restricted to the EXACT PAYER ONLY
+   * (`FinanceService.getPaymentForPayer`) — a Manager/Accountant is a
+   * legitimate finance reviewer for VIEW/DOWNLOAD
+   * (`FinanceService.getPaymentForViewer`, used by `download()` below and
+   * by Documents' PAYMENT-reference inherited-access check) but must
+   * never be able to upload a receipt on the payer's behalf; see
+   * `FinanceService.getPaymentForPayer`'s own doc comment for why. Also
+   * enforces the receipt-specific `method === BANK_TRANSFER` business
+   * rule — receipts are optional and bank-transfer-only; a receipt
+   * operation against a CASH payment fails with a stable, specific error
+   * rather than silently allowing it or 500ing. Never touches Payment
+   * creation itself.
    */
-  private async getBankTransferPaymentForActor(
+  private async getBankTransferPaymentForPayer(
     buildingId: string,
     paymentId: string,
     actorPersonId: string,
   ) {
-    const payment = await this.finance.getPaymentForViewer(buildingId, paymentId, actorPersonId);
+    const payment = await this.finance.getPaymentForPayer(buildingId, paymentId, actorPersonId);
     if (payment.method !== 'BANK_TRANSFER') {
       throw new BusinessRuleViolationError(
         'Receipts can only be attached to BANK_TRANSFER payments.',
@@ -95,7 +103,7 @@ export class PaymentReceiptService {
     dto: RequestPaymentReceiptUploadIntentDto,
     actorPersonId: string,
   ) {
-    const payment = await this.getBankTransferPaymentForActor(buildingId, paymentId, actorPersonId);
+    const payment = await this.getBankTransferPaymentForPayer(buildingId, paymentId, actorPersonId);
     await this.assertNoExistingReceipt(payment.id);
     this.policy.assertFileTypeSupported(dto.fileType);
     this.policy.assertFileSizeWithinLimit(dto.fileSize);
@@ -228,7 +236,7 @@ export class PaymentReceiptService {
     actorPersonId: string,
     requestId: string,
   ) {
-    const payment = await this.getBankTransferPaymentForActor(buildingId, paymentId, actorPersonId);
+    const payment = await this.getBankTransferPaymentForPayer(buildingId, paymentId, actorPersonId);
     await this.assertNoExistingReceipt(payment.id);
 
     const intent = await this.loadValidReceiptIntent(dto.uploadIntentId, buildingId, payment.id);

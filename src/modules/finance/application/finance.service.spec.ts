@@ -1624,6 +1624,78 @@ describe('FinanceService', () => {
     });
   });
 
+  describe('getPaymentForPayer — FIN-REC-01B exact-payer-only authorization (receipt UPLOAD)', () => {
+    // Authorization-audit correction: a receipt is the payer's own
+    // attestation of what they submitted; a Manager/Accountant may VIEW
+    // one (getPaymentForViewer, above) but must never be able to UPLOAD
+    // one on the payer's behalf. This matrix proves the narrower rule —
+    // contrast every "allows a MANAGER/ACCOUNTANT..." case above with the
+    // corresponding "rejects a MANAGER/ACCOUNTANT..." case here.
+    const PAYMENT = {
+      id: 'pay-1',
+      buildingId: 'b1',
+      payerId: 'payer-1',
+      method: 'BANK_TRANSFER' as const,
+      status: 'PENDING_APPROVAL' as const,
+    };
+
+    beforeEach(() => {
+      finance.findPaymentById.mockResolvedValue(PAYMENT);
+    });
+
+    it('allows the exact payer', async () => {
+      await expect(service.getPaymentForPayer('b1', 'pay-1', 'payer-1')).resolves.toEqual(PAYMENT);
+      // Unlike getPaymentForViewer, this never even needs to look up roles.
+      expect(buildings.getRoles).not.toHaveBeenCalled();
+    });
+
+    it('rejects a MANAGER of the same building who is not the payer — receipts may only be uploaded by the exact payer', async () => {
+      await expect(service.getPaymentForPayer('b1', 'pay-1', 'manager-1')).rejects.toBeInstanceOf(
+        AuthorizationError,
+      );
+    });
+
+    it('rejects an ACCOUNTANT of the same building who is not the payer — receipts may only be uploaded by the exact payer', async () => {
+      await expect(
+        service.getPaymentForPayer('b1', 'pay-1', 'accountant-1'),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+    });
+
+    it('rejects a BOARD_MEMBER of the same building who is not the payer', async () => {
+      await expect(
+        service.getPaymentForPayer('b1', 'pay-1', 'board-member-1'),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+    });
+
+    it('rejects an OWNER/TENANT of the unit who is not the payer', async () => {
+      await expect(
+        service.getPaymentForPayer('b1', 'pay-1', 'owner-not-payer'),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+    });
+
+    it('rejects an actor with no relationship to this building at all', async () => {
+      await expect(service.getPaymentForPayer('b1', 'pay-1', 'stranger-1')).rejects.toBeInstanceOf(
+        AuthorizationError,
+      );
+    });
+
+    it('propagates the stable NotFoundAppError for a payment that does not belong to this building (mirrors getOwnPayment)', async () => {
+      finance.findPaymentById.mockResolvedValue({ ...PAYMENT, buildingId: 'other-building' });
+
+      await expect(service.getPaymentForPayer('b1', 'pay-1', 'payer-1')).rejects.toBeInstanceOf(
+        NotFoundAppError,
+      );
+    });
+
+    it('propagates the stable NotFoundAppError for a nonexistent payment', async () => {
+      finance.findPaymentById.mockResolvedValue(null);
+
+      await expect(service.getPaymentForPayer('b1', 'missing', 'payer-1')).rejects.toBeInstanceOf(
+        NotFoundAppError,
+      );
+    });
+  });
+
   describe('attachReceiptMetadata — FIN-REC-01B list-response enrichment (via listPayments/listUnitPayments)', () => {
     beforeEach(() => {
       buildings.findUnitById.mockResolvedValue({ id: 'u1', buildingId: 'b1' });

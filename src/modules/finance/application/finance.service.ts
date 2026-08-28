@@ -1346,6 +1346,28 @@ export class FinanceService {
   }
 
   /**
+   * FIN-REC-01B correction (post-implementation authorization audit) —
+   * the strict "exact payer only" rule for receipt UPLOAD (upload-intent
+   * + finalize). Deliberately narrower than `getPaymentForViewer` above:
+   * a Manager/Accountant is a legitimate finance REVIEWER and may VIEW/
+   * DOWNLOAD an existing receipt (`getPaymentForViewer` is correct for
+   * that), but must never be able to UPLOAD one on the payer's behalf —
+   * a receipt is the payer's own attestation of what they submitted for
+   * a specific bank transfer, and letting a reviewer manufacture that
+   * attestation would defeat its evidentiary purpose. Never broadened to
+   * MANAGER/ACCOUNTANT/OWNER/TENANT/BOARD_MEMBER — payerId match only.
+   */
+  async getPaymentForPayer(buildingId: string, paymentId: string, actorPersonId: string) {
+    const payment = await this.getOwnPayment(buildingId, paymentId);
+    if (payment.payerId !== actorPersonId) {
+      throw new AuthorizationError(
+        'Only the original payer may upload a receipt for this payment.',
+      );
+    }
+    return payment;
+  }
+
+  /**
    * FIN-REC-01B — batched `hasReceipt`/`receipt` enrichment for
    * `listPayments`/`listUnitPayments`. There are no dedicated Payment
    * response DTOs in this codebase (raw Prisma rows are returned as-is —

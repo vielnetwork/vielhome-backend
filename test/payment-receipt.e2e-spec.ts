@@ -7,6 +7,7 @@ import { AppModule } from '../src/app.module';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
+import { AuthService } from '../src/modules/foundation/auth/application/auth.service';
 import type { AppConfig } from '../src/config/configuration';
 import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 
@@ -135,12 +136,32 @@ async function cleanupBuildings(prisma: PrismaService, buildingIds: string[]): P
   }
 }
 
-async function requestOtpAndCaptureCode(app: INestApplication, phone: string): Promise<string> {
+/**
+ * E2E-harness fix (FIN-REC-01B triage): `registerPerson` below is called
+ * 6 times back-to-back in this file's single shared `beforeAll` (payer,
+ * manager, accountant, boardMember, otherOwner, strangerManager) — well
+ * past `POST /auth/otp/request`'s hard-coded `@Throttle({ default:
+ * { limit: 5, ttl: 60_000 } })` (`auth.controller.ts`, ADR-061). The
+ * 6th call 429s, `beforeAll` throws, and every test in the describe
+ * block fails before a single receipt endpoint is ever exercised.
+ *
+ * Fix mirrors the exact, already-established pattern used across this
+ * codebase (`backoffice-rbac.e2e-spec.ts`, `dashboard.e2e-spec.ts`,
+ * `fraud-case.e2e-spec.ts`, and others): call `AuthService.requestOtp`
+ * directly through Nest's DI container, which reaches the identical
+ * business logic as the real HTTP route but bypasses `ThrottlerGuard`
+ * (a guard only intercepts requests routed through the HTTP layer, not
+ * direct service calls). Production OTP throttling is completely
+ * unmodified — this only changes how the TEST HARNESS provisions its own
+ * fixtures. `verifyOtp` still goes through the real, unthrottled HTTP
+ * endpoint unchanged.
+ */
+async function requestOtpAndCaptureCodeDirect(
+  app: INestApplication,
+  phone: string,
+): Promise<string> {
   const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
-  await request(app.getHttpServer())
-    .post('/api/v1/auth/otp/request')
-    .send({ phone, purpose: 'LOGIN' })
-    .expect(200);
+  await app.get(AuthService).requestOtp({ phone, purpose: 'LOGIN' }, 'test-direct-otp-request');
   const line = logSpy.mock.calls.map((args) => String(args[0])).find((l) => l.includes(phone));
   logSpy.mockRestore();
   if (!line) throw new Error(`No OTP log line captured for ${phone}`);
@@ -157,7 +178,7 @@ interface RegisteredPerson {
 
 async function registerPerson(app: INestApplication): Promise<RegisteredPerson> {
   const phone = nextPhone();
-  const code = await requestOtpAndCaptureCode(app, phone);
+  const code = await requestOtpAndCaptureCodeDirect(app, phone);
   const res = await request(app.getHttpServer())
     .post('/api/v1/auth/otp/verify')
     .send({
@@ -358,28 +379,20 @@ describe('Payment Receipt Upload/Finalize/Download (e2e, FIN-REC-01B)', () => {
         });
     });
 
-    it('[1.2] a MANAGER of the same building (reviewer, not payer) can request an upload intent', async () => {
+    it('[1.2] a MANAGER of the same building (reviewer, not payer) CANNOT request an upload intent — receipts may only be uploaded by the exact payer, never a reviewer on their behalf (FIN-REC-01B authorization-audit correction)', async () => {
       await request(app.getHttpServer())
         .post(uploadIntentUrl(buildingId, bankTransferPaymentId))
         .set('Authorization', `Bearer ${manager.accessToken}`)
         .send({ fileName: 'receipt.pdf', fileType: 'PDF', fileSize: 1024 })
-        .expect((res) => {
-          if (![201, 500].includes(res.status)) {
-            throw new Error(`unexpected status ${res.status}`);
-          }
-        });
+        .expect(403);
     });
 
-    it('[1.3] an ACCOUNTANT of the same building (reviewer, not payer) can request an upload intent', async () => {
+    it('[1.3] an ACCOUNTANT of the same building (reviewer, not payer) CANNOT request an upload intent — receipts may only be uploaded by the exact payer, never a reviewer on their behalf (FIN-REC-01B authorization-audit correction)', async () => {
       await request(app.getHttpServer())
         .post(uploadIntentUrl(buildingId, bankTransferPaymentId))
         .set('Authorization', `Bearer ${accountant.accessToken}`)
         .send({ fileName: 'receipt.pdf', fileType: 'PDF', fileSize: 1024 })
-        .expect((res) => {
-          if (![201, 500].includes(res.status)) {
-            throw new Error(`unexpected status ${res.status}`);
-          }
-        });
+        .expect(403);
     });
 
     it('[1.4] a MANAGER of a DIFFERENT building cannot (payment not found in their building context)', async () => {
