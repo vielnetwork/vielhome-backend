@@ -949,11 +949,38 @@ export class FinanceRepository {
   }
 
   /**
+   * FIN-PAY-REVIEW-01B — flattens the `unit: {unitNumber}` relation
+   * `listPayments`/`listPaymentsByUnit` now `include` into a single
+   * `unitNumber` field on the returned row, and drops the nested `unit`
+   * object entirely so it never reaches a serialized response (the
+   * caller only ever gets `unitId`, unchanged, plus this new
+   * `unitNumber`). `Payment.unit` is a required relation
+   * (`Payment.unitId String` / `unit Unit @relation(...)`, both
+   * non-nullable — see `schema.prisma`) and `Unit.unitNumber` is itself
+   * a required, unique-per-building `String` — so `unit` is guaranteed
+   * present on every row Prisma returns here and `unitNumber` is always
+   * a plain `string`, never `null`.
+   */
+  private flattenUnitNumber<T extends { unit: { unitNumber: string } }>(
+    payment: T,
+  ): Omit<T, 'unit'> & { unitNumber: string } {
+    const { unit, ...rest } = payment;
+    return { ...rest, unitNumber: unit.unitNumber };
+  }
+
+  /**
    * Finance Hardening Pass — paginated, see `listFunds`'s own doc comment.
    * Backend ↔ Mobile Contract Alignment — optional `status` filter, backed
    * by the pre-existing `@@index([buildingId, status])` on `Payment`
    * (added independently of this change, confirmed by direct schema read —
    * no new index or migration needed for this filter to be cheap).
+   * FIN-PAY-REVIEW-01B — `unit` is joined via `include` on this SAME
+   * `findMany` call (one query, a single SQL JOIN — no second round trip,
+   * no N+1), then flattened to `unitNumber` by `flattenUnitNumber` before
+   * the raw Prisma row is returned. Mirrors the `unit: {select:{...}}`
+   * join precedent already used by `findChargeBatchById` (this file) and
+   * `BuildingRepository`'s membership listing, narrowed to just
+   * `unitNumber` (the only field this contract needs).
    */
   async listPayments(
     buildingId: string,
@@ -967,13 +994,18 @@ export class FinanceRepository {
         orderBy: { createdAt: 'desc' },
         skip: pagination.skip,
         take: pagination.take,
+        include: { unit: { select: { unitNumber: true } } },
       }),
       this.prisma.payment.count({ where }),
     ]);
-    return { items, total };
+    return { items: items.map((item) => this.flattenUnitNumber(item)), total };
   }
 
-  /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
+  /**
+   * Finance Hardening Pass — paginated, see `listFunds`'s own doc comment.
+   * FIN-PAY-REVIEW-01B — same single-query `unit` include +
+   * `flattenUnitNumber` as `listPayments` above.
+   */
   async listPaymentsByUnit(unitId: string, pagination: { skip: number; take: number }) {
     const where = { unitId };
     const [items, total] = await Promise.all([
@@ -982,10 +1014,11 @@ export class FinanceRepository {
         orderBy: { createdAt: 'desc' },
         skip: pagination.skip,
         take: pagination.take,
+        include: { unit: { select: { unitNumber: true } } },
       }),
       this.prisma.payment.count({ where }),
     ]);
-    return { items, total };
+    return { items: items.map((item) => this.flattenUnitNumber(item)), total };
   }
 
   rejectPayment(id: string, reason?: string) {

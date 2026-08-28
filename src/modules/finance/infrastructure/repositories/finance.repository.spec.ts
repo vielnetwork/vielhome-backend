@@ -1161,7 +1161,9 @@ describe('FinanceRepository', () => {
     });
 
     it('adds status to both the findMany and count where clauses when provided', async () => {
-      prisma.payment.findMany.mockResolvedValue([{ id: 'p1', status: 'PENDING_APPROVAL' }]);
+      prisma.payment.findMany.mockResolvedValue([
+        { id: 'p1', status: 'PENDING_APPROVAL', unit: { unitNumber: 'A12' } },
+      ]);
       prisma.payment.count.mockResolvedValue(1);
 
       const result = await repo.listPayments('b1', { skip: 0, take: 20 }, 'PENDING_APPROVAL');
@@ -1174,7 +1176,10 @@ describe('FinanceRepository', () => {
       expect(prisma.payment.count).toHaveBeenCalledWith({
         where: { buildingId: 'b1', status: 'PENDING_APPROVAL' },
       });
-      expect(result).toEqual({ items: [{ id: 'p1', status: 'PENDING_APPROVAL' }], total: 1 });
+      expect(result).toEqual({
+        items: [{ id: 'p1', status: 'PENDING_APPROVAL', unitNumber: 'A12' }],
+        total: 1,
+      });
     });
 
     it('still orders by createdAt desc and honors skip/take with a status filter applied', async () => {
@@ -1185,6 +1190,66 @@ describe('FinanceRepository', () => {
 
       expect(prisma.payment.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ orderBy: { createdAt: 'desc' }, skip: 40, take: 20 }),
+      );
+    });
+
+    it('flattens the joined unit into unitNumber and strips the nested unit object (FIN-PAY-REVIEW-01B)', async () => {
+      prisma.payment.findMany.mockResolvedValue([
+        { id: 'p1', unitId: 'unit-internal-id-1', unit: { unitNumber: '12' } },
+      ]);
+      prisma.payment.count.mockResolvedValue(1);
+
+      const result = await repo.listPayments('b1', { skip: 0, take: 20 });
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          include: { unit: { select: { unitNumber: true } } },
+        }),
+      );
+      expect(result.items[0]).toEqual({
+        id: 'p1',
+        unitId: 'unit-internal-id-1',
+        unitNumber: '12',
+      });
+      expect(result.items[0]).not.toHaveProperty('unit');
+    });
+  });
+
+  describe('listPaymentsByUnit — human-readable unit identity (FIN-PAY-REVIEW-01B)', () => {
+    it('scopes the where clause to the unit, joins unit in one query, and flattens unitNumber', async () => {
+      prisma.payment.findMany.mockResolvedValue([
+        { id: 'p1', unitId: 'u1', unit: { unitNumber: '12' } },
+        { id: 'p2', unitId: 'u1', unit: { unitNumber: '12' } },
+      ]);
+      prisma.payment.count.mockResolvedValue(2);
+
+      const result = await repo.listPaymentsByUnit('u1', { skip: 0, take: 20 });
+
+      expect(prisma.payment.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { unitId: 'u1' },
+          include: { unit: { select: { unitNumber: true } } },
+        }),
+      );
+      expect(result).toEqual({
+        items: [
+          { id: 'p1', unitId: 'u1', unitNumber: '12' },
+          { id: 'p2', unitId: 'u1', unitNumber: '12' },
+        ],
+        total: 2,
+      });
+      expect(result.items.every((item) => !('unit' in item))).toBe(true);
+    });
+
+    it('honors skip/take pagination while keeping the unitNumber flatten intact', async () => {
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.count.mockResolvedValue(0);
+
+      await repo.listPaymentsByUnit('u1', { skip: 20, take: 10 });
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { createdAt: 'desc' }, skip: 20, take: 10 }),
       );
     });
   });

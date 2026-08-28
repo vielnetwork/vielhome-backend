@@ -3987,6 +3987,7 @@ describe('Finance (e2e) — Payment Status Filter (Backend ↔ Mobile Contract A
   let pendingPaymentId: string;
   let approvedPaymentId: string;
   let rejectedPaymentId: string;
+  let unitNumber: string;
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
@@ -4003,6 +4004,7 @@ describe('Finance (e2e) — Payment Status Filter (Backend ↔ Mobile Contract A
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
     unitId = unitsRes.body.data[0].id;
+    unitNumber = unitsRes.body.data[0].unitNumber;
 
     // One of each status this filter needs to distinguish between —
     // deliberately NOT all PENDING_APPROVAL, so a status-blind query would
@@ -4109,6 +4111,64 @@ describe('Finance (e2e) — Payment Status Filter (Backend ↔ Mobile Contract A
       total: 1,
       totalPages: 1,
     });
+  });
+
+  // FIN-PAY-REVIEW-01B — Manager/Accountant Payment Review previously had
+  // nothing but the internal `unitId` to render for a payment's unit,
+  // which is how the raw system-generated unit id ended up displayed in
+  // place of a human-facing unit number/name. `listPayments` and
+  // `listPaymentsByUnit` now join `Unit` and flatten `unitNumber` onto
+  // every returned Payment, alongside the unchanged `unitId`.
+  it('[FIN-PAY-REVIEW-01B] GET :id/payments returns unitId unchanged plus the correct unitNumber (not a system identifier) for every item', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/payments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data.length).toBeGreaterThan(0);
+    for (const payment of res.body.data) {
+      expect(payment.unitId).toBe(unitId);
+      expect(payment.unitNumber).toBe(unitNumber);
+      expect(payment.unitNumber).not.toBe(payment.unitId);
+    }
+  });
+
+  it('[FIN-PAY-REVIEW-01B] GET :id/payments never leaks a nested unit object and keeps hasReceipt/receipt intact', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/payments`)
+      .query({ status: 'PENDING_APPROVAL' })
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    expect(res.body.data).toEqual([
+      expect.objectContaining({
+        id: pendingPaymentId,
+        unitId,
+        unitNumber,
+        hasReceipt: false,
+        receipt: null,
+      }),
+    ]);
+    expect(res.body.data[0]).not.toHaveProperty('unit');
+    const serialized = JSON.stringify(res.body.data);
+    expect(serialized).not.toContain('storageKey');
+  });
+
+  it('[FIN-PAY-REVIEW-01B] GET :id/units/:unitId/payments (unit-scoped) also returns unitId plus the correct unitNumber, and preserves unit scoping', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const ids = res.body.data.map((p: { id: string }) => p.id);
+    expect(ids).toEqual(
+      expect.arrayContaining([pendingPaymentId, approvedPaymentId, rejectedPaymentId]),
+    );
+    for (const payment of res.body.data) {
+      expect(payment.unitId).toBe(unitId);
+      expect(payment.unitNumber).toBe(unitNumber);
+      expect(payment).not.toHaveProperty('unit');
+    }
   });
 });
 
