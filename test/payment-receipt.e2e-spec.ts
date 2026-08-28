@@ -132,8 +132,72 @@ async function deleteBuildingsOnceBatch(
     where: { case: { buildingId: { in: buildingIds } } },
   });
   await prisma.managerVerificationCase.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  // E2E-cleanup fix (FIN-REC-01B triage, complete dependency audit):
+  // `createBuilding`'s `POST /setup/draft` -> `POST /setup/submit` flow
+  // fires `BuildingCreatedEvent` exactly once per building. Three
+  // listeners react to it, each provisioning its own RESTRICT-FK row this
+  // cleanup must remove before `building.deleteMany` below, or the next
+  // one just becomes the next whack-a-mole FK failure:
+  //   - `BackOfficeEventListener.onBuildingCreated` -> always creates a
+  //     `BuildingVerificationCase` (`buildingId`, RESTRICT), and — only
+  //     when the creator's membership role is MANAGER (`createBuilding`'s
+  //     review-step payload always makes the creator MANAGER) — the
+  //     `ManagerVerificationCase` already handled above.
+  //   - `SubscriptionService.initiateForNewBuilding` -> always creates a
+  //     `Subscription` (`buildingId`, RESTRICT) plus one
+  //     `SubscriptionChangeLog` row (`subscriptionId` FK) recording the
+  //     auto-started trial. `FeatureGrant` (`subscriptionId` FK) is
+  //     deleted defensively alongside it — this spec never grants a
+  //     feature, but it costs nothing to keep scoped and matches
+  //     `documents.e2e-spec.ts`'s own convention.
+  //   - `GamificationEventListener.onBuildingCreated` -> upserts a
+  //     `BuildingScore` (`buildingId`, `@unique`, RESTRICT) and, on every
+  //     later score-moving event this spec's own payment-approval flow
+  //     fires (e.g. `PaymentApproved`), appends a `BuildingScoreEvent`
+  //     (`buildingScoreId` FK) — this is the row actually behind the
+  //     reported `building_scores_buildingId_fkey` failure once
+  //     `BuildingScoreEvent` rows accumulate and block the `BuildingScore`
+  //     delete in turn.
+  // All three are deleted here, before `building.deleteMany`, scoped
+  // strictly to this run's own `buildingIds` — same convention
+  // `documents.e2e-spec.ts` already uses for the identical building-
+  // creation side effects (that file's own `createBuilding` helper is
+  // byte-for-byte identical to this file's).
+  await prisma.buildingVerificationCase.deleteMany({
+    where: { buildingId: { in: buildingIds } },
+  });
+  await prisma.buildingScoreEvent.deleteMany({
+    where: { buildingScore: { buildingId: { in: buildingIds } } },
+  });
+  await prisma.buildingScore.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  await prisma.featureGrant.deleteMany({
+    where: { subscription: { buildingId: { in: buildingIds } } },
+  });
+  await prisma.subscriptionChangeLog.deleteMany({
+    where: { subscription: { buildingId: { in: buildingIds } } },
+  });
+  await prisma.subscription.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.membershipRequest.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.membership.deleteMany({ where: { buildingId: { in: buildingIds } } });
+  // E2E-cleanup fix (FIN-REC-01B triage, complete dependency audit):
+  // `Ownership.unitId`/`Tenancy.unitId` are both RESTRICT FKs into Unit.
+  // Traced this spec's actual OWNER-role fixture path
+  // (`joinAsApprovedMember` -> `PATCH /buildings/:id/membership-requests/
+  // :requestId` -> `BuildingService.resolveMembershipRequest` ->
+  // `BuildingRepository.createMembership`) and confirmed it creates a
+  // plain `Membership` row ONLY (`personId`/`buildingId`/`role`, no
+  // `unitId`) — it never calls `BuildingRepository.linkOwnerToUnit` (the
+  // only `ownership.create` call site in the codebase, reserved for the
+  // owner-invite auto-link/self-claim paths, both requiring a
+  // pre-existing invite tied to a known `unitId`, which this spec never
+  // creates). So neither table is actually populated by this file today.
+  // Deleted here anyway, scoped and as a no-op-safe defensive measure,
+  // matching `documents.e2e-spec.ts`'s own convention — if a future test
+  // in this file starts exercising the unit-linked owner/tenant flows,
+  // this cleanup already covers it instead of becoming the next FK
+  // surprise.
+  await prisma.tenancy.deleteMany({ where: { unit: { buildingId: { in: buildingIds } } } });
+  await prisma.ownership.deleteMany({ where: { unit: { buildingId: { in: buildingIds } } } });
   await prisma.unit.deleteMany({ where: { buildingId: { in: buildingIds } } });
   await prisma.building.deleteMany({ where: { id: { in: buildingIds } } });
 }
