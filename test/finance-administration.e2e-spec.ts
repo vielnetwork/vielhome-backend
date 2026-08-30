@@ -412,7 +412,6 @@ describe('Financial Administration (e2e) — Backoffice Payment List/Detail/Reve
   let buildingId: string;
   let unitId: string;
   let paymentAId: string;
-  let paymentBId: string;
 
   let viewRoleId: string;
   let viewPermissionId: string;
@@ -470,7 +469,7 @@ describe('Financial Administration (e2e) — Backoffice Payment List/Detail/Reve
     // below — a second payment un-backed by further real debt, reported
     // manually (same "voluntary extra payment" intent the zero-debt/credit
     // Mobile flow already allows).
-    paymentBId = await reportAndApprovePayment(
+    await reportAndApprovePayment(
       app,
       buildingId,
       unitId,
@@ -776,23 +775,61 @@ describe('Financial Administration (e2e) — Backoffice Payment List/Detail/Reve
       expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
     });
 
-    it('refunds the target payment — a Refund row is created, status flips to REFUNDED, distinctly audited', async () => {
+    it('rejects refunding an allocated payment without refund or audit side effects', async () => {
+      // Reversing paymentA above reopened its original ChargeItem. Create a
+      // fresh payment that is fully allocated to that obligation so this
+      // exercises the allocation guard through the Backoffice route;
+      // paymentB is intentionally credit-producing and remains covered by
+      // the pre-existing GAP-06 guard instead.
+      const allocatedPaymentId = await reportAndApprovePayment(
+        app,
+        buildingId,
+        unitId,
+        manager.accessToken,
+        manager.personId,
+        1_000_000,
+        true,
+      );
+      expect(
+        await prisma.paymentAllocation.aggregate({
+          where: { paymentId: allocatedPaymentId },
+          _sum: { amount: true },
+        }),
+      ).toEqual({ _sum: { amount: 1_000_000 } });
+      const fundBefore = await prisma.fund.findFirstOrThrow({
+        where: { buildingId, isDefault: true },
+      });
+      const refundLedgerBefore = await prisma.ledgerEntry.count({
+        where: { buildingId, entryType: 'REFUND' },
+      });
       const res = await request(app.getHttpServer())
-        .post(`/api/v1/backoffice/payments/${paymentBId}/refund`)
+        .post(`/api/v1/backoffice/payments/${allocatedPaymentId}/refund`)
         .set('Authorization', `Bearer ${admin.accessToken}`)
         .send({ reason: 'ADR-113 e2e proof — goodwill refund.' })
-        .expect(201);
+        .expect(422);
 
-      expect(res.body.data.paymentId).toBe(paymentBId);
-      expect(res.body.data.amount).toBe(1_000_000);
+      expect(res.body.errors[0].message).toBe(
+        'Payments allocated to obligations cannot be refunded in MVP.',
+      );
 
-      const payment = await prisma.payment.findUnique({ where: { id: paymentBId } });
-      expect(payment?.status).toBe('REFUNDED');
+      const payment = await prisma.payment.findUnique({ where: { id: allocatedPaymentId } });
+      expect(payment?.status).toBe('APPROVED');
+      expect(await prisma.refund.count({ where: { paymentId: allocatedPaymentId } })).toBe(0);
+      expect(await prisma.ledgerEntry.count({ where: { buildingId, entryType: 'REFUND' } })).toBe(
+        refundLedgerBefore,
+      );
+      expect(await prisma.fund.findFirstOrThrow({ where: { id: fundBefore.id } })).toEqual(
+        expect.objectContaining({ balance: fundBefore.balance }),
+      );
 
       const auditEntry = await prisma.auditLog.findFirst({
-        where: { entityType: 'Payment', entityId: paymentBId, action: 'PaymentRefundedByAdmin' },
+        where: {
+          entityType: 'Payment',
+          entityId: allocatedPaymentId,
+          action: 'PaymentRefundedByAdmin',
+        },
       });
-      expect(auditEntry?.reason).toBe('ADR-113 e2e proof — goodwill refund.');
+      expect(auditEntry).toBeNull();
     });
 
     it('revoking FINANCE_REFUND takes effect immediately — the route closes again, live and uncached', async () => {

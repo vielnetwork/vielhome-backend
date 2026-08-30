@@ -97,6 +97,23 @@ function buildDebtSnapshot(
 export class FinanceRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * The physical `finance-payment:` namespace is intentionally retained so
+   * old and new instances contend on the same lock during a rolling deploy.
+   * Semantically this is the common serialization lock for every mutation of
+   * a unit's obligations, allocations, payment reservations, or credit.
+   */
+  private async acquireUnitFinanceLock(tx: Prisma.TransactionClient, unitId: string) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + unitId}))`;
+  }
+
+  private async acquireUnitFinanceLocks(tx: Prisma.TransactionClient, unitIds: string[]) {
+    const orderedUnitIds = [...new Set(unitIds)].sort();
+    for (const unitId of orderedUnitIds) {
+      await this.acquireUnitFinanceLock(tx, unitId);
+    }
+  }
+
   // --- Funds ---------------------------------------------------------------
 
   /**
@@ -417,7 +434,11 @@ export class FinanceRepository {
    */
   listLateFeeEligibleCandidates(unitId: string) {
     return this.prisma.chargeItem.findMany({
-      where: { unitId, status: { not: 'PAID' } },
+      where: {
+        unitId,
+        status: { not: 'PAID' },
+        chargeBatch: { status: { in: ['ISSUED', 'CLOSED'] } },
+      },
       select: {
         id: true,
         amount: true,
@@ -445,16 +466,46 @@ export class FinanceRepository {
     return new Set(rows.map((r) => r.sourceId as string));
   }
 
-  hasAnyPaidChargeItems(chargeBatchId: string): Promise<boolean> {
-    return this.prisma.chargeItem
-      .count({ where: { chargeBatchId, paidAmount: { gt: 0 } } })
-      .then((count) => count > 0);
-  }
+  cancelChargeBatch(params: { chargeBatchId: string; buildingId: string }) {
+    return this.prisma.$transaction(async (tx) => {
+      const discovered = await tx.chargeBatch.findUnique({
+        where: { id: params.chargeBatchId },
+        select: { chargeItems: { select: { unitId: true } } },
+      });
+      if (!discovered) throw new BusinessRuleViolationError('Charge batch not found.');
 
-  cancelChargeBatch(id: string) {
-    return this.prisma.chargeBatch.update({
-      where: { id },
-      data: { status: 'CANCELLED', cancelledAt: new Date() },
+      await this.acquireUnitFinanceLocks(
+        tx,
+        discovered.chargeItems.map((item) => item.unitId),
+      );
+
+      const current = await tx.chargeBatch.findUnique({
+        where: { id: params.chargeBatchId },
+        include: { chargeItems: { select: { paidAmount: true } } },
+      });
+      if (!current || current.buildingId !== params.buildingId) {
+        throw new BusinessRuleViolationError('Charge batch not found.');
+      }
+      if (current.status === 'CLOSED' || current.status === 'CANCELLED') {
+        throw new BusinessRuleViolationError(
+          `A ${current.status} charge batch cannot be cancelled again.`,
+        );
+      }
+      if (current.chargeItems.some((item) => item.paidAmount > 0)) {
+        throw new BusinessRuleViolationError(
+          'This charge batch has payments already applied to it and cannot be cancelled.',
+        );
+      }
+
+      const cancelledAt = new Date();
+      const claimed = await tx.chargeBatch.updateMany({
+        where: { id: params.chargeBatchId, status: current.status },
+        data: { status: 'CANCELLED', cancelledAt },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictError('This charge batch changed before it could be cancelled.');
+      }
+      return tx.chargeBatch.findUniqueOrThrow({ where: { id: params.chargeBatchId } });
     });
   }
 
@@ -483,10 +534,41 @@ export class FinanceRepository {
     }>;
   }) {
     return this.prisma.$transaction(async (tx) => {
-      const batch = await tx.chargeBatch.update({
+      const discovered = await tx.chargeBatch.findUnique({
         where: { id: params.chargeBatchId },
-        data: { status: 'ISSUED', issuedAt: new Date() },
+        select: { chargeItems: { select: { unitId: true } } },
       });
+      if (!discovered) throw new BusinessRuleViolationError('Charge batch not found.');
+
+      await this.acquireUnitFinanceLocks(
+        tx,
+        discovered.chargeItems.map((item) => item.unitId),
+      );
+
+      const current = await tx.chargeBatch.findUnique({
+        where: { id: params.chargeBatchId },
+        include: { chargeItems: true },
+      });
+      if (!current || current.buildingId !== params.buildingId) {
+        throw new BusinessRuleViolationError('Charge batch not found.');
+      }
+      if (current.status !== 'DRAFT') {
+        throw new BusinessRuleViolationError('Only a DRAFT charge batch can be issued.');
+      }
+      if (current.totalAmount <= 0 || current.chargeItems.length === 0) {
+        throw new BusinessRuleViolationError(
+          'A charge batch with no charge items cannot be issued.',
+        );
+      }
+
+      const issuedAt = new Date();
+      const claimed = await tx.chargeBatch.updateMany({
+        where: { id: params.chargeBatchId, status: 'DRAFT' },
+        data: { status: 'ISSUED', issuedAt },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictError('This charge batch changed before it could be issued.');
+      }
 
       for (const resolution of params.payerResolutions ?? []) {
         await tx.chargeItem.update({
@@ -503,9 +585,7 @@ export class FinanceRepository {
         }
       }
 
-      const items = await tx.chargeItem.findMany({
-        where: { chargeBatchId: params.chargeBatchId },
-      });
+      const items = current.chargeItems;
 
       for (const item of items) {
         const credit = await tx.creditBalance.findUnique({ where: { unitId: item.unitId } });
@@ -524,14 +604,17 @@ export class FinanceRepository {
             status: computeItemStatus(newPaidAmount, item.amount),
           },
         });
-        await tx.creditBalance.update({
-          where: { unitId: item.unitId },
-          data: { balance: credit.balance - applied },
+        const consumed = await tx.creditBalance.updateMany({
+          where: { unitId: item.unitId, balance: { gte: applied } },
+          data: { balance: { decrement: applied } },
         });
+        if (consumed.count !== 1) {
+          throw new ConflictError('The unit credit balance changed before it could be applied.');
+        }
         await tx.ledgerEntry.create({
           data: {
             buildingId: params.buildingId,
-            fundId: params.fundId,
+            fundId: current.fundId,
             entryType: 'CREDIT_APPLIED',
             direction: 'CREDIT',
             amount: applied,
@@ -547,10 +630,10 @@ export class FinanceRepository {
       await tx.ledgerEntry.create({
         data: {
           buildingId: params.buildingId,
-          fundId: params.fundId,
+          fundId: current.fundId,
           entryType: 'CHARGE',
           direction: 'DEBIT',
-          amount: params.totalAmount,
+          amount: current.totalAmount,
           referenceType: 'ChargeBatch',
           referenceId: params.chargeBatchId,
           actorId: params.actorId,
@@ -558,7 +641,7 @@ export class FinanceRepository {
         },
       });
 
-      return batch;
+      return tx.chargeBatch.findUniqueOrThrow({ where: { id: params.chargeBatchId } });
     });
   }
 
@@ -634,7 +717,7 @@ export class FinanceRepository {
     isManualAmount: boolean;
   }) {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + params.unitId}))`;
+      await this.acquireUnitFinanceLock(tx, params.unitId);
 
       const existing = await tx.payment.findFirst({
         where: {
@@ -806,7 +889,7 @@ export class FinanceRepository {
     targets: ExplicitObligationTarget[];
   }) {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + params.unitId}))`;
+      await this.acquireUnitFinanceLock(tx, params.unitId);
 
       const existing = await tx.payment.findFirst({
         where: {
@@ -1070,7 +1153,7 @@ export class FinanceRepository {
     return this.prisma.$transaction(async (tx) => {
       const candidate = await tx.payment.findUnique({ where: { id } });
       if (!candidate) throw new BusinessRuleViolationError('Payment not found.');
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + candidate.unitId}))`;
+      await this.acquireUnitFinanceLock(tx, candidate.unitId);
       const current = await tx.payment.findUnique({ where: { id } });
       if (!current || current.status !== 'PENDING_APPROVAL') {
         throw new BusinessRuleViolationError('Only a pending payment can be rejected.');
@@ -1113,7 +1196,7 @@ export class FinanceRepository {
     requestId?: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + params.unitId}))`;
+      await this.acquireUnitFinanceLock(tx, params.unitId);
       const current = await tx.payment.findUnique({
         where: { id: params.paymentId },
         include: { debtSelections: true },
@@ -1143,9 +1226,14 @@ export class FinanceRepository {
           if (selection.chargeItemId) {
             const item = await tx.chargeItem.findUniqueOrThrow({
               where: { id: selection.chargeItemId },
+              include: { chargeBatch: { select: { status: true } } },
             });
             const outstanding = item.amount - item.paidAmount;
-            if (outstanding !== selection.selectedAmount || item.unitId !== params.unitId) {
+            if (
+              outstanding !== selection.selectedAmount ||
+              item.unitId !== params.unitId ||
+              !['ISSUED', 'CLOSED'].includes(item.chargeBatch.status)
+            ) {
               throw new ConflictError('Selected ChargeItem changed before approval.');
             }
             const newPaidAmount = item.paidAmount + selection.selectedAmount;
@@ -1222,7 +1310,11 @@ export class FinanceRepository {
       // relation ordering on `chargeBatch.dueDate` — a DRAFT/never-issued
       // batch has no items yet so this only ever sees ISSUED batches.
       const outstandingItems = await tx.chargeItem.findMany({
-        where: { unitId: params.unitId, status: { not: 'PAID' } },
+        where: {
+          unitId: params.unitId,
+          status: { not: 'PAID' },
+          chargeBatch: { status: { in: ['ISSUED', 'CLOSED'] } },
+        },
         include: { chargeBatch: { select: { dueDate: true } } },
         orderBy: [{ chargeBatch: { dueDate: 'asc' } }, { createdAt: 'asc' }],
       });
@@ -1342,6 +1434,24 @@ export class FinanceRepository {
     sourceId?: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
+      await this.acquireUnitFinanceLock(tx, params.unitId);
+
+      if (params.sourceType === 'LATE_FEE' && params.sourceId) {
+        const sourceItem = await tx.chargeItem.findUnique({
+          where: { id: params.sourceId },
+          include: { chargeBatch: { select: { status: true } } },
+        });
+        if (
+          !sourceItem ||
+          sourceItem.unitId !== params.unitId ||
+          !['ISSUED', 'CLOSED'].includes(sourceItem.chargeBatch.status)
+        ) {
+          throw new BusinessRuleViolationError(
+            'A late fee can only be applied to an active issued obligation.',
+          );
+        }
+      }
+
       const adjustment = await tx.adjustment.create({
         data: {
           unitId: params.unitId,
@@ -1358,7 +1468,11 @@ export class FinanceRepository {
       if (params.amount < 0) {
         let remaining = Math.abs(params.amount);
         const outstandingItems = await tx.chargeItem.findMany({
-          where: { unitId: params.unitId, status: { not: 'PAID' } },
+          where: {
+            unitId: params.unitId,
+            status: { not: 'PAID' },
+            chargeBatch: { status: { in: ['ISSUED', 'CLOSED'] } },
+          },
           include: { chargeBatch: { select: { dueDate: true } } },
           orderBy: [{ chargeBatch: { dueDate: 'asc' } }, { createdAt: 'asc' }],
         });
@@ -1437,26 +1551,40 @@ export class FinanceRepository {
     unitId: string;
     buildingId: string;
     fundId: string;
-    amount: number;
+    targetBalance: number;
     reason: string;
     createdById: string;
     requestId?: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
+      await this.acquireUnitFinanceLock(tx, params.unitId);
+
+      const existingCorrections = await tx.adjustment.findMany({
+        where: { unitId: params.unitId, sourceType: 'OPENING_BALANCE_CORRECTION' },
+        select: { amount: true },
+      });
+      const previousBalance = existingCorrections.reduce((sum, row) => sum + row.amount, 0);
+      const delta = params.targetBalance - previousBalance;
+      if (delta === 0) {
+        throw new BusinessRuleViolationError(
+          "The requested opening balance matches the unit's current effective opening balance; no correction is needed.",
+        );
+      }
+
       const adjustment = await tx.adjustment.create({
         data: {
           unitId: params.unitId,
           buildingId: params.buildingId,
           fundId: params.fundId,
-          amount: params.amount,
+          amount: delta,
           reason: params.reason,
           createdById: params.createdById,
           sourceType: 'OPENING_BALANCE_CORRECTION',
         },
       });
 
-      if (params.amount < 0) {
-        let remaining = Math.abs(params.amount);
+      if (delta < 0) {
+        let remaining = Math.abs(delta);
 
         const priorCorrections = await tx.adjustment.findMany({
           where: {
@@ -1496,8 +1624,8 @@ export class FinanceRepository {
           buildingId: params.buildingId,
           fundId: params.fundId,
           entryType: 'ADJUSTMENT',
-          direction: params.amount < 0 ? 'CREDIT' : 'DEBIT',
-          amount: Math.abs(params.amount),
+          direction: delta < 0 ? 'CREDIT' : 'DEBIT',
+          amount: Math.abs(delta),
           referenceType: 'Adjustment',
           referenceId: adjustment.id,
           actorId: params.createdById,
@@ -1505,7 +1633,12 @@ export class FinanceRepository {
         },
       });
 
-      return adjustment;
+      return {
+        adjustment,
+        previousBalance,
+        newBalance: params.targetBalance,
+        delta,
+      };
     });
   }
 
@@ -1591,7 +1724,11 @@ export class FinanceRepository {
 
     const [chargeItems, adjustments, credits, pendingPayments] = await Promise.all([
       this.prisma.chargeItem.findMany({
-        where: { unitId: { in: unitIds }, status: { not: 'PAID' } },
+        where: {
+          unitId: { in: unitIds },
+          status: { not: 'PAID' },
+          chargeBatch: { status: { in: ['ISSUED', 'CLOSED'] } },
+        },
         select: { unitId: true, amount: true, paidAmount: true },
       }),
       this.prisma.adjustment.findMany({
@@ -1647,7 +1784,11 @@ export class FinanceRepository {
   private async computeDebtSnapshot(client: Prisma.TransactionClient, unitId: string) {
     const [outstandingItems, positiveAdjustments, credit, pendingPayments] = await Promise.all([
       client.chargeItem.findMany({
-        where: { unitId, status: { not: 'PAID' } },
+        where: {
+          unitId,
+          status: { not: 'PAID' },
+          chargeBatch: { status: { in: ['ISSUED', 'CLOSED'] } },
+        },
         select: { amount: true, paidAmount: true },
       }),
       client.adjustment.findMany({
@@ -1717,7 +1858,7 @@ export class FinanceRepository {
     return this.prisma.$transaction(async (tx) => {
       const candidate = await tx.payment.findUnique({ where: { id: params.paymentId } });
       if (!candidate) throw new BusinessRuleViolationError('Payment not found.');
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + candidate.unitId}))`;
+      await this.acquireUnitFinanceLock(tx, candidate.unitId);
       const current = await tx.payment.findUnique({ where: { id: params.paymentId } });
       if (!current || current.status !== 'APPROVED') {
         throw new BusinessRuleViolationError('Only an approved payment can be reversed.');
@@ -1822,7 +1963,7 @@ export class FinanceRepository {
     requestId?: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + params.unitId}))`;
+      await this.acquireUnitFinanceLock(tx, params.unitId);
 
       const current = await tx.payment.findUnique({ where: { id: params.paymentId } });
       if (!current || current.status !== 'APPROVED') {
@@ -1842,6 +1983,11 @@ export class FinanceRepository {
       if (current.amount - allocatedTotal > 0) {
         throw new BusinessRuleViolationError(
           'Payments that generated unit credit cannot be refunded in MVP.',
+        );
+      }
+      if (allocatedTotal > 0) {
+        throw new BusinessRuleViolationError(
+          'Payments allocated to obligations cannot be refunded in MVP.',
         );
       }
 
@@ -2134,7 +2280,10 @@ export class FinanceRepository {
     ] = await Promise.all([
       this.prisma.fund.findMany({ where: { buildingId } }),
       this.prisma.chargeItem.findMany({
-        where: { chargeBatch: { buildingId }, status: { not: 'PAID' } },
+        where: {
+          chargeBatch: { buildingId, status: { in: ['ISSUED', 'CLOSED'] } },
+          status: { not: 'PAID' },
+        },
         select: { amount: true, paidAmount: true },
       }),
       this.prisma.adjustment.aggregate({

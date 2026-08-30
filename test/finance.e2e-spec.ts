@@ -3000,7 +3000,7 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
     expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
 
-  it('refunds a payment in full: marks REFUNDED, claws back XP for that payment', async () => {
+  it('rejects refunding a fully allocated payment without changing accounting state', async () => {
     await request(app.getHttpServer())
       .patch(`/api/v1/buildings/${buildingId}/payments/${paymentBId}/approve`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
@@ -3010,32 +3010,47 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
     expect(item?.paidAmount).toBe(1_000_000);
     expect(item?.status).toBe('PAID');
 
-    await request(app.getHttpServer())
+    const fundBefore = await prisma.fund.findFirstOrThrow({
+      where: { buildingId, isDefault: true },
+    });
+    const refundLedgerBefore = await prisma.ledgerEntry.count({
+      where: { buildingId, entryType: 'REFUND' },
+    });
+    const allocationBefore = await prisma.paymentAllocation.aggregate({
+      where: { paymentId: paymentBId },
+      _sum: { amount: true },
+    });
+    const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/payments/${paymentBId}/refund`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({ reason: 'resident requested a refund' })
-      .expect(201);
+      .expect(422);
+    expect(res.body.errors[0].message).toBe(
+      'Payments allocated to obligations cannot be refunded in MVP.',
+    );
 
     const paymentsRes = await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
     const paymentB = paymentsRes.body.data.find((p: { id: string }) => p.id === paymentBId);
-    expect(paymentB.status).toBe('REFUNDED');
+    expect(paymentB.status).toBe('APPROVED');
 
     const fund = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
-    expect(fund?.balance).toBe(0);
-
-    const clawback = await waitFor(() =>
-      prisma.xpTransaction.findFirst({
-        where: {
-          referenceType: 'PAYMENT',
-          referenceId: paymentBId,
-          reason: 'CHARGE_PAID_REVERSED',
-        },
+    expect(fund?.balance).toBe(fundBefore.balance);
+    expect(await prisma.refund.count({ where: { paymentId: paymentBId } })).toBe(0);
+    expect(
+      await prisma.ledgerEntry.count({
+        where: { buildingId, entryType: 'REFUND' },
       }),
-    );
-    expect(clawback?.amount).toBe(-20);
+    ).toBe(refundLedgerBefore);
+    expect(
+      await prisma.paymentAllocation.aggregate({
+        where: { paymentId: paymentBId },
+        _sum: { amount: true },
+      }),
+    ).toEqual(allocationBefore);
+    expect(await prisma.chargeItem.findFirst({ where: { unitId } })).toEqual(item);
   });
 
   let paymentCId: string;
@@ -3095,7 +3110,7 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
     expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
 
-  it('rejects a second refund on an already-refunded payment', async () => {
+  it('continues rejecting another refund attempt on the allocated payment', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/payments/${paymentBId}/refund`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
@@ -3158,8 +3173,11 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
     expect(fundAfter?.balance).toBe(fundBefore?.balance);
   });
 
-  it('concurrent refund+refund against the same APPROVED payment: exactly one wins, Payment ends REFUNDED, exactly one Refund row, exactly one REFUND ledger entry, Fund decremented exactly once (FIN-MVP-GAP-03B)', async () => {
+  it('concurrent refund+refund against the same allocated payment: both fail without refund effects', async () => {
     const fundBefore = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
+    const refundLedgerBefore = await prisma.ledgerEntry.count({
+      where: { buildingId, entryType: 'REFUND' },
+    });
     // paymentD's reversal reopened 300_000 of debt. This additional charge
     // keeps paymentE fully allocated and eligible for refund concurrency.
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 450_000);
@@ -3181,21 +3199,21 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
         .send({ reason: 'concurrent refund attempt' });
 
     const responses = await Promise.all([refundOnce(), refundOnce()]);
-    expect(responses.map((response) => response.status).sort()).toEqual([201, 422]);
+    expect(responses.map((response) => response.status).sort()).toEqual([422, 422]);
 
     const payment = await prisma.payment.findUnique({ where: { id: paymentEId } });
-    expect(payment?.status).toBe('REFUNDED');
+    expect(payment?.status).toBe('APPROVED');
 
     const refunds = await prisma.refund.findMany({ where: { paymentId: paymentEId } });
-    expect(refunds).toHaveLength(1);
+    expect(refunds).toHaveLength(0);
 
     const refundLedgerCount = await prisma.ledgerEntry.count({
-      where: { entryType: 'REFUND', referenceType: 'Refund', referenceId: refunds[0].id },
+      where: { buildingId, entryType: 'REFUND' },
     });
-    expect(refundLedgerCount).toBe(1);
+    expect(refundLedgerCount).toBe(refundLedgerBefore);
 
     const fundAfter = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
-    expect(fundAfter?.balance).toBe(fundBefore?.balance);
+    expect(fundAfter?.balance).toBe((fundBefore?.balance ?? 0) + 250_000);
   });
 
   it("concurrent reverse+refund against the same APPROVED payment: exactly one corrective operation wins, the loser fails, Payment ends in the winner's state, never both REVERSAL and REFUND effects, Fund decremented exactly once (FIN-MVP-GAP-03B)", async () => {
@@ -3226,10 +3244,11 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
         .send({ reason: 'concurrent mixed attempt — refund side' }),
     ]);
 
-    expect([reverseRes.status, refundRes.status].sort()).toEqual([201, 422]);
+    expect(reverseRes.status).toBe(201);
+    expect(refundRes.status).toBe(422);
 
     const payment = await prisma.payment.findUnique({ where: { id: paymentFId } });
-    expect(['REVERSED', 'REFUNDED']).toContain(payment?.status);
+    expect(payment?.status).toBe('REVERSED');
 
     const reversalCount = await prisma.ledgerEntry.count({
       where: { entryType: 'REVERSAL', referenceType: 'Payment', referenceId: paymentFId },
@@ -3241,18 +3260,9 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
         })
       : 0;
 
-    // Exactly one corrective financial effect total, never both.
-    expect(reversalCount + refundLedgerCount).toBe(1);
-
-    if (reverseRes.status === 201) {
-      expect(payment?.status).toBe('REVERSED');
-      expect(reversalCount).toBe(1);
-      expect(refundRow).toBeNull();
-    } else {
-      expect(payment?.status).toBe('REFUNDED');
-      expect(refundRow).not.toBeNull();
-      expect(refundLedgerCount).toBe(1);
-    }
+    expect(reversalCount).toBe(1);
+    expect(refundRow).toBeNull();
+    expect(refundLedgerCount).toBe(0);
 
     const fundAfter = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
     expect(fundAfter?.balance).toBe(fundBefore?.balance);
@@ -3394,7 +3404,7 @@ describe('Finance (e2e) — refund guard for payments that generated unit credit
     });
   });
 
-  it('preserves full refunds for payments whose amount was fully allocated to debt', async () => {
+  it('rejects full refunds for payments whose amount was fully allocated to debt', async () => {
     const { buildingId, unitId } = await createScenarioFixture(1_000_000);
     const paymentId = await reportAndApprovePayment(
       app,
@@ -3409,23 +3419,27 @@ describe('Finance (e2e) — refund guard for payments that generated unit credit
       where: { buildingId, isDefault: true },
     });
 
-    await request(app.getHttpServer())
+    const allocationBefore = await prisma.paymentAllocation.findMany({ where: { paymentId } });
+    const itemBefore = await prisma.chargeItem.findFirstOrThrow({ where: { unitId } });
+    const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/payments/${paymentId}/refund`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
-      .send({ reason: 'fully allocated payment remains refundable' })
-      .expect(201);
+      .send({ reason: 'fully allocated payment must not be refundable' })
+      .expect(422);
+    expect(res.body.errors[0].message).toBe(
+      'Payments allocated to obligations cannot be refunded in MVP.',
+    );
 
     expect(await prisma.payment.findUnique({ where: { id: paymentId } })).toEqual(
-      expect.objectContaining({ status: 'REFUNDED' }),
+      expect.objectContaining({ status: 'APPROVED' }),
     );
-    const refund = await prisma.refund.findFirstOrThrow({ where: { paymentId } });
-    expect(
-      await prisma.ledgerEntry.count({
-        where: { entryType: 'REFUND', referenceType: 'Refund', referenceId: refund.id },
-      }),
-    ).toBe(1);
+    expect(await prisma.refund.count({ where: { paymentId } })).toBe(0);
+    expect(await prisma.paymentAllocation.findMany({ where: { paymentId } })).toEqual(
+      allocationBefore,
+    );
+    expect(await prisma.chargeItem.findFirstOrThrow({ where: { unitId } })).toEqual(itemBefore);
     expect(await prisma.fund.findFirstOrThrow({ where: { buildingId, isDefault: true } })).toEqual(
-      expect.objectContaining({ balance: fundBefore.balance - 1_000_000 }),
+      expect.objectContaining({ balance: fundBefore.balance }),
     );
   });
 
@@ -6589,5 +6603,494 @@ describe('Finance (e2e) — FIN-MVP-GAP-04C Manual/On-Behalf Payment Contract', 
       // distinct row, never a collision.
       expect(rows.map((r) => r.payerId).sort()).toEqual([ownerA.personId, ownerB.personId].sort());
     });
+  });
+});
+
+describe('Finance (e2e) — FIN-MVP-GAP-08B shared unit serialization', () => {
+  // Budget: one OTP request. Finance fixtures are seeded directly after the
+  // real building/role setup so concurrency coverage does not consume the
+  // throttled authentication endpoint.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  let manager: RegisteredPerson;
+  let buildingId: string;
+  let fundId: string;
+  let unitIds: string[];
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+    buildingId = await createBuilding(app, manager.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 12,
+    });
+    createdBuildingIds.push(buildingId);
+    unitIds = (
+      await prisma.unit.findMany({ where: { buildingId }, orderBy: { unitNumber: 'asc' } })
+    ).map((unit) => unit.id);
+    await prisma.ownership.createMany({
+      data: unitIds.map((unitId) => ({ unitId, personId: manager.personId })),
+      skipDuplicates: true,
+    });
+    const fund = await prisma.fund.create({
+      data: { buildingId, name: 'GAP-08 current fund', type: 'CURRENT', isDefault: true },
+    });
+    fundId = fund.id;
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  async function createDraft(unitScope: string[], amount: number, title: string) {
+    return prisma.chargeBatch.create({
+      data: {
+        buildingId,
+        fundId,
+        title,
+        calculationMethod: 'FIXED',
+        totalAmount: amount * unitScope.length,
+        status: 'DRAFT',
+        createdById: manager.personId,
+        chargeItems: { create: unitScope.map((unitId) => ({ unitId, amount })) },
+      },
+      include: { chargeItems: true },
+    });
+  }
+
+  function issue(batchId: string) {
+    return request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${batchId}/issue`)
+      .set('Authorization', `Bearer ${manager.accessToken}`);
+  }
+
+  function adjust(unitId: string, amount: number, reason: string) {
+    return request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/adjustments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ amount, reason, fundId });
+  }
+
+  it('issue + issue on the same batch has one economic winner and no losing side effects', async () => {
+    const batch = await createDraft([unitIds[0]], 100, 'GAP08 same batch');
+    const itemId = batch.chargeItems[0].id;
+    await prisma.creditBalance.create({ data: { unitId: unitIds[0], buildingId, balance: 40 } });
+    const fundBefore = (await prisma.fund.findUniqueOrThrow({ where: { id: fundId } })).balance;
+
+    const responses = await Promise.all([issue(batch.id), issue(batch.id)]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 422]);
+
+    const [item, credit, chargeEntries, creditEntries, allocationCount, fund] = await Promise.all([
+      prisma.chargeItem.findUniqueOrThrow({ where: { id: itemId } }),
+      prisma.creditBalance.findUniqueOrThrow({ where: { unitId: unitIds[0] } }),
+      prisma.ledgerEntry.count({ where: { entryType: 'CHARGE', referenceId: batch.id } }),
+      prisma.ledgerEntry.findMany({ where: { entryType: 'CREDIT_APPLIED', referenceId: itemId } }),
+      prisma.paymentAllocation.count({ where: { chargeItemId: itemId } }),
+      prisma.fund.findUniqueOrThrow({ where: { id: fundId } }),
+    ]);
+    expect(item).toMatchObject({ paidAmount: 40, status: 'PARTIALLY_PAID' });
+    expect(credit.balance).toBe(0);
+    expect(chargeEntries).toBe(1);
+    expect(creditEntries.map((entry) => entry.amount)).toEqual([40]);
+    expect(allocationCount).toBe(0);
+    expect(fund.balance).toBe(fundBefore);
+  });
+
+  it('two batches for the same unit consume limited credit at most once', async () => {
+    const [batchA, batchB] = await Promise.all([
+      createDraft([unitIds[1]], 100, 'GAP08 limited A'),
+      createDraft([unitIds[1]], 100, 'GAP08 limited B'),
+    ]);
+    await prisma.creditBalance.create({ data: { unitId: unitIds[1], buildingId, balance: 100 } });
+
+    const responses = await Promise.all([issue(batchA.id), issue(batchB.id)]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 200]);
+
+    const [items, credit, applied] = await Promise.all([
+      prisma.chargeItem.findMany({
+        where: { id: { in: [batchA.chargeItems[0].id, batchB.chargeItems[0].id] } },
+        orderBy: { id: 'asc' },
+      }),
+      prisma.creditBalance.findUniqueOrThrow({ where: { unitId: unitIds[1] } }),
+      prisma.ledgerEntry.aggregate({
+        where: {
+          entryType: 'CREDIT_APPLIED',
+          referenceId: { in: [batchA.chargeItems[0].id, batchB.chargeItems[0].id] },
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+    expect(items.map((item) => item.paidAmount).sort((a, b) => a - b)).toEqual([0, 100]);
+    expect(credit.balance).toBe(0);
+    expect(applied._sum.amount).toBe(100);
+    expect(
+      await prisma.ledgerEntry.count({
+        where: { entryType: 'CHARGE', referenceId: { in: [batchA.id, batchB.id] } },
+      }),
+    ).toBe(2);
+  });
+
+  it('charge issue + payment approval conserves allocation and credit without a lost update', async () => {
+    const batch = await createDraft([unitIds[2]], 60, 'GAP08 approval race');
+    const itemId = batch.chargeItems[0].id;
+    const paymentId = await reportPayment(
+      app,
+      buildingId,
+      unitIds[2],
+      manager.accessToken,
+      manager.personId,
+      100,
+      true,
+    );
+    const fundBefore = (await prisma.fund.findUniqueOrThrow({ where: { id: fundId } })).balance;
+
+    const [issueResponse, approvalResponse] = await Promise.all([
+      issue(batch.id),
+      request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/payments/${paymentId}/approve`)
+        .set('Authorization', `Bearer ${manager.accessToken}`),
+    ]);
+    expect(issueResponse.status).toBe(200);
+    expect(approvalResponse.status).toBe(200);
+
+    const [item, allocation, credit, creditApplied, fund] = await Promise.all([
+      prisma.chargeItem.findUniqueOrThrow({ where: { id: itemId } }),
+      prisma.paymentAllocation.aggregate({ where: { paymentId }, _sum: { amount: true } }),
+      prisma.creditBalance.findUnique({ where: { unitId: unitIds[2] } }),
+      prisma.ledgerEntry.aggregate({
+        where: { entryType: 'CREDIT_APPLIED', referenceId: itemId },
+        _sum: { amount: true },
+      }),
+      prisma.fund.findUniqueOrThrow({ where: { id: fundId } }),
+    ]);
+    expect(item.paidAmount).toBeLessThanOrEqual(item.amount);
+    expect(
+      (allocation._sum.amount ?? 0) + (creditApplied._sum.amount ?? 0) + (credit?.balance ?? 0),
+    ).toBe(100);
+    expect(fund.balance - fundBefore).toBe(100);
+    expect(
+      await prisma.ledgerEntry.count({ where: { entryType: 'PAYMENT', referenceId: paymentId } }),
+    ).toBe(1);
+    expect(
+      await prisma.ledgerEntry.count({ where: { entryType: 'CHARGE', referenceId: batch.id } }),
+    ).toBe(1);
+  });
+
+  it('negative adjustment + approval produces only a valid serial settlement', async () => {
+    const batchId = await issueFixedChargeBatch(
+      app,
+      buildingId,
+      manager.accessToken,
+      100,
+      'GAP08 adjustment approval',
+    );
+    const item = await prisma.chargeItem.findFirstOrThrow({
+      where: { chargeBatchId: batchId, unitId: unitIds[3] },
+    });
+    const paymentId = await reportPayment(
+      app,
+      buildingId,
+      unitIds[3],
+      manager.accessToken,
+      manager.personId,
+      100,
+      true,
+    );
+    const fundBefore = (await prisma.fund.findUniqueOrThrow({ where: { id: fundId } })).balance;
+
+    const [adjustmentResponse, approvalResponse] = await Promise.all([
+      adjust(unitIds[3], -100, 'GAP08 concurrent waiver'),
+      request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/payments/${paymentId}/approve`)
+        .set('Authorization', `Bearer ${manager.accessToken}`),
+    ]);
+    expect(adjustmentResponse.status).toBe(201);
+    expect(approvalResponse.status).toBe(200);
+
+    const [afterItem, allocation, credit, fund] = await Promise.all([
+      prisma.chargeItem.findUniqueOrThrow({ where: { id: item.id } }),
+      prisma.paymentAllocation.aggregate({ where: { paymentId }, _sum: { amount: true } }),
+      prisma.creditBalance.findUnique({ where: { unitId: unitIds[3] } }),
+      prisma.fund.findUniqueOrThrow({ where: { id: fundId } }),
+    ]);
+    expect(afterItem).toMatchObject({ paidAmount: 100, status: 'PAID' });
+    expect(allocation._sum.amount ?? 0).toBeLessThanOrEqual(100);
+    expect((allocation._sum.amount ?? 0) + (credit?.balance ?? 0)).toBe(100);
+    expect(fund.balance - fundBefore).toBe(100);
+  });
+
+  it('two negative adjustments cannot raise paidAmount above the obligation', async () => {
+    const batch = await createDraft([unitIds[4]], 100, 'GAP08 waiver race');
+    await issue(batch.id).expect(200);
+    const responses = await Promise.all([
+      adjust(unitIds[4], -100, 'GAP08 waiver A'),
+      adjust(unitIds[4], -100, 'GAP08 waiver B'),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 201]);
+
+    const item = await prisma.chargeItem.findUniqueOrThrow({
+      where: { id: batch.chargeItems[0].id },
+    });
+    expect(item).toMatchObject({ paidAmount: 100, status: 'PAID' });
+    expect(await prisma.creditBalance.findUnique({ where: { unitId: unitIds[4] } })).toBeNull();
+    expect(await prisma.paymentAllocation.count({ where: { chargeItemId: item.id } })).toBe(0);
+  });
+
+  it('two identical opening-balance targets create one authoritative correction', async () => {
+    const responses = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitIds[5]}/opening-balance-correction`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ targetBalance: 100, reason: 'GAP08 target A', fundId }),
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${unitIds[5]}/opening-balance-correction`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ targetBalance: 100, reason: 'GAP08 target B', fundId }),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 422]);
+    const corrections = await prisma.adjustment.findMany({
+      where: { unitId: unitIds[5], sourceType: 'OPENING_BALANCE_CORRECTION' },
+    });
+    expect(corrections.map((row) => row.amount)).toEqual([100]);
+    expect(
+      await prisma.ledgerEntry.count({
+        where: { entryType: 'ADJUSTMENT', referenceId: corrections[0].id },
+      }),
+    ).toBe(1);
+  });
+
+  it('overlapping reverse-order multi-unit batches complete without deadlock or double credit', async () => {
+    const [batchA, batchB] = await Promise.all([
+      createDraft([unitIds[6], unitIds[7]], 100, 'GAP08 deadlock A'),
+      createDraft([unitIds[7], unitIds[6]], 100, 'GAP08 deadlock B'),
+    ]);
+    await prisma.creditBalance.createMany({
+      data: [unitIds[6], unitIds[7]].map((unitId) => ({ unitId, buildingId, balance: 100 })),
+    });
+
+    const responses = await Promise.race([
+      Promise.all([issue(batchA.id), issue(batchB.id)]),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('multi-unit issue deadlocked')), 10_000),
+      ),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 200]);
+    const credits = await prisma.creditBalance.findMany({
+      where: { unitId: { in: [unitIds[6], unitIds[7]] } },
+    });
+    expect(credits.every((credit) => credit.balance === 0)).toBe(true);
+    const applied = await prisma.ledgerEntry.aggregate({
+      where: {
+        entryType: 'CREDIT_APPLIED',
+        referenceId: { in: [...batchA.chargeItems, ...batchB.chargeItems].map((item) => item.id) },
+      },
+      _sum: { amount: true },
+    });
+    expect(applied._sum.amount).toBe(200);
+  }, 15_000);
+
+  it('cancel + issue resolves to a complete valid serial lifecycle without duplicate issue effects', async () => {
+    const batch = await createDraft([unitIds[8]], 100, 'GAP08 cancel issue');
+    const responses = await Promise.all([
+      issue(batch.id),
+      request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/charges/${batch.id}/cancel`)
+        .set('Authorization', `Bearer ${manager.accessToken}`),
+    ]);
+    expect(responses.every((response) => [200, 422].includes(response.status))).toBe(true);
+    expect(responses.some((response) => response.status === 200)).toBe(true);
+    const persisted = await prisma.chargeBatch.findUniqueOrThrow({ where: { id: batch.id } });
+    expect(['ISSUED', 'CANCELLED']).toContain(persisted.status);
+    expect(
+      await prisma.ledgerEntry.count({ where: { entryType: 'CHARGE', referenceId: batch.id } }),
+    ).toBeLessThanOrEqual(1);
+  });
+
+  it('cancel + adjustment observes one serialized unit state without partial mutation', async () => {
+    const batch = await createDraft([unitIds[9]], 100, 'GAP08 cancel adjustment');
+    await issue(batch.id).expect(200);
+
+    const [cancelResponse, adjustmentResponse] = await Promise.all([
+      request(app.getHttpServer())
+        .patch(`/api/v1/buildings/${buildingId}/charges/${batch.id}/cancel`)
+        .set('Authorization', `Bearer ${manager.accessToken}`),
+      adjust(unitIds[9], -100, 'GAP08 cancel-adjustment waiver'),
+    ]);
+
+    expect([200, 422]).toContain(cancelResponse.status);
+    expect(adjustmentResponse.status).toBe(201);
+    const [persistedBatch, item, adjustments] = await Promise.all([
+      prisma.chargeBatch.findUniqueOrThrow({ where: { id: batch.id } }),
+      prisma.chargeItem.findUniqueOrThrow({ where: { id: batch.chargeItems[0].id } }),
+      prisma.adjustment.findMany({
+        where: { unitId: unitIds[9], reason: 'GAP08 cancel-adjustment waiver' },
+      }),
+    ]);
+    expect(['ISSUED', 'CANCELLED']).toContain(persistedBatch.status);
+    expect(item.paidAmount).toBeLessThanOrEqual(item.amount);
+    expect(adjustments).toHaveLength(1);
+    expect(
+      await prisma.ledgerEntry.count({
+        where: { entryType: 'ADJUSTMENT', referenceId: adjustments[0].id },
+      }),
+    ).toBe(1);
+  });
+
+  it('excludes a cancelled obligation from every collection path, including an earlier explicit reservation', async () => {
+    const unitId = unitIds[10];
+    await adjust(unitId, -1_000_000, 'FINAL-B clear shared-fixture debt').expect(201);
+    expect(await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken)).toMatchObject({
+      chargeItemDebt: 0,
+      totalDebt: 0,
+      remainingPayable: 0,
+    });
+    const batch = await createDraft([unitId], 100, 'FINAL-B cancelled obligation');
+    await issue(batch.id).expect(200);
+    const itemId = batch.chargeItems[0].id;
+
+    const explicit = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        obligationIds: [`CHARGE_ITEM:${itemId}`],
+        method: 'CASH',
+        idempotencyKey: nextIdempotencyKey('cancelled-explicit-before'),
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/charges/${batch.id}/cancel`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+
+    const debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt).toMatchObject({ chargeItemDebt: 0, totalDebt: 0, remainingPayable: 0 });
+    const obligations = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/obligations`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(
+      obligations.body.data.some(
+        (row: { obligationId: string }) => row.obligationId === `CHARGE_ITEM:${itemId}`,
+      ),
+    ).toBe(false);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments/explicit`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        obligationIds: [`CHARGE_ITEM:${itemId}`],
+        method: 'CASH',
+        idempotencyKey: nextIdempotencyKey('cancelled-explicit-after'),
+      })
+      .expect(422);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/payments/${explicit.body.data.id}/approve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(409);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        amount: 100,
+        method: 'CASH',
+        payerPersonId: manager.personId,
+        idempotencyKey: nextIdempotencyKey('cancelled-normal'),
+      })
+      .expect(422);
+
+    const manualPaymentId = await reportPayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.personId,
+      100,
+      true,
+    );
+    await request(app.getHttpServer())
+      .patch(`/api/v1/buildings/${buildingId}/payments/${manualPaymentId}/approve`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    await adjust(unitId, -100, 'FINAL-B cancelled item waiver').expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unitId}/charge-items/${itemId}/late-fee`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(422);
+
+    expect(await prisma.paymentAllocation.count({ where: { chargeItemId: itemId } })).toBe(0);
+    expect(await prisma.chargeItem.findUniqueOrThrow({ where: { id: itemId } })).toMatchObject({
+      paidAmount: 0,
+      status: 'UNPAID',
+    });
+  });
+
+  it('keeps CLOSED obligations collectible and blocks refunding a payment allocated to an Adjustment', async () => {
+    const unitId = unitIds[11];
+    await adjust(unitId, -1_000_000, 'FINAL-B clear shared-fixture debt').expect(201);
+    expect(await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken)).toMatchObject({
+      chargeItemDebt: 0,
+      totalDebt: 0,
+      remainingPayable: 0,
+    });
+    const batch = await createDraft([unitId], 100, 'FINAL-B closed obligation');
+    await issue(batch.id).expect(200);
+    await prisma.chargeBatch.update({ where: { id: batch.id }, data: { status: 'CLOSED' } });
+    const debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
+    expect(debt.chargeItemDebt).toBe(100);
+    const obligations = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units/${unitId}/obligations`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    expect(
+      obligations.body.data.some(
+        (row: { obligationId: string }) =>
+          row.obligationId === `CHARGE_ITEM:${batch.chargeItems[0].id}`,
+      ),
+    ).toBe(true);
+    await adjust(unitId, -100, 'FINAL-B settle closed obligation').expect(201);
+    expect(
+      await prisma.chargeItem.findUniqueOrThrow({ where: { id: batch.chargeItems[0].id } }),
+    ).toMatchObject({ paidAmount: 100, status: 'PAID' });
+
+    const adjustmentRes = await adjust(unitId, 100, 'FINAL-B positive adjustment').expect(201);
+    const paymentId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.personId,
+      manager.accessToken,
+      100,
+    );
+    const allocation = await prisma.paymentAllocation.findFirstOrThrow({ where: { paymentId } });
+    expect(allocation).toMatchObject({ adjustmentId: adjustmentRes.body.data.id, amount: 100 });
+    const adjustmentBefore = await prisma.adjustment.findUniqueOrThrow({
+      where: { id: adjustmentRes.body.data.id },
+    });
+    const fundBefore = await prisma.fund.findUniqueOrThrow({ where: { id: fundId } });
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/payments/${paymentId}/refund`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ reason: 'must preserve adjustment settlement' })
+      .expect(422);
+    expect(res.body.errors[0].message).toBe(
+      'Payments allocated to obligations cannot be refunded in MVP.',
+    );
+    expect(await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } })).toMatchObject({
+      status: 'APPROVED',
+    });
+    expect(
+      await prisma.adjustment.findUniqueOrThrow({ where: { id: adjustmentBefore.id } }),
+    ).toEqual(adjustmentBefore);
+    expect(await prisma.paymentAllocation.count({ where: { paymentId } })).toBe(1);
+    expect(await prisma.refund.count({ where: { paymentId } })).toBe(0);
+    expect(await prisma.fund.findUniqueOrThrow({ where: { id: fundId } })).toEqual(fundBefore);
   });
 });

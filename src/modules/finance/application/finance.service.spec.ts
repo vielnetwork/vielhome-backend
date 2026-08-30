@@ -79,7 +79,6 @@ describe('FinanceService', () => {
       findChargeBatchById: jest.fn(),
       issueChargeBatch: jest.fn(),
       cancelChargeBatch: jest.fn(),
-      hasAnyPaidChargeItems: jest.fn(),
       listChargeItemsByUnit: jest.fn(),
       findChargeItemById: jest.fn(),
       listLateFeeEligibleCandidates: jest.fn(),
@@ -521,12 +520,17 @@ describe('FinanceService', () => {
     beforeEach(() => {
       buildings.findUnitById.mockResolvedValue({ id: 'u1', buildingId: 'b1' });
       finance.getOrCreateDefaultFund.mockResolvedValue(DEFAULT_FUND);
-      finance.applyOpeningBalanceCorrection.mockResolvedValue({ id: 'adj-1' });
+      finance.applyOpeningBalanceCorrection.mockImplementation(
+        async ({ targetBalance }: { targetBalance: number }) => ({
+          adjustment: { id: 'adj-1' },
+          previousBalance: 0,
+          newBalance: targetBalance,
+          delta: targetBalance,
+        }),
+      );
     });
 
-    it('computes the delta as targetBalance minus the current effective opening balance (first-ever correction, previous 0)', async () => {
-      finance.getUnitOpeningBalanceCorrectionTotal.mockResolvedValue(0);
-
+    it('passes targetBalance to the repository for authoritative locked delta calculation', async () => {
       await service.correctOpeningBalance(
         'b1',
         'u1',
@@ -547,7 +551,7 @@ describe('FinanceService', () => {
           unitId: 'u1',
           buildingId: 'b1',
           fundId: 'fund-default',
-          amount: 500_000,
+          targetBalance: 500_000,
           reason: 'Initial ledger correction',
           createdById: 'actor-1',
           requestId: 'req-1',
@@ -555,41 +559,7 @@ describe('FinanceService', () => {
       );
     });
 
-    it('computes a smaller positive delta when a prior correction already moved the balance partway', async () => {
-      finance.getUnitOpeningBalanceCorrectionTotal.mockResolvedValue(200_000);
-
-      await service.correctOpeningBalance(
-        'b1',
-        'u1',
-        { targetBalance: 500_000, reason: 'Top-up correction' },
-        'actor-1',
-        'req-1',
-      );
-
-      expect(finance.applyOpeningBalanceCorrection).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: 300_000 }),
-      );
-    });
-
-    it('computes a negative delta (waiver) when the target is below the current effective opening balance', async () => {
-      finance.getUnitOpeningBalanceCorrectionTotal.mockResolvedValue(500_000);
-
-      await service.correctOpeningBalance(
-        'b1',
-        'u1',
-        { targetBalance: 100_000, reason: 'Overstated originally' },
-        'actor-1',
-        'req-1',
-      );
-
-      expect(finance.applyOpeningBalanceCorrection).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: -400_000 }),
-      );
-    });
-
     it('supports a negative targetBalance (correcting to a credit)', async () => {
-      finance.getUnitOpeningBalanceCorrectionTotal.mockResolvedValue(0);
-
       await service.correctOpeningBalance(
         'b1',
         'u1',
@@ -599,12 +569,14 @@ describe('FinanceService', () => {
       );
 
       expect(finance.applyOpeningBalanceCorrection).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: -150_000 }),
+        expect.objectContaining({ targetBalance: -150_000 }),
       );
     });
 
-    it('rejects a correction whose target matches the current effective opening balance (zero delta), without calling FinanceRepository.applyOpeningBalanceCorrection', async () => {
-      finance.getUnitOpeningBalanceCorrectionTotal.mockResolvedValue(500_000);
+    it('propagates the repository zero-delta decision made after the unit lock', async () => {
+      finance.applyOpeningBalanceCorrection.mockRejectedValue(
+        new BusinessRuleViolationError('No correction is needed.'),
+      );
 
       await expect(
         service.correctOpeningBalance(
@@ -615,11 +587,12 @@ describe('FinanceService', () => {
           'req-1',
         ),
       ).rejects.toBeInstanceOf(BusinessRuleViolationError);
-      expect(finance.applyOpeningBalanceCorrection).not.toHaveBeenCalled();
+      expect(finance.applyOpeningBalanceCorrection).toHaveBeenCalledWith(
+        expect.objectContaining({ targetBalance: 500_000 }),
+      );
     });
 
     it('rejects a deactivated explicit Fund and never reaches FinanceRepository.applyOpeningBalanceCorrection', async () => {
-      finance.getUnitOpeningBalanceCorrectionTotal.mockResolvedValue(0);
       finance.findFundById.mockResolvedValue(INACTIVE_FUND);
 
       await expect(
@@ -635,7 +608,12 @@ describe('FinanceService', () => {
     });
 
     it('records an audit entry with previousBalance/newBalance/delta — the before/after snapshot manual createAdjustment does not capture', async () => {
-      finance.getUnitOpeningBalanceCorrectionTotal.mockResolvedValue(200_000);
+      finance.applyOpeningBalanceCorrection.mockResolvedValue({
+        adjustment: { id: 'adj-1' },
+        previousBalance: 200_000,
+        newBalance: 500_000,
+        delta: 300_000,
+      });
 
       await service.correctOpeningBalance(
         'b1',
@@ -664,7 +642,12 @@ describe('FinanceService', () => {
     });
 
     it('emits AdjustmentCreatedEvent with the computed delta (not the raw targetBalance)', async () => {
-      finance.getUnitOpeningBalanceCorrectionTotal.mockResolvedValue(200_000);
+      finance.applyOpeningBalanceCorrection.mockResolvedValue({
+        adjustment: { id: 'adj-1' },
+        previousBalance: 200_000,
+        newBalance: 500_000,
+        delta: 300_000,
+      });
 
       await service.correctOpeningBalance(
         'b1',
@@ -687,7 +670,12 @@ describe('FinanceService', () => {
     });
 
     it('returns previousBalance/newBalance/delta alongside the created adjustment', async () => {
-      finance.getUnitOpeningBalanceCorrectionTotal.mockResolvedValue(200_000);
+      finance.applyOpeningBalanceCorrection.mockResolvedValue({
+        adjustment: { id: 'adj-1' },
+        previousBalance: 200_000,
+        newBalance: 500_000,
+        delta: 300_000,
+      });
 
       const result = await service.correctOpeningBalance(
         'b1',
@@ -1405,18 +1393,23 @@ describe('FinanceService', () => {
   });
 
   describe('cancelChargeBatch', () => {
-    it('rejects cancelling a batch with paid ChargeItems via ChargePolicy.assertCancellable', async () => {
+    it('propagates the repository authoritative cancellation rejection', async () => {
       finance.findChargeBatchById.mockResolvedValue({
         id: 'batch-1',
         buildingId: 'b1',
         status: 'ISSUED',
       });
-      finance.hasAnyPaidChargeItems.mockResolvedValue(true);
+      finance.cancelChargeBatch.mockRejectedValue(
+        new BusinessRuleViolationError('This charge batch has payments already applied to it.'),
+      );
 
       await expect(
         service.cancelChargeBatch('b1', 'batch-1', 'actor-1', 'req-1'),
       ).rejects.toBeInstanceOf(BusinessRuleViolationError);
-      expect(finance.cancelChargeBatch).not.toHaveBeenCalled();
+      expect(finance.cancelChargeBatch).toHaveBeenCalledWith({
+        chargeBatchId: 'batch-1',
+        buildingId: 'b1',
+      });
     });
 
     it('cancels and emits ChargeBatchCancelledEvent when no payments have been applied', async () => {
@@ -1425,7 +1418,6 @@ describe('FinanceService', () => {
         buildingId: 'b1',
         status: 'ISSUED',
       });
-      finance.hasAnyPaidChargeItems.mockResolvedValue(false);
       finance.cancelChargeBatch.mockResolvedValue({ id: 'batch-1', status: 'CANCELLED' });
 
       await service.cancelChargeBatch('b1', 'batch-1', 'actor-1', 'req-1');

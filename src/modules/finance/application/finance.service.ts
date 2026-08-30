@@ -782,11 +782,9 @@ export class FinanceService {
     actorPersonId: string,
     requestId: string,
   ) {
-    const batch = await this.getChargeBatch(buildingId, chargeBatchId);
-    const hasAnyPaidAmount = await this.finance.hasAnyPaidChargeItems(chargeBatchId);
-    this.chargePolicy.assertCancellable(batch.status, hasAnyPaidAmount);
+    await this.getChargeBatch(buildingId, chargeBatchId);
 
-    const cancelled = await this.finance.cancelChargeBatch(chargeBatchId);
+    const cancelled = await this.finance.cancelChargeBatch({ chargeBatchId, buildingId });
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -1047,25 +1045,18 @@ export class FinanceService {
   ) {
     await this.getOwnUnit(buildingId, unitId);
 
-    const previousBalance = await this.finance.getUnitOpeningBalanceCorrectionTotal(unitId);
-    const delta = dto.targetBalance - previousBalance;
-    if (delta === 0) {
-      throw new BusinessRuleViolationError(
-        "The requested opening balance matches the unit's current effective opening balance; no correction is needed.",
-      );
-    }
-
     const fund = await this.resolveFundForWrite(buildingId, dto.fundId);
 
-    const adjustment = await this.finance.applyOpeningBalanceCorrection({
+    const result = await this.finance.applyOpeningBalanceCorrection({
       unitId,
       buildingId,
       fundId: fund.id,
-      amount: delta,
+      targetBalance: dto.targetBalance,
       reason: dto.reason,
       createdById: actorPersonId,
       requestId,
     });
+    const { adjustment, previousBalance, newBalance, delta } = result;
 
     await this.audit.record({
       actorId: actorPersonId,
@@ -1078,7 +1069,7 @@ export class FinanceService {
       metadata: {
         unitId,
         previousBalance,
-        newBalance: dto.targetBalance,
+        newBalance,
         delta,
       },
     });
@@ -1088,7 +1079,7 @@ export class FinanceService {
       new AdjustmentCreatedEvent(adjustment.id, buildingId, unitId, delta, actorPersonId),
     );
 
-    return { adjustment, previousBalance, newBalance: dto.targetBalance, delta };
+    return result;
   }
 
   /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. */
@@ -1210,7 +1201,12 @@ export class FinanceService {
       entityType: 'Payment',
       entityId: payment.id,
       requestId,
-      metadata: { unitId, payerPersonId: dto.payerPersonId, amount: dto.amount, method: dto.method },
+      metadata: {
+        unitId,
+        payerPersonId: dto.payerPersonId,
+        amount: dto.amount,
+        method: dto.method,
+      },
     });
 
     return payment;
