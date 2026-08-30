@@ -2985,6 +2985,145 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
 
     expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
+
+  // FIN-MVP-GAP-03B — concurrency hardening regression coverage. Each test
+  // below reports+approves its own fresh, manual-amount payment (same
+  // "voluntary payment unbacked by real debt" pattern paymentB/paymentC
+  // above already use) so it is unaffected by every other payment's
+  // history on this unit, then fires two real concurrent HTTP requests at
+  // it with `Promise.all` — the same concurrency pattern the Explicit
+  // Selection describe uses ("allows exactly one of two concurrent
+  // submissions for the same obligation") — and asserts exactly one wins.
+  // `Fund.balance` assertions are relative to the balance immediately
+  // before each test's own approval (which credits the fund by the
+  // payment's amount) so they hold regardless of whatever running total
+  // earlier tests in this describe left behind.
+  it('concurrent reverse+reverse against the same APPROVED payment: exactly one wins, Payment ends REVERSED, exactly one REVERSAL ledger entry, Fund decremented exactly once (FIN-MVP-GAP-03B)', async () => {
+    const fundBefore = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
+    const paymentDId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.accessToken,
+      300_000,
+      true,
+    );
+
+    const reverseOnce = () =>
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/payments/${paymentDId}/reverse`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ reason: 'concurrent reverse attempt' });
+
+    const responses = await Promise.all([reverseOnce(), reverseOnce()]);
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 422]);
+
+    const payment = await prisma.payment.findUnique({ where: { id: paymentDId } });
+    expect(payment?.status).toBe('REVERSED');
+
+    const reversalCount = await prisma.ledgerEntry.count({
+      where: { entryType: 'REVERSAL', referenceType: 'Payment', referenceId: paymentDId },
+    });
+    expect(reversalCount).toBe(1);
+
+    const fundAfter = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
+    // +300_000 from this test's own approval, -300_000 from exactly one
+    // winning reverse — net zero versus the balance captured before this
+    // test's approval ran.
+    expect(fundAfter?.balance).toBe(fundBefore?.balance);
+  });
+
+  it('concurrent refund+refund against the same APPROVED payment: exactly one wins, Payment ends REFUNDED, exactly one Refund row, exactly one REFUND ledger entry, Fund decremented exactly once (FIN-MVP-GAP-03B)', async () => {
+    const fundBefore = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
+    const paymentEId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.accessToken,
+      250_000,
+      true,
+    );
+
+    const refundOnce = () =>
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/payments/${paymentEId}/refund`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ reason: 'concurrent refund attempt' });
+
+    const responses = await Promise.all([refundOnce(), refundOnce()]);
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 422]);
+
+    const payment = await prisma.payment.findUnique({ where: { id: paymentEId } });
+    expect(payment?.status).toBe('REFUNDED');
+
+    const refunds = await prisma.refund.findMany({ where: { paymentId: paymentEId } });
+    expect(refunds).toHaveLength(1);
+
+    const refundLedgerCount = await prisma.ledgerEntry.count({
+      where: { entryType: 'REFUND', referenceType: 'Refund', referenceId: refunds[0].id },
+    });
+    expect(refundLedgerCount).toBe(1);
+
+    const fundAfter = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
+    expect(fundAfter?.balance).toBe(fundBefore?.balance);
+  });
+
+  it('concurrent reverse+refund against the same APPROVED payment: exactly one corrective operation wins, the loser fails, Payment ends in the winner\'s state, never both REVERSAL and REFUND effects, Fund decremented exactly once (FIN-MVP-GAP-03B)', async () => {
+    const fundBefore = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
+    const paymentFId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.accessToken,
+      400_000,
+      true,
+    );
+
+    const [reverseRes, refundRes] = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/payments/${paymentFId}/reverse`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ reason: 'concurrent mixed attempt — reverse side' }),
+      request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/payments/${paymentFId}/refund`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ reason: 'concurrent mixed attempt — refund side' }),
+    ]);
+
+    expect([reverseRes.status, refundRes.status].sort()).toEqual([201, 422]);
+
+    const payment = await prisma.payment.findUnique({ where: { id: paymentFId } });
+    expect(['REVERSED', 'REFUNDED']).toContain(payment?.status);
+
+    const reversalCount = await prisma.ledgerEntry.count({
+      where: { entryType: 'REVERSAL', referenceType: 'Payment', referenceId: paymentFId },
+    });
+    const refundRow = await prisma.refund.findFirst({ where: { paymentId: paymentFId } });
+    const refundLedgerCount = refundRow
+      ? await prisma.ledgerEntry.count({
+          where: { entryType: 'REFUND', referenceType: 'Refund', referenceId: refundRow.id },
+        })
+      : 0;
+
+    // Exactly one corrective financial effect total, never both.
+    expect(reversalCount + refundLedgerCount).toBe(1);
+
+    if (reverseRes.status === 201) {
+      expect(payment?.status).toBe('REVERSED');
+      expect(reversalCount).toBe(1);
+      expect(refundRow).toBeNull();
+    } else {
+      expect(payment?.status).toBe('REFUNDED');
+      expect(refundRow).not.toBeNull();
+      expect(refundLedgerCount).toBe(1);
+    }
+
+    const fundAfter = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
+    expect(fundAfter?.balance).toBe(fundBefore?.balance);
+  });
 });
 
 describe('Finance (e2e) — Reporting (21_ADRs > ADR-055 / ADR-057)', () => {

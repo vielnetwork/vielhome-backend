@@ -63,7 +63,7 @@ describe('FinanceRepository', () => {
       aggregate: jest.Mock;
     };
     paymentDebtSelection: { updateMany: jest.Mock };
-    refund: { aggregate: jest.Mock };
+    refund: { aggregate: jest.Mock; create: jest.Mock; findMany: jest.Mock };
     chargeBatch: { count: jest.Mock; create: jest.Mock };
     ledgerEntry: { create: jest.Mock };
     expense: {
@@ -128,7 +128,11 @@ describe('FinanceRepository', () => {
         aggregate: jest.fn(),
       },
       paymentDebtSelection: { updateMany: jest.fn() },
-      refund: { aggregate: jest.fn() },
+      refund: {
+        aggregate: jest.fn(),
+        create: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
       chargeBatch: { count: jest.fn(), create: jest.fn() },
       ledgerEntry: { create: jest.fn() },
       expense: {
@@ -392,6 +396,7 @@ describe('FinanceRepository', () => {
 
   describe('reversePayment — allocation rollback', () => {
     it('rolls back a ChargeItem allocation (decrementing paidAmount, recomputing status) and writes a REVERSAL ledger entry that decrements Fund.balance', async () => {
+      prisma.payment.findUnique.mockResolvedValue({ id: 'pay-1', status: 'APPROVED', unitId: 'u1' });
       prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
       prisma.paymentAllocation.findMany.mockResolvedValue([
         { chargeItemId: 'item-1', adjustmentId: null, amount: 40_000 },
@@ -432,6 +437,7 @@ describe('FinanceRepository', () => {
     });
 
     it('rolls back an Adjustment allocation (never touching ChargeItem) when the allocation row targets an Adjustment', async () => {
+      prisma.payment.findUnique.mockResolvedValue({ id: 'pay-1', status: 'APPROVED', unitId: 'u1' });
       prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
       prisma.paymentAllocation.findMany.mockResolvedValue([
         { chargeItemId: null, adjustmentId: 'adj-1', amount: 15_000 },
@@ -458,6 +464,7 @@ describe('FinanceRepository', () => {
     });
 
     it('clamps a CreditBalance overflow rollback at 0 rather than going negative (disclosed limitation)', async () => {
+      prisma.payment.findUnique.mockResolvedValue({ id: 'pay-1', status: 'APPROVED', unitId: 'u1' });
       prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
       prisma.paymentAllocation.findMany.mockResolvedValue([
         { chargeItemId: 'item-1', adjustmentId: null, amount: 60_000 },
@@ -487,6 +494,181 @@ describe('FinanceRepository', () => {
         where: { unitId: 'u1' },
         data: { balance: 0 },
       });
+    });
+
+    it('acquires the finance-payment:<unitId> advisory lock and re-reads authoritative Payment status before mutating (FIN-MVP-GAP-03B post-lock re-check)', async () => {
+      const callOrder: string[] = [];
+      prisma.payment.findUnique.mockImplementation(() => {
+        callOrder.push('read-payment');
+        return Promise.resolve({ id: 'pay-1', status: 'APPROVED', unitId: 'u1' });
+      });
+      prisma.$executeRaw.mockImplementation(() => {
+        callOrder.push('lock');
+        return Promise.resolve(undefined);
+      });
+      prisma.payment.update.mockImplementation(() => {
+        callOrder.push('mutate');
+        return Promise.resolve({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
+      });
+      prisma.paymentAllocation.findMany.mockResolvedValue([]);
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await repo.reversePayment({
+        paymentId: 'pay-1',
+        buildingId: 'b1',
+        fundId: 'fund-1',
+        amount: 40_000,
+        actorId: 'actor-1',
+      });
+
+      // pre-lock findUnique (for unitId) -> lock -> post-lock findUnique
+      // (authoritative re-read) -> only then the state-changing update.
+      expect(callOrder).toEqual(['read-payment', 'lock', 'read-payment', 'mutate']);
+    });
+
+    it('rejects reversing a payment that is no longer APPROVED by the time the lock is held (lost the race to a concurrent reverse/refund) and mutates nothing', async () => {
+      prisma.payment.findUnique
+        .mockResolvedValueOnce({ id: 'pay-1', status: 'APPROVED', unitId: 'u1' }) // pre-lock candidate read
+        .mockResolvedValueOnce({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' }); // post-lock authoritative re-read
+
+      await expect(
+        repo.reversePayment({
+          paymentId: 'pay-1',
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          amount: 40_000,
+          actorId: 'actor-1',
+        }),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+      expect(prisma.fund.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects reversing a payment that no longer exists (pre-lock candidate read) without acquiring the lock', async () => {
+      prisma.payment.findUnique.mockResolvedValueOnce(null);
+
+      await expect(
+        repo.reversePayment({
+          paymentId: 'missing',
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          amount: 40_000,
+          actorId: 'actor-1',
+        }),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+
+      expect(prisma.$executeRaw).not.toHaveBeenCalled();
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('createRefund — concurrency-safe lock + post-lock re-check (FIN-MVP-GAP-03B)', () => {
+    const params = {
+      paymentId: 'pay-1',
+      unitId: 'u1',
+      buildingId: 'b1',
+      fundId: 'fund-1',
+      amount: 100_000,
+      paymentAmount: 100_000,
+      reason: 'resident requested a refund',
+      createdById: 'actor-1',
+    };
+
+    it('acquires the finance-payment:<unitId> advisory lock — the SAME namespace reversePayment/approvePayment/rejectPayment use — before re-reading Payment status and the existing-refund count', async () => {
+      const callOrder: string[] = [];
+      prisma.$executeRaw.mockImplementation(() => {
+        callOrder.push('lock');
+        return Promise.resolve(undefined);
+      });
+      prisma.payment.findUnique.mockImplementation(() => {
+        callOrder.push('read-payment');
+        return Promise.resolve({ id: 'pay-1', status: 'APPROVED', unitId: 'u1' });
+      });
+      prisma.refund.findMany.mockImplementation(() => {
+        callOrder.push('read-refunds');
+        return Promise.resolve([]);
+      });
+      prisma.refund.create.mockImplementation(() => {
+        callOrder.push('create-refund');
+        return Promise.resolve({ id: 'refund-1', paymentId: 'pay-1' });
+      });
+      prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REFUNDED' });
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await repo.createRefund(params);
+
+      expect(callOrder).toEqual(['lock', 'read-payment', 'read-refunds', 'create-refund']);
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('creates the Refund, moves Payment to REFUNDED (amount equals the full paymentAmount), writes a REFUND ledger entry, and decrements Fund.balance', async () => {
+      prisma.payment.findUnique.mockResolvedValue({ id: 'pay-1', status: 'APPROVED', unitId: 'u1' });
+      prisma.refund.findMany.mockResolvedValue([]);
+      prisma.refund.create.mockResolvedValue({ id: 'refund-1', paymentId: 'pay-1' });
+      prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REFUNDED' });
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await repo.createRefund(params);
+
+      expect(prisma.payment.update).toHaveBeenCalledWith({
+        where: { id: 'pay-1' },
+        data: { status: 'REFUNDED' },
+      });
+      expect(prisma.ledgerEntry.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          entryType: 'REFUND',
+          direction: 'DEBIT',
+          amount: 100_000,
+          referenceType: 'Refund',
+          referenceId: 'refund-1',
+        }),
+      });
+      expect(prisma.fund.update).toHaveBeenCalledWith({
+        where: { id: 'fund-1' },
+        data: { balance: { decrement: 100_000 } },
+      });
+    });
+
+    it('leaves Payment APPROVED (does not flip to REFUNDED) when the refund amount is less than the full paymentAmount', async () => {
+      prisma.payment.findUnique.mockResolvedValue({ id: 'pay-1', status: 'APPROVED', unitId: 'u1' });
+      prisma.refund.findMany.mockResolvedValue([]);
+      prisma.refund.create.mockResolvedValue({ id: 'refund-1', paymentId: 'pay-1' });
+      prisma.ledgerEntry.create.mockResolvedValue({});
+      prisma.fund.update.mockResolvedValue({});
+
+      await repo.createRefund({ ...params, amount: 40_000, paymentAmount: 100_000 });
+
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects refunding a payment that is no longer APPROVED by the time the lock is held (lost the race to a concurrent reverse/refund) and creates nothing', async () => {
+      prisma.payment.findUnique.mockResolvedValue({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
+
+      await expect(repo.createRefund(params)).rejects.toBeInstanceOf(BusinessRuleViolationError);
+
+      expect(prisma.refund.findMany).not.toHaveBeenCalled();
+      expect(prisma.refund.create).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+      expect(prisma.fund.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects refunding a payment that already has a Refund, re-checked AFTER the lock (duplicate-refund race — the service-layer pre-check alone is not authoritative)', async () => {
+      prisma.payment.findUnique.mockResolvedValue({ id: 'pay-1', status: 'APPROVED', unitId: 'u1' });
+      prisma.refund.findMany.mockResolvedValue([
+        { id: 'refund-existing', paymentId: 'pay-1', amount: 100_000 },
+      ]);
+
+      await expect(repo.createRefund(params)).rejects.toBeInstanceOf(BusinessRuleViolationError);
+
+      expect(prisma.refund.create).not.toHaveBeenCalled();
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+      expect(prisma.fund.update).not.toHaveBeenCalled();
     });
   });
 

@@ -1657,6 +1657,12 @@ export class FinanceRepository {
    * later charge, clamping at 0 is the honest floor this MVP can offer —
    * there's no per-source tracking of which credit came from which
    * payment to claw back more precisely.
+   *
+   * FIN-MVP-GAP-03B — same `finance-payment:<unitId>` advisory-lock +
+   * post-lock authoritative re-read pattern as `approvePayment`/
+   * `rejectPayment` above: a concurrent reverse/refund/reverse against
+   * the same payment now serializes on this lock instead of racing on
+   * the unconditional `payment.update` this method used to open with.
    */
   reversePayment(params: {
     paymentId: string;
@@ -1667,6 +1673,14 @@ export class FinanceRepository {
     requestId?: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
+      const candidate = await tx.payment.findUnique({ where: { id: params.paymentId } });
+      if (!candidate) throw new BusinessRuleViolationError('Payment not found.');
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + candidate.unitId}))`;
+      const current = await tx.payment.findUnique({ where: { id: params.paymentId } });
+      if (!current || current.status !== 'APPROVED') {
+        throw new BusinessRuleViolationError('Only an approved payment can be reversed.');
+      }
+
       const payment = await tx.payment.update({
         where: { id: params.paymentId },
         data: { status: 'REVERSED', reversedAt: new Date() },
@@ -1743,6 +1757,14 @@ export class FinanceRepository {
    * `ChargeItem.paidAmount` (08.06 Rule 015 — see this file's own
    * `Refund` model schema comment for the reconciliation gap this can
    * create and why it's disclosed, not silently resolved).
+   *
+   * FIN-MVP-GAP-03B — same `finance-payment:<unitId>` advisory lock as
+   * `reversePayment`/`approvePayment`/`rejectPayment` (same namespace on
+   * purpose, so a concurrent reverse and refund against the same payment
+   * serialize against each other, not just refund-vs-refund), plus a
+   * post-lock authoritative re-read of `Payment.status` and the
+   * "at most one refund" check — both previously only checked once,
+   * before this transaction opened, in `FinanceService.refundPayment`.
    */
   createRefund(params: {
     paymentId: string;
@@ -1756,6 +1778,18 @@ export class FinanceRepository {
     requestId?: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + params.unitId}))`;
+
+      const current = await tx.payment.findUnique({ where: { id: params.paymentId } });
+      if (!current || current.status !== 'APPROVED') {
+        throw new BusinessRuleViolationError('Only an approved payment can be refunded.');
+      }
+
+      const existingRefunds = await tx.refund.findMany({ where: { paymentId: params.paymentId } });
+      if (existingRefunds.length > 0) {
+        throw new BusinessRuleViolationError('This payment has already been refunded.');
+      }
+
       const refund = await tx.refund.create({
         data: {
           paymentId: params.paymentId,
