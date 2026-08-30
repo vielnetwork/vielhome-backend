@@ -3156,6 +3156,11 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
 
   it('concurrent refund+refund against the same APPROVED payment: exactly one wins, Payment ends REFUNDED, exactly one Refund row, exactly one REFUND ledger entry, Fund decremented exactly once (FIN-MVP-GAP-03B)', async () => {
     const fundBefore = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
+    // paymentC left 200_000 in unit credit and paymentD's reversal preserved
+    // that earlier credit. Issuing 450_000 consumes the 200_000 credit and
+    // leaves exactly 250_000 of fresh debt, so paymentE is fully allocated
+    // and remains eligible for the refund-concurrency regression.
+    await issueFixedChargeBatch(app, buildingId, manager.accessToken, 450_000);
     const paymentEId = await reportAndApprovePayment(
       app,
       buildingId,
@@ -3193,6 +3198,10 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
 
   it("concurrent reverse+refund against the same APPROVED payment: exactly one corrective operation wins, the loser fails, Payment ends in the winner's state, never both REVERSAL and REFUND effects, Fund decremented exactly once (FIN-MVP-GAP-03B)", async () => {
     const fundBefore = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
+    // The preceding charge consumed the remaining historical unit credit.
+    // Fresh debt makes paymentF fully allocated, preserving both possible
+    // winners of this reverse-vs-refund race under the GAP-06C guard.
+    await issueFixedChargeBatch(app, buildingId, manager.accessToken, 400_000);
     const paymentFId = await reportAndApprovePayment(
       app,
       buildingId,
@@ -3245,6 +3254,225 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
 
     const fundAfter = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
     expect(fundAfter?.balance).toBe(fundBefore?.balance);
+  });
+});
+
+describe('Finance (e2e) — refund guard for payments that generated unit credit (FIN-MVP-GAP-06C)', () => {
+  // Budget: one OTP request. Each scenario creates a separate single-unit
+  // building for deterministic debt/credit state while reusing one manager.
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+  const createdBuildingIds: string[] = [];
+  let manager: RegisteredPerson;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    createdPhones.push(manager.phone);
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, createdBuildingIds);
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  async function createScenarioFixture(initialDebt = 0) {
+    const buildingId = await createBuilding(app, manager.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
+    createdBuildingIds.push(buildingId);
+    const unitsRes = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/units`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .expect(200);
+    const unitId = unitsRes.body.data[0].id as string;
+    await prisma.ownership.create({ data: { unitId, personId: manager.personId } });
+    if (initialDebt > 0) {
+      await issueFixedChargeBatch(app, buildingId, manager.accessToken, initialDebt);
+    }
+    return { buildingId, unitId };
+  }
+
+  async function expectCreditRefundRejection(params: {
+    buildingId: string;
+    unitId: string;
+    paymentId: string;
+    expectedCredit: number;
+    refundAmount?: number;
+  }) {
+    const fundBefore = await prisma.fund.findFirstOrThrow({
+      where: { buildingId: params.buildingId, isDefault: true },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${params.buildingId}/payments/${params.paymentId}/refund`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        ...(params.refundAmount === undefined ? {} : { amount: params.refundAmount }),
+        reason: 'GAP-06C guarded refund',
+      })
+      .expect(422);
+
+    expect(response.body.errors[0]).toEqual(
+      expect.objectContaining({
+        code: 'BUSINESS_RULE_VIOLATION',
+        message: 'Payments that generated unit credit cannot be refunded in MVP.',
+      }),
+    );
+    expect(await prisma.payment.findUnique({ where: { id: params.paymentId } })).toEqual(
+      expect.objectContaining({ status: 'APPROVED' }),
+    );
+    expect(await prisma.creditBalance.findUnique({ where: { unitId: params.unitId } })).toEqual(
+      expect.objectContaining({ balance: params.expectedCredit }),
+    );
+    expect(
+      await prisma.fund.findFirstOrThrow({
+        where: { buildingId: params.buildingId, isDefault: true },
+      }),
+    ).toEqual(expect.objectContaining({ balance: fundBefore.balance }));
+    expect(await prisma.refund.count({ where: { paymentId: params.paymentId } })).toBe(0);
+    expect(
+      await prisma.ledgerEntry.count({
+        where: { buildingId: params.buildingId, entryType: 'REFUND' },
+      }),
+    ).toBe(0);
+  }
+
+  it('rejects a full refund when a zero-debt payment generated only credit, with no side effects', async () => {
+    const { buildingId, unitId } = await createScenarioFixture();
+    const paymentId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.personId,
+      manager.accessToken,
+      1_000_000,
+      true,
+    );
+
+    expect(await prisma.paymentAllocation.count({ where: { paymentId } })).toBe(0);
+    expect(await prisma.creditBalance.findUnique({ where: { unitId } })).toEqual(
+      expect.objectContaining({ balance: 1_000_000 }),
+    );
+    await expectCreditRefundRejection({
+      buildingId,
+      unitId,
+      paymentId,
+      expectedCredit: 1_000_000,
+    });
+  });
+
+  it('rejects a refund when a 1,000,000 payment allocated 600,000 and generated 400,000 credit', async () => {
+    const { buildingId, unitId } = await createScenarioFixture(600_000);
+    const paymentId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.personId,
+      manager.accessToken,
+      1_000_000,
+      true,
+    );
+
+    const allocation = await prisma.paymentAllocation.aggregate({
+      where: { paymentId },
+      _sum: { amount: true },
+    });
+    expect(allocation._sum.amount).toBe(600_000);
+    await expectCreditRefundRejection({
+      buildingId,
+      unitId,
+      paymentId,
+      expectedCredit: 400_000,
+    });
+  });
+
+  it('preserves full refunds for payments whose amount was fully allocated to debt', async () => {
+    const { buildingId, unitId } = await createScenarioFixture(1_000_000);
+    const paymentId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.personId,
+      manager.accessToken,
+      1_000_000,
+    );
+    const fundBefore = await prisma.fund.findFirstOrThrow({
+      where: { buildingId, isDefault: true },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/payments/${paymentId}/refund`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({ reason: 'fully allocated payment remains refundable' })
+      .expect(201);
+
+    expect(await prisma.payment.findUnique({ where: { id: paymentId } })).toEqual(
+      expect.objectContaining({ status: 'REFUNDED' }),
+    );
+    const refund = await prisma.refund.findFirstOrThrow({ where: { paymentId } });
+    expect(
+      await prisma.ledgerEntry.count({
+        where: { entryType: 'REFUND', referenceType: 'Refund', referenceId: refund.id },
+      }),
+    ).toBe(1);
+    expect(await prisma.fund.findFirstOrThrow({ where: { buildingId, isDefault: true } })).toEqual(
+      expect.objectContaining({ balance: fundBefore.balance - 1_000_000 }),
+    );
+  });
+
+  it('still rejects the original payment after its generated credit is fully consumed by a later charge', async () => {
+    const { buildingId, unitId } = await createScenarioFixture();
+    const paymentId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.personId,
+      manager.accessToken,
+      1_000_000,
+      true,
+    );
+    await issueFixedChargeBatch(app, buildingId, manager.accessToken, 1_000_000);
+
+    expect(await prisma.creditBalance.findUnique({ where: { unitId } })).toEqual(
+      expect.objectContaining({ balance: 0 }),
+    );
+    expect(await prisma.paymentAllocation.count({ where: { paymentId } })).toBe(0);
+    await expectCreditRefundRejection({
+      buildingId,
+      unitId,
+      paymentId,
+      expectedCredit: 0,
+    });
+  });
+
+  it('rejects a partial refund against a payment that generated unit credit', async () => {
+    const { buildingId, unitId } = await createScenarioFixture();
+    const paymentId = await reportAndApprovePayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.personId,
+      manager.accessToken,
+      1_000_000,
+      true,
+    );
+
+    await expectCreditRefundRejection({
+      buildingId,
+      unitId,
+      paymentId,
+      expectedCredit: 1_000_000,
+      refundAmount: 250_000,
+    });
   });
 });
 

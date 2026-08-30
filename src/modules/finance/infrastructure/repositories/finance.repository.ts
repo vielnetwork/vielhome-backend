@@ -1830,6 +1830,22 @@ export class FinanceRepository {
         throw new BusinessRuleViolationError('Only an approved payment can be refunded.');
       }
 
+      const allocationAggregate = await tx.paymentAllocation.aggregate({
+        where: { paymentId: current.id },
+        _sum: { amount: true },
+      });
+      const allocatedTotal = allocationAggregate._sum.amount ?? 0;
+      if (allocatedTotal > current.amount) {
+        throw new BusinessRuleViolationError(
+          'Payment allocation history exceeds the payment amount.',
+        );
+      }
+      if (current.amount - allocatedTotal > 0) {
+        throw new BusinessRuleViolationError(
+          'Payments that generated unit credit cannot be refunded in MVP.',
+        );
+      }
+
       const existingRefunds = await tx.refund.findMany({ where: { paymentId: params.paymentId } });
       if (existingRefunds.length > 0) {
         throw new BusinessRuleViolationError('This payment has already been refunded.');
