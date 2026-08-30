@@ -400,8 +400,10 @@ describe('FinanceRepository', () => {
         id: 'pay-1',
         status: 'APPROVED',
         unitId: 'u1',
+        amount: 40_000,
       });
       prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
+      prisma.paymentAllocation.aggregate.mockResolvedValue({ _sum: { amount: 40_000 } });
       prisma.paymentAllocation.findMany.mockResolvedValue([
         { chargeItemId: 'item-1', adjustmentId: null, amount: 40_000 },
       ]);
@@ -445,8 +447,10 @@ describe('FinanceRepository', () => {
         id: 'pay-1',
         status: 'APPROVED',
         unitId: 'u1',
+        amount: 15_000,
       });
       prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
+      prisma.paymentAllocation.aggregate.mockResolvedValue({ _sum: { amount: 15_000 } });
       prisma.paymentAllocation.findMany.mockResolvedValue([
         { chargeItemId: null, adjustmentId: 'adj-1', amount: 15_000 },
       ]);
@@ -471,52 +475,103 @@ describe('FinanceRepository', () => {
       expect(prisma.chargeItem.update).not.toHaveBeenCalled();
     });
 
-    it('clamps a CreditBalance overflow rollback at 0 rather than going negative (disclosed limitation)', async () => {
+    it('rejects an entirely credit-producing payment before any reversal mutation', async () => {
       prisma.payment.findUnique.mockResolvedValue({
         id: 'pay-1',
         status: 'APPROVED',
         unitId: 'u1',
+        amount: 1_000_000,
       });
-      prisma.payment.update.mockResolvedValue({ id: 'pay-1', status: 'REVERSED', unitId: 'u1' });
-      prisma.paymentAllocation.findMany.mockResolvedValue([
-        { chargeItemId: 'item-1', adjustmentId: null, amount: 60_000 },
-      ]);
-      prisma.chargeItem.findUnique.mockResolvedValue({
-        id: 'item-1',
-        amount: 60_000,
-        paidAmount: 60_000,
-      });
-      prisma.chargeItem.update.mockResolvedValue({});
-      // Original payment was 100_000, only 60_000 allocated -> 40_000 overflow banked as credit.
-      // But only 10_000 of that credit remains (the rest was already spent elsewhere).
-      prisma.creditBalance.findUnique.mockResolvedValue({ unitId: 'u1', balance: 10_000 });
-      prisma.creditBalance.update.mockResolvedValue({});
-      prisma.ledgerEntry.create.mockResolvedValue({});
-      prisma.fund.update.mockResolvedValue({});
+      prisma.paymentAllocation.aggregate.mockResolvedValue({ _sum: { amount: null } });
 
-      await repo.reversePayment({
-        paymentId: 'pay-1',
-        buildingId: 'b1',
-        fundId: 'fund-1',
-        amount: 100_000,
-        actorId: 'actor-1',
-      });
+      await expect(
+        repo.reversePayment({
+          paymentId: 'pay-1',
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          amount: 1_000_000,
+          actorId: 'actor-1',
+        }),
+      ).rejects.toThrow('Payments that generated unit credit cannot be reversed in MVP.');
 
-      expect(prisma.creditBalance.update).toHaveBeenCalledWith({
-        where: { unitId: 'u1' },
-        data: { balance: 0 },
-      });
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+      expect(prisma.paymentAllocation.findMany).not.toHaveBeenCalled();
+      expect(prisma.chargeItem.update).not.toHaveBeenCalled();
+      expect(prisma.adjustment.update).not.toHaveBeenCalled();
+      expect(prisma.creditBalance.update).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+      expect(prisma.fund.update).not.toHaveBeenCalled();
     });
 
-    it('acquires the finance-payment:<unitId> advisory lock and re-reads authoritative Payment status before mutating (FIN-MVP-GAP-03B post-lock re-check)', async () => {
+    it('rejects a partially allocated payment based on its 400,000 historical credit', async () => {
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 'pay-1',
+        status: 'APPROVED',
+        unitId: 'u1',
+        amount: 1_000_000,
+      });
+      prisma.paymentAllocation.aggregate.mockResolvedValue({ _sum: { amount: 600_000 } });
+
+      await expect(
+        repo.reversePayment({
+          paymentId: 'pay-1',
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          amount: 1_000_000,
+          actorId: 'actor-1',
+        }),
+      ).rejects.toBeInstanceOf(BusinessRuleViolationError);
+
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+      expect(prisma.paymentAllocation.findMany).not.toHaveBeenCalled();
+      expect(prisma.creditBalance.update).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+      expect(prisma.fund.update).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when allocation history exceeds the authoritative payment amount', async () => {
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 'pay-1',
+        status: 'APPROVED',
+        unitId: 'u1',
+        amount: 1_000_000,
+      });
+      prisma.paymentAllocation.aggregate.mockResolvedValue({ _sum: { amount: 1_000_001 } });
+
+      await expect(
+        repo.reversePayment({
+          paymentId: 'pay-1',
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          amount: 1_000_000,
+          actorId: 'actor-1',
+        }),
+      ).rejects.toThrow('Payment allocation history exceeds the payment amount.');
+
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+      expect(prisma.paymentAllocation.findMany).not.toHaveBeenCalled();
+      expect(prisma.ledgerEntry.create).not.toHaveBeenCalled();
+      expect(prisma.fund.update).not.toHaveBeenCalled();
+    });
+
+    it('orders candidate read, advisory lock, authoritative Payment read, allocation aggregate, and only then reversal mutations', async () => {
       const callOrder: string[] = [];
       prisma.payment.findUnique.mockImplementation(() => {
         callOrder.push('read-payment');
-        return Promise.resolve({ id: 'pay-1', status: 'APPROVED', unitId: 'u1' });
+        return Promise.resolve({
+          id: 'pay-1',
+          status: 'APPROVED',
+          unitId: 'u1',
+          amount: 40_000,
+        });
       });
       prisma.$executeRaw.mockImplementation(() => {
         callOrder.push('lock');
         return Promise.resolve(undefined);
+      });
+      prisma.paymentAllocation.aggregate.mockImplementation(() => {
+        callOrder.push('aggregate-allocations');
+        return Promise.resolve({ _sum: { amount: 40_000 } });
       });
       prisma.payment.update.mockImplementation(() => {
         callOrder.push('mutate');
@@ -536,7 +591,13 @@ describe('FinanceRepository', () => {
 
       // pre-lock findUnique (for unitId) -> lock -> post-lock findUnique
       // (authoritative re-read) -> only then the state-changing update.
-      expect(callOrder).toEqual(['read-payment', 'lock', 'read-payment', 'mutate']);
+      expect(callOrder).toEqual([
+        'read-payment',
+        'lock',
+        'read-payment',
+        'aggregate-allocations',
+        'mutate',
+      ]);
     });
 
     it('rejects reversing a payment that is no longer APPROVED by the time the lock is held (lost the race to a concurrent reverse/refund) and mutates nothing', async () => {

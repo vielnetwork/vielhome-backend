@@ -1695,13 +1695,10 @@ export class FinanceRepository {
    * payment made — decrementing the affected `ChargeItem.paidAmount`
    * (recomputing status) or, as of ADR-053, the affected positive
    * `Adjustment.paidAmount` (each row allocates to exactly one of the
-   * two, never both) — rolls back any overflow that had banked into
-   * `CreditBalance` (clamped at 0), writes a REVERSAL counter-entry
-   * (08.06 Rule 014), and decrements `Fund.balance`. Disclosed edge case:
-   * if credit from this payment's overflow was already spent against a
-   * later charge, clamping at 0 is the honest floor this MVP can offer —
-   * there's no per-source tracking of which credit came from which
-   * payment to claw back more precisely.
+   * two, never both), writes a REVERSAL counter-entry (08.06 Rule 014),
+   * and decrements `Fund.balance`. Payments that generated unit credit
+   * are not reversible in MVP because CreditBalance is pooled by unit and
+   * cannot prove whether that payment's own credit remains unconsumed.
    *
    * FIN-MVP-GAP-03B — same `finance-payment:<unitId>` advisory-lock +
    * post-lock authoritative re-read pattern as `approvePayment`/
@@ -1726,6 +1723,22 @@ export class FinanceRepository {
         throw new BusinessRuleViolationError('Only an approved payment can be reversed.');
       }
 
+      const allocationAggregate = await tx.paymentAllocation.aggregate({
+        where: { paymentId: current.id },
+        _sum: { amount: true },
+      });
+      const allocatedTotal = allocationAggregate._sum.amount ?? 0;
+      if (allocatedTotal > current.amount) {
+        throw new BusinessRuleViolationError(
+          'Payment allocation history exceeds the payment amount.',
+        );
+      }
+      if (current.amount - allocatedTotal > 0) {
+        throw new BusinessRuleViolationError(
+          'Payments that generated unit credit cannot be reversed in MVP.',
+        );
+      }
+
       const payment = await tx.payment.update({
         where: { id: params.paymentId },
         data: { status: 'REVERSED', reversedAt: new Date() },
@@ -1734,9 +1747,7 @@ export class FinanceRepository {
       const allocations = await tx.paymentAllocation.findMany({
         where: { paymentId: params.paymentId },
       });
-      let totalAllocated = 0;
       for (const alloc of allocations) {
-        totalAllocated += alloc.amount;
         if (alloc.chargeItemId) {
           const item = await tx.chargeItem.findUnique({ where: { id: alloc.chargeItemId } });
           if (item) {
@@ -1758,18 +1769,6 @@ export class FinanceRepository {
               data: { paidAmount: newPaidAmount },
             });
           }
-        }
-      }
-
-      const overflow = params.amount - totalAllocated;
-      if (overflow > 0) {
-        const credit = await tx.creditBalance.findUnique({ where: { unitId: payment.unitId } });
-        if (credit) {
-          const newBalance = Math.max(0, credit.balance - overflow);
-          await tx.creditBalance.update({
-            where: { unitId: payment.unitId },
-            data: { balance: newBalance },
-          });
         }
       }
 
