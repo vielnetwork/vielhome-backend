@@ -274,8 +274,18 @@ export class FinanceController {
     return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
+  /**
+   * FIN-MVP-GAP-04C — the controlled Manual / On-Behalf Payment contract.
+   * Restricted to MANAGER/ACCOUNTANT of the building (`RolesGuard`, same
+   * pattern as `correctOpeningBalance`/`createAdjustment` below) — an
+   * ordinary Owner/Tenant/member can no longer call this route merely by
+   * being a building member. Resident self-service stays on
+   * `createExplicitPayment` below, unchanged. See `CreatePaymentDto`'s own
+   * doc comment for the `payerPersonId`/`idempotencyKey` contract.
+   */
   @Post(':id/units/:unitId/payments')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
   createPayment(
     @Param('id') id: string,
     @Param('unitId') unitId: string,

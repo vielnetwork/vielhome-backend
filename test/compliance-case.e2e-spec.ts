@@ -103,6 +103,14 @@ function nextPostalCode(): string {
   return `${RUN_ID}${postalCodeCounter.toString().padStart(5, '0')}`;
 }
 
+// FIN-MVP-GAP-04C — `CreatePaymentDto.idempotencyKey` is now required;
+// same counter-based uniqueness as `finance.e2e-spec.ts`'s own helper.
+let idempotencyCounter = 0;
+function nextIdempotencyKey(label = 'pay'): string {
+  idempotencyCounter += 1;
+  return `${RUN_ID}-${label}-${idempotencyCounter}`;
+}
+
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
   const moduleFixture: TestingModule = await Test.createTestingModule({
     imports: [AppModule],
@@ -1004,6 +1012,11 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
       .expect(200);
     unitId = unitsRes.body.data[0].id;
 
+    // FIN-MVP-GAP-04C — `founder` (the building's MANAGER) needs real
+    // Ownership of `unitId` to be an eligible `payerPersonId`; a
+    // skeleton-unit building founder is never auto-linked as owner.
+    await prisma.ownership.create({ data: { unitId, personId: founder.personId } });
+
     // Finance QA correction (physical-device duplicate-payment bug,
     // 2026-08): `POST .../payments` now validates a non-manual `amount`
     // against the unit's confirmed-debt-derived `remainingPayable`
@@ -1020,7 +1033,13 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
       const reportRes = await request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
         .set('Authorization', `Bearer ${founder.accessToken}`)
-        .send({ amount: 100_000 * (i + 1), method: 'CASH', isManualAmount: true })
+        .send({
+          amount: 100_000 * (i + 1),
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: founder.personId,
+          idempotencyKey: nextIdempotencyKey(`financial-anomaly-${i}`),
+        })
         .expect(201);
 
       const paymentId = reportRes.body.data.id as string;

@@ -119,6 +119,7 @@ describe('FinanceService', () => {
       findUnitById: jest.fn(),
       findCurrentTenancyForUnit: jest.fn().mockResolvedValue(null),
       getCurrentOwnerPersonIds: jest.fn().mockResolvedValue([]),
+      isCurrentOwnerOfUnit: jest.fn().mockResolvedValue(false),
       getRoles: jest.fn().mockResolvedValue([]),
     };
     audit = { record: jest.fn() };
@@ -357,12 +358,19 @@ describe('FinanceService', () => {
     it('createPayment rejects a deactivated explicit Fund and never reaches FinanceRepository.createPayment', async () => {
       finance.findFundById.mockResolvedValue(INACTIVE_FUND);
       buildings.findUnitById.mockResolvedValue({ id: 'u1', buildingId: 'b1' });
+      buildings.isCurrentOwnerOfUnit.mockResolvedValue(true);
 
       await expect(
         service.createPayment(
           'b1',
           'u1',
-          { amount: 50_000, method: 'CASH', fundId: 'fund-2' },
+          {
+            amount: 50_000,
+            method: 'CASH',
+            fundId: 'fund-2',
+            payerPersonId: 'owner-1',
+            idempotencyKey: 'idem-1',
+          },
           'actor-1',
           'req-1',
         ),
@@ -373,30 +381,50 @@ describe('FinanceService', () => {
     it('createPayment succeeds against an explicit active Fund, defaulting isManualAmount to false', async () => {
       finance.findFundById.mockResolvedValue(ACTIVE_FUND);
       buildings.findUnitById.mockResolvedValue({ id: 'u1', buildingId: 'b1' });
+      buildings.isCurrentOwnerOfUnit.mockResolvedValue(true);
       finance.createPayment.mockResolvedValue({ id: 'pay-1' });
 
       await service.createPayment(
         'b1',
         'u1',
-        { amount: 50_000, method: 'CASH', fundId: 'fund-1' },
+        {
+          amount: 50_000,
+          method: 'CASH',
+          fundId: 'fund-1',
+          payerPersonId: 'owner-1',
+          idempotencyKey: 'idem-1',
+        },
         'actor-1',
         'req-1',
       );
 
       expect(finance.createPayment).toHaveBeenCalledWith(
-        expect.objectContaining({ fundId: 'fund-1', isManualAmount: false }),
+        expect.objectContaining({
+          fundId: 'fund-1',
+          isManualAmount: false,
+          payerId: 'owner-1',
+          idempotencyKey: 'idem-1',
+        }),
       );
     });
 
     it('createPayment forwards an explicit isManualAmount: true through to FinanceRepository (Finance QA correction)', async () => {
       finance.findFundById.mockResolvedValue(ACTIVE_FUND);
       buildings.findUnitById.mockResolvedValue({ id: 'u1', buildingId: 'b1' });
+      buildings.isCurrentOwnerOfUnit.mockResolvedValue(true);
       finance.createPayment.mockResolvedValue({ id: 'pay-1' });
 
       await service.createPayment(
         'b1',
         'u1',
-        { amount: 50_000, method: 'CASH', fundId: 'fund-1', isManualAmount: true },
+        {
+          amount: 50_000,
+          method: 'CASH',
+          fundId: 'fund-1',
+          isManualAmount: true,
+          payerPersonId: 'owner-1',
+          idempotencyKey: 'idem-1',
+        },
         'actor-1',
         'req-1',
       );
@@ -409,6 +437,7 @@ describe('FinanceService', () => {
     it('propagates FinanceRepository.createPayment rejecting a manual-less amount that exceeds remaining payable', async () => {
       finance.findFundById.mockResolvedValue(ACTIVE_FUND);
       buildings.findUnitById.mockResolvedValue({ id: 'u1', buildingId: 'b1' });
+      buildings.isCurrentOwnerOfUnit.mockResolvedValue(true);
       finance.createPayment.mockRejectedValue(
         new BusinessRuleViolationError(
           "This amount exceeds the unit's remaining payable amount (0).",
@@ -419,7 +448,13 @@ describe('FinanceService', () => {
         service.createPayment(
           'b1',
           'u1',
-          { amount: 35_003_000, method: 'CASH', fundId: 'fund-1' },
+          {
+            amount: 35_003_000,
+            method: 'CASH',
+            fundId: 'fund-1',
+            payerPersonId: 'owner-1',
+            idempotencyKey: 'idem-1',
+          },
           'actor-1',
           'req-1',
         ),

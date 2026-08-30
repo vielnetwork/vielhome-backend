@@ -82,6 +82,17 @@ function nextPostalCode(): string {
   return `${RUN_ID}${postalCodeCounter.toString().padStart(5, '0')}`;
 }
 
+// FIN-MVP-GAP-04C — `CreatePaymentDto.idempotencyKey` is now required.
+// Every fixture call site below needs a distinct, stable key (reused only
+// where a test intentionally exercises exact-replay behavior), so this
+// mirrors `nextPhone`/`nextPostalCode`'s own counter-based uniqueness
+// rather than `Date.now()` (which two same-millisecond calls could share).
+let idempotencyCounter = 0;
+function nextIdempotencyKey(label = 'pay'): string {
+  idempotencyCounter += 1;
+  return `${RUN_ID}-${label}-${idempotencyCounter}`;
+}
+
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
   const moduleFixture: TestingModule = await Test.createTestingModule({
     imports: [AppModule],
@@ -363,8 +374,10 @@ async function issueFixedChargeBatch(
 }
 
 /**
- * Reports a payment on `unitId` as `accessToken`, returns its id
- * (PENDING_APPROVAL). Finance QA correction (physical-device duplicate-
+ * Reports a payment on `unitId` as `reporterAccessToken` (must be a
+ * MANAGER/ACCOUNTANT of the building — FIN-MVP-GAP-04C's `RolesGuard`),
+ * naming `payerPersonId` as the economic payer, returns the new Payment's
+ * id (PENDING_APPROVAL). Finance QA correction (physical-device duplicate-
  * payment bug, 2026-08) — `POST .../payments` now validates a non-manual
  * `amount` against the unit's current remaining payable
  * (`FinanceRepository.computeDebtSnapshot`'s own doc comment); every
@@ -374,41 +387,68 @@ async function issueFixedChargeBatch(
  * sites (documented at each one) that report a payment un-backed by real
  * debt on purpose — those pass `isManualAmount: true`, the same explicit
  * signal Mobile's "I'll enter the amount myself" checkbox now sends.
+ *
+ * FIN-MVP-GAP-04C — `payerPersonId` is now a required, separately-
+ * validated field (`FinanceService.assertValidPayerForUnit`) and
+ * `idempotencyKey` is now required too; every pre-existing call site was
+ * migrated to pass a real, unit-eligible `payerPersonId` (reusing
+ * whichever fixture person in that describe already qualifies as the
+ * unit's current tenant/owner, seeding a real `Ownership`/`Tenancy` row
+ * where none existed before) and an auto-generated, unique
+ * `idempotencyKey` via `nextIdempotencyKey()` unless the caller passes
+ * one explicitly (only where a test intentionally exercises exact-replay/
+ * conflict behavior).
  */
 async function reportPayment(
   app: INestApplication,
   buildingId: string,
   unitId: string,
-  accessToken: string,
+  reporterAccessToken: string,
+  payerPersonId: string,
   amount: number,
   isManualAmount = false,
+  idempotencyKey?: string,
 ): Promise<string> {
   const res = await request(app.getHttpServer())
     .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
-    .set('Authorization', `Bearer ${accessToken}`)
-    .send({ amount, method: 'CASH', isManualAmount })
+    .set('Authorization', `Bearer ${reporterAccessToken}`)
+    .send({
+      amount,
+      method: 'CASH',
+      isManualAmount,
+      payerPersonId,
+      idempotencyKey: idempotencyKey ?? nextIdempotencyKey('reportPayment'),
+    })
     .expect(201);
   return res.body.data.id as string;
 }
 
 /** Reports and immediately approves a payment on `unitId` — the shortest
- * path from "nothing" to a real APPROVED, allocated Payment. */
+ * path from "nothing" to a real APPROVED, allocated Payment.
+ * `reporterAccessToken` (must be MANAGER/ACCOUNTANT) reports it naming
+ * `payerPersonId` as payer; `managerAccessToken` (also MANAGER/ACCOUNTANT)
+ * approves it — the two are commonly the same token, but kept separate
+ * since approval and reporting are independently role-gated. */
 async function reportAndApprovePayment(
   app: INestApplication,
   buildingId: string,
   unitId: string,
   reporterAccessToken: string,
+  payerPersonId: string,
   managerAccessToken: string,
   amount: number,
   isManualAmount = false,
+  idempotencyKey?: string,
 ): Promise<string> {
   const paymentId = await reportPayment(
     app,
     buildingId,
     unitId,
     reporterAccessToken,
+    payerPersonId,
     amount,
     isManualAmount,
+    idempotencyKey,
   );
   await request(app.getHttpServer())
     .patch(`/api/v1/buildings/${buildingId}/payments/${paymentId}/approve`)
@@ -1650,6 +1690,15 @@ describe('Finance (e2e) — Payment Lifecycle & Allocation (ADR-023/ADR-037/ADR-
     outsider = await registerPerson(app);
     createdPhones.push(outsider.phone);
     await joinBuildingAsApprovedMember(app, buildingId, outsider.accessToken, manager.accessToken);
+
+    // FIN-MVP-GAP-04C — `outsider` is deliberately given real `Ownership`
+    // of BOTH units (not just a building-level OWNER `Membership`, which
+    // `assertValidPayerForUnit` never reads — see this suite's own
+    // top-of-file investigation note) so they qualify as a valid
+    // `payerPersonId` for the "manager reports on an owner's behalf"
+    // tests below, on whichever of the two units each test needs.
+    await prisma.ownership.create({ data: { unitId: unit1Id, personId: outsider.personId } });
+    await prisma.ownership.create({ data: { unitId: unit2Id, personId: outsider.personId } });
   });
 
   afterAll(async () => {
@@ -1660,12 +1709,40 @@ describe('Finance (e2e) — Payment Lifecycle & Allocation (ADR-023/ADR-037/ADR-
 
   let payment1Id: string;
 
-  it('lets any current member report a payment — no role gate on reporting', async () => {
-    payment1Id = await reportPayment(app, buildingId, unit1Id, outsider.accessToken, 1_000_000);
+  it('rejects a plain member (approved OWNER, no unit-level Ownership at all matters not — role alone is not enough) from reporting a payment directly (403 AUTHORIZATION_ERROR)', async () => {
+    // FIN-MVP-GAP-04C removed the old "any current member may report" rule
+    // (§1 of the frozen contract) — `outsider` is a real building member
+    // (and, as of the seed above, even holds real Ownership of unit1Id),
+    // but `RolesGuard` rejects them before `assertValidPayerForUnit` is
+    // ever reached: only MANAGER/ACCOUNTANT may call this route now.
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/buildings/${buildingId}/units/${unit1Id}/payments`)
+      .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .send({
+        amount: 1_000_000,
+        method: 'CASH',
+        payerPersonId: outsider.personId,
+        idempotencyKey: nextIdempotencyKey('outsider-self-report'),
+      })
+      .expect(403);
+
+    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+  });
+
+  it("lets the manager report a payment on behalf of the unit's real owner — payerId is the owner, not the reporting manager", async () => {
+    payment1Id = await reportPayment(
+      app,
+      buildingId,
+      unit1Id,
+      manager.accessToken,
+      outsider.personId,
+      1_000_000,
+    );
 
     const payment = await prisma.payment.findUnique({ where: { id: payment1Id } });
     expect(payment?.status).toBe('PENDING_APPROVAL');
     expect(payment?.payerId).toBe(outsider.personId);
+    expect(payment?.payerId).not.toBe(manager.personId);
   });
 
   it('blocks a non-ACCOUNTANT/non-MANAGER member from approving a payment (403)', async () => {
@@ -1723,7 +1800,14 @@ describe('Finance (e2e) — Payment Lifecycle & Allocation (ADR-023/ADR-037/ADR-
   let payment2Id: string;
 
   it('lets the manager reject a payment, leaving its ChargeItem untouched', async () => {
-    payment2Id = await reportPayment(app, buildingId, unit2Id, outsider.accessToken, 500_000);
+    payment2Id = await reportPayment(
+      app,
+      buildingId,
+      unit2Id,
+      manager.accessToken,
+      outsider.personId,
+      500_000,
+    );
 
     await request(app.getHttpServer())
       .patch(`/api/v1/buildings/${buildingId}/payments/${payment2Id}/reject`)
@@ -1753,8 +1837,13 @@ describe('Finance (e2e) — Payment Lifecycle & Allocation (ADR-023/ADR-037/ADR-
   it('rejects reporting a non-positive payment amount (VALIDATION_ERROR)', async () => {
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/units/${unit2Id}/payments`)
-      .set('Authorization', `Bearer ${outsider.accessToken}`)
-      .send({ amount: -100, method: 'CASH' })
+      .set('Authorization', `Bearer ${manager.accessToken}`)
+      .send({
+        amount: -100,
+        method: 'CASH',
+        payerPersonId: outsider.personId,
+        idempotencyKey: nextIdempotencyKey('non-positive'),
+      })
       .expect(400);
 
     expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
@@ -1787,6 +1876,13 @@ describe('Finance (e2e) — Adjustments & Unit Debt (21_ADRs > ADR-037/ADR-053)'
     unitId = unitsRes.body.data[0].id;
 
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 500_000);
+
+    // FIN-MVP-GAP-04C — this describe's only payment call site needs a
+    // real, unit-eligible `payerPersonId`; `manager` has no Ownership/
+    // Tenancy on `unitId` by default (a skeleton-unit building founder is
+    // never auto-linked as owner), so seed it directly, same as every
+    // other describe below.
+    await prisma.ownership.create({ data: { unitId, personId: manager.personId } });
   });
 
   afterAll(async () => {
@@ -1867,6 +1963,7 @@ describe('Finance (e2e) — Adjustments & Unit Debt (21_ADRs > ADR-037/ADR-053)'
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       manager.accessToken,
       450_000,
     );
@@ -1961,6 +2058,13 @@ describe('Finance (e2e) — Opening Balance Correction (Finance Correction Pass,
     });
 
     await joinBuildingAsApprovedMember(app, buildingId, owner.accessToken, manager.accessToken);
+
+    // FIN-MVP-GAP-04C — `owner` is only an approved building-level OWNER
+    // member so far (no unit-level Ownership — `assertValidPayerForUnit`
+    // never reads Membership); give them real Ownership of `unitId` so
+    // they qualify as `payerPersonId` for this describe's own payment
+    // call site below, same seed pattern used throughout this file.
+    await prisma.ownership.create({ data: { unitId, personId: owner.personId } });
   });
 
   afterAll(async () => {
@@ -2100,6 +2204,7 @@ describe('Finance (e2e) — Opening Balance Correction (Finance Correction Pass,
       buildingId,
       unitId,
       manager.accessToken,
+      owner.personId,
       manager.accessToken,
       350_000,
     );
@@ -2791,6 +2896,10 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
     unitId = unitsRes.body.data[0].id;
 
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 1_000_000);
+
+    // FIN-MVP-GAP-04C — same manager-as-own-unit-owner seed as every
+    // other manager-only fixture describe in this file.
+    await prisma.ownership.create({ data: { unitId, personId: manager.personId } });
   });
 
   afterAll(async () => {
@@ -2808,6 +2917,7 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       manager.accessToken,
       1_000_000,
     );
@@ -2827,7 +2937,15 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
     // so it reports manually (matching the same "voluntary payment while
     // remaining payable is already zero" intent the zero-debt/credit
     // Mobile flow explicitly allows).
-    paymentBId = await reportPayment(app, buildingId, unitId, manager.accessToken, 1_000_000, true);
+    paymentBId = await reportPayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.personId,
+      1_000_000,
+      true,
+    );
 
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/payments/${paymentBId}/reverse`)
@@ -2937,6 +3055,7 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       manager.accessToken,
       200_000,
       true,
@@ -3005,6 +3124,7 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       manager.accessToken,
       300_000,
       true,
@@ -3041,6 +3161,7 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       manager.accessToken,
       250_000,
       true,
@@ -3070,13 +3191,14 @@ describe('Finance (e2e) — Payment Reversal & Refund (21_ADRs > ADR-037/ADR-041
     expect(fundAfter?.balance).toBe(fundBefore?.balance);
   });
 
-  it('concurrent reverse+refund against the same APPROVED payment: exactly one corrective operation wins, the loser fails, Payment ends in the winner\'s state, never both REVERSAL and REFUND effects, Fund decremented exactly once (FIN-MVP-GAP-03B)', async () => {
+  it("concurrent reverse+refund against the same APPROVED payment: exactly one corrective operation wins, the loser fails, Payment ends in the winner's state, never both REVERSAL and REFUND effects, Fund decremented exactly once (FIN-MVP-GAP-03B)", async () => {
     const fundBefore = await prisma.fund.findFirst({ where: { buildingId, isDefault: true } });
     const paymentFId = await reportAndApprovePayment(
       app,
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       manager.accessToken,
       400_000,
       true,
@@ -3156,6 +3278,10 @@ describe('Finance (e2e) — Reporting (21_ADRs > ADR-055 / ADR-057)', () => {
     unit2Id = unitsRes.body.data[1].id;
 
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 1_000_000);
+    // FIN-MVP-GAP-04C — manager needs real Ownership of both units to be
+    // an eligible `payerPersonId` for the two payments reported below.
+    await prisma.ownership.create({ data: { unitId: unit1Id, personId: manager.personId } });
+    await prisma.ownership.create({ data: { unitId: unit2Id, personId: manager.personId } });
     // Fully paid on unit1 (approved), merely reported (still pending) on
     // unit2 — deliberately leaves one unit's debt outstanding so
     // totalOutstanding/collectionRate below are non-trivial fractions, not
@@ -3165,10 +3291,11 @@ describe('Finance (e2e) — Reporting (21_ADRs > ADR-055 / ADR-057)', () => {
       buildingId,
       unit1Id,
       manager.accessToken,
+      manager.personId,
       manager.accessToken,
       1_000_000,
     );
-    await reportPayment(app, buildingId, unit2Id, manager.accessToken, 500_000);
+    await reportPayment(app, buildingId, unit2Id, manager.accessToken, manager.personId, 500_000);
 
     // ADR-077 round-4 finding: same gap as the "rejects a refund amount
     // greater than the original payment" fix (round-1, commit `705b941`)
@@ -3573,7 +3700,17 @@ describe('Finance (e2e) — Regression Hardening: Cross-Building Isolation (Fina
 
     chargeBatchAId = await issueFixedChargeBatch(app, buildingAId, managerA.accessToken, 100_000);
 
-    paymentAId = await reportPayment(app, buildingAId, unitAId, managerA.accessToken, 50_000);
+    // FIN-MVP-GAP-04C — managerA needs real Ownership of unitAId to be an
+    // eligible `payerPersonId` for this describe's own payment fixture.
+    await prisma.ownership.create({ data: { unitId: unitAId, personId: managerA.personId } });
+    paymentAId = await reportPayment(
+      app,
+      buildingAId,
+      unitAId,
+      managerA.accessToken,
+      managerA.personId,
+      50_000,
+    );
 
     // Adjustment has no dedicated single-adjustment-detail route — its
     // isolation boundary is exercised below via the unit-scoped
@@ -3751,6 +3888,10 @@ describe('Finance (e2e) — Fund Inactive Restriction Enforcement (Finance Harde
       .patch(`/api/v1/buildings/${buildingId}/funds/${fundId}/deactivate`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
+
+    // FIN-MVP-GAP-04C — the "rejects createPayment against an inactive
+    // fund" test below needs a real, unit-eligible `payerPersonId`.
+    await prisma.ownership.create({ data: { unitId, personId: manager.personId } });
   });
 
   afterAll(async () => {
@@ -3791,7 +3932,13 @@ describe('Finance (e2e) — Fund Inactive Restriction Enforcement (Finance Harde
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
-      .send({ fundId, amount: 5_000, method: 'CASH' })
+      .send({
+        fundId,
+        amount: 5_000,
+        method: 'CASH',
+        payerPersonId: manager.personId,
+        idempotencyKey: nextIdempotencyKey('inactive-fund'),
+      })
       .expect(422);
     expect(res.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
   });
@@ -4145,6 +4292,14 @@ describe('Finance (e2e) — Payment Status Filter (Backend ↔ Mobile Contract A
     unitId = unitsRes.body.data[0].id;
     unitNumber = unitsRes.body.data[0].unitNumber;
 
+    // FIN-MVP-GAP-04C — `reporter` is only an approved building-level
+    // OWNER member (no unit-level Ownership yet), and can no longer call
+    // the manual-payment route directly at all (RolesGuard now requires
+    // MANAGER/ACCOUNTANT). Every report below is now made BY the manager
+    // ON BEHALF OF `reporter`, who is given real Ownership of `unitId` so
+    // they remain a valid `payerPersonId`.
+    await prisma.ownership.create({ data: { unitId, personId: reporter.personId } });
+
     // One of each status this filter needs to distinguish between —
     // deliberately NOT all PENDING_APPROVAL, so a status-blind query would
     // return all three and a correctly-filtered one would return exactly
@@ -4156,7 +4311,8 @@ describe('Finance (e2e) — Payment Status Filter (Backend ↔ Mobile Contract A
       app,
       buildingId,
       unitId,
-      reporter.accessToken,
+      manager.accessToken,
+      reporter.personId,
       manager.accessToken,
       10_000,
       true,
@@ -4166,7 +4322,8 @@ describe('Finance (e2e) — Payment Status Filter (Backend ↔ Mobile Contract A
       app,
       buildingId,
       unitId,
-      reporter.accessToken,
+      manager.accessToken,
+      reporter.personId,
       20_000,
       true,
     );
@@ -4180,7 +4337,8 @@ describe('Finance (e2e) — Payment Status Filter (Backend ↔ Mobile Contract A
       app,
       buildingId,
       unitId,
-      reporter.accessToken,
+      manager.accessToken,
+      reporter.personId,
       30_000,
       true,
     );
@@ -4426,6 +4584,9 @@ describe('Finance (e2e) — Remaining Payable: Example A, full payment pending (
       .expect(200);
     unitId = unitsRes.body.data[0].id;
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 35_003_000);
+    // FIN-MVP-GAP-04C — manager needs real Ownership of unitId to be an
+    // eligible `payerPersonId` for this describe's own payments below.
+    await prisma.ownership.create({ data: { unitId, personId: manager.personId } });
   });
 
   afterAll(async () => {
@@ -4442,7 +4603,14 @@ describe('Finance (e2e) — Remaining Payable: Example A, full payment pending (
     expect(debt.pendingPaymentAmount).toBe(0);
     expect(debt.remainingPayable).toBe(35_003_000);
 
-    const paymentId = await reportPayment(app, buildingId, unitId, manager.accessToken, 35_003_000);
+    const paymentId = await reportPayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      manager.personId,
+      35_003_000,
+    );
 
     // Pending: totalDebt unchanged, pendingPaymentAmount increases,
     // remainingPayable decreases.
@@ -4456,7 +4624,13 @@ describe('Finance (e2e) — Remaining Payable: Example A, full payment pending (
     const dup = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
-      .send({ amount: 35_003_000, method: 'CASH', isManualAmount: false })
+      .send({
+        amount: 35_003_000,
+        method: 'CASH',
+        isManualAmount: false,
+        payerPersonId: manager.personId,
+        idempotencyKey: nextIdempotencyKey('example-a-dup'),
+      })
       .expect(422);
     expect(dup.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
 
@@ -4489,6 +4663,7 @@ describe('Finance (e2e) — Remaining Payable: Example A, full payment pending (
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       35_003_000,
     );
     await request(app.getHttpServer())
@@ -4535,6 +4710,10 @@ describe('Finance (e2e) — Remaining Payable: Example B, partial payment pendin
     unitAId = unitsRes.body.data[0].id;
     unitBId = unitsRes.body.data[1].id;
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 35_003_000);
+    // FIN-MVP-GAP-04C — manager needs real Ownership of both units to be
+    // an eligible `payerPersonId` for the payments reported below.
+    await prisma.ownership.create({ data: { unitId: unitAId, personId: manager.personId } });
+    await prisma.ownership.create({ data: { unitId: unitBId, personId: manager.personId } });
   });
 
   afterAll(async () => {
@@ -4548,7 +4727,14 @@ describe('Finance (e2e) — Remaining Payable: Example B, partial payment pendin
     expect(debt.totalDebt).toBe(35_003_000);
     expect(debt.remainingPayable).toBe(35_003_000);
 
-    await reportPayment(app, buildingId, unitAId, manager.accessToken, 10_000_000);
+    await reportPayment(
+      app,
+      buildingId,
+      unitAId,
+      manager.accessToken,
+      manager.personId,
+      10_000_000,
+    );
 
     debt = await getUnitDebtSnapshot(app, buildingId, unitAId, manager.accessToken);
     expect(debt.totalDebt).toBe(35_003_000);
@@ -4560,12 +4746,25 @@ describe('Finance (e2e) — Remaining Payable: Example B, partial payment pendin
     const rejected = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/units/${unitAId}/payments`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
-      .send({ amount: 35_003_000, method: 'CASH', isManualAmount: false })
+      .send({
+        amount: 35_003_000,
+        method: 'CASH',
+        isManualAmount: false,
+        payerPersonId: manager.personId,
+        idempotencyKey: nextIdempotencyKey('example-b-rejected'),
+      })
       .expect(422);
     expect(rejected.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
 
     // A non-manual report for exactly the remaining 25,003,000 is accepted.
-    await reportPayment(app, buildingId, unitAId, manager.accessToken, 25_003_000);
+    await reportPayment(
+      app,
+      buildingId,
+      unitAId,
+      manager.accessToken,
+      manager.personId,
+      25_003_000,
+    );
 
     const afterBoth = await getUnitDebtSnapshot(app, buildingId, unitAId, manager.accessToken);
     expect(afterBoth.pendingPaymentAmount).toBe(35_003_000);
@@ -4581,6 +4780,7 @@ describe('Finance (e2e) — Remaining Payable: Example B, partial payment pendin
       buildingId,
       unitBId,
       manager.accessToken,
+      manager.personId,
       10_000_000,
     );
 
@@ -4625,6 +4825,9 @@ describe('Finance (e2e) — Remaining Payable: multiple pending payments sum cor
       .expect(200);
     unitId = unitsRes.body.data[0].id;
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 1_000_000);
+    // FIN-MVP-GAP-04C — manager needs real Ownership of unitId to be an
+    // eligible `payerPersonId` for the payments reported below.
+    await prisma.ownership.create({ data: { unitId, personId: manager.personId } });
   });
 
   afterAll(async () => {
@@ -4634,8 +4837,8 @@ describe('Finance (e2e) — Remaining Payable: multiple pending payments sum cor
   });
 
   it('several legitimate pending payments sum correctly against a known 1,000,000 confirmed debt', async () => {
-    await reportPayment(app, buildingId, unitId, manager.accessToken, 200_000);
-    await reportPayment(app, buildingId, unitId, manager.accessToken, 300_000);
+    await reportPayment(app, buildingId, unitId, manager.accessToken, manager.personId, 200_000);
+    await reportPayment(app, buildingId, unitId, manager.accessToken, manager.personId, 300_000);
 
     let debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
     expect(debt.totalDebt).toBe(1_000_000);
@@ -4643,7 +4846,7 @@ describe('Finance (e2e) — Remaining Payable: multiple pending payments sum cor
     expect(debt.remainingPayable).toBe(500_000);
 
     // A third non-manual report for exactly the remainder succeeds...
-    await reportPayment(app, buildingId, unitId, manager.accessToken, 500_000);
+    await reportPayment(app, buildingId, unitId, manager.accessToken, manager.personId, 500_000);
     // ...and now remainingPayable is fully reserved.
     debt = await getUnitDebtSnapshot(app, buildingId, unitId, manager.accessToken);
     expect(debt.pendingPaymentAmount).toBe(1_000_000);
@@ -4675,6 +4878,9 @@ describe('Finance (e2e) — Remaining Payable: concurrency (Finance QA Correctio
     // Exactly one charge batch on a fresh, dedicated single-unit building —
     // remainingPayable is known and exact: 1,000,000, zero pending.
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 1_000_000);
+    // FIN-MVP-GAP-04C — manager needs real Ownership of unitId to be an
+    // eligible `payerPersonId` for the concurrent payments below.
+    await prisma.ownership.create({ data: { unitId, personId: manager.personId } });
   });
 
   afterAll(async () => {
@@ -4693,16 +4899,33 @@ describe('Finance (e2e) — Remaining Payable: concurrency (Finance QA Correctio
     // payable is 1,000,000" view — proving the per-unit
     // `pg_advisory_xact_lock` (not just a pre-transaction read) is what
     // actually prevents the double-spend, since a naive read-then-write
-    // race would let both of these slip through.
+    // race would let both of these slip through. Deliberately DISTINCT
+    // `idempotencyKey`s — this test is proving the remaining-payable
+    // ceiling's own concurrency safety, not idempotent-replay behavior
+    // (that has its own dedicated coverage below); a shared key would
+    // make the second request resolve as a replay of the first instead of
+    // a genuine second attempt against the (by-then-reduced) ceiling.
     const [first, second] = await Promise.allSettled([
       request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
         .set('Authorization', `Bearer ${manager.accessToken}`)
-        .send({ amount: 1_000_000, method: 'CASH', isManualAmount: false }),
+        .send({
+          amount: 1_000_000,
+          method: 'CASH',
+          isManualAmount: false,
+          payerPersonId: manager.personId,
+          idempotencyKey: nextIdempotencyKey('concurrency-first'),
+        }),
       request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
         .set('Authorization', `Bearer ${manager.accessToken}`)
-        .send({ amount: 1_000_000, method: 'CASH', isManualAmount: false }),
+        .send({
+          amount: 1_000_000,
+          method: 'CASH',
+          isManualAmount: false,
+          payerPersonId: manager.personId,
+          idempotencyKey: nextIdempotencyKey('concurrency-second'),
+        }),
     ]);
 
     const results = [first, second].map((r) => (r.status === 'fulfilled' ? r.value : null));
@@ -4750,11 +4973,15 @@ describe('Finance (e2e) — Remaining Payable: zero-debt / manual-extra-payment 
       .expect(200);
     unitId = unitsRes.body.data[0].id;
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 35_003_000);
+    // FIN-MVP-GAP-04C — manager needs real Ownership of unitId to be an
+    // eligible `payerPersonId` for the payments reported below.
+    await prisma.ownership.create({ data: { unitId, personId: manager.personId } });
     await reportAndApprovePayment(
       app,
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       manager.accessToken,
       35_003_000,
     );
@@ -4777,7 +5004,13 @@ describe('Finance (e2e) — Remaining Payable: zero-debt / manual-extra-payment 
     const rejected = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
-      .send({ amount: 50_000, method: 'CASH', isManualAmount: false })
+      .send({
+        amount: 50_000,
+        method: 'CASH',
+        isManualAmount: false,
+        payerPersonId: manager.personId,
+        idempotencyKey: nextIdempotencyKey('zero-debt-rejected'),
+      })
       .expect(422);
     expect(rejected.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
 
@@ -4789,6 +5022,7 @@ describe('Finance (e2e) — Remaining Payable: zero-debt / manual-extra-payment 
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       50_000,
       true,
     );
@@ -4824,11 +5058,15 @@ describe('Finance (e2e) — Remaining Payable: existing credit behavior (Finance
       .expect(200);
     unitId = unitsRes.body.data[0].id;
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 35_003_000);
+    // FIN-MVP-GAP-04C — manager needs real Ownership of unitId to be an
+    // eligible `payerPersonId` for the payments reported below.
+    await prisma.ownership.create({ data: { unitId, personId: manager.personId } });
     await reportAndApprovePayment(
       app,
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       manager.accessToken,
       35_003_000,
     );
@@ -4851,6 +5089,7 @@ describe('Finance (e2e) — Remaining Payable: existing credit behavior (Finance
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       manager.accessToken,
       20_000,
       true,
@@ -5230,5 +5469,615 @@ describe('Finance (e2e) — FIN-CALC-01 Charge Total Amount Allocation', () => {
     expect(getRes.body.data.chargeItems).toEqual([
       expect.objectContaining({ unitId: unitIds[4], amount: 250_000 }),
     ]);
+  });
+});
+
+// FIN-MVP-GAP-04C — Manual/On-Behalf Payment Contract. `POST .../units/
+// :unitId/payments` is now restricted to MANAGER/ACCOUNTANT and requires
+// a separately-validated `payerPersonId` (the unit's current tenant, or
+// one of its current owners when there is no active tenancy) plus a
+// required `idempotencyKey`. Every payment here is `isManualAmount: true`
+// so the tests focus purely on authorization/payer-validation/identity/
+// idempotency semantics, not the (already-covered-elsewhere) remaining-
+// payable ceiling.
+//
+// Split into three independent nested describes — each with its own
+// `bootstrapTestApp()` (own app instance, own in-memory throttler bucket)
+// — because `POST /auth/otp/request` is throttled at 5/60s (ADR-061) per
+// app instance regardless of which phone number is used (vanilla
+// `ThrottlerGuard`, IP-keyed). A single describe registering all the
+// distinct people this checklist needs would blow straight through that
+// budget in one `beforeAll` and fail every test in the describe at once
+// (exactly what happened before this split — see the same multi-
+// `bootstrapTestApp()`-per-outer-describe pattern already established in
+// `building.e2e-spec.ts`, e.g. its "Owner/Tenant/Self-Claim/Read-Only
+// Ownership Flow" describe). Each nested describe below stays at or under
+// 5 `registerPerson()` calls in its own `beforeAll`.
+describe('Finance (e2e) — FIN-MVP-GAP-04C Manual/On-Behalf Payment Contract', () => {
+  // --- Group 1: Authorization + tenant-priority payer semantics + identity/idempotency ---
+  // Budget: 5 calls to POST /auth/otp/request (manager, accountant,
+  // tenant, ownerOfTenantUnit, outsiderMember) — own app/throttle bucket.
+  describe('Authorization, tenant-priority payer validation, identity & idempotency', () => {
+    let app: INestApplication;
+    let prisma: PrismaService;
+    const createdPhones: string[] = [];
+    const createdBuildingIds: string[] = [];
+
+    let manager: RegisteredPerson;
+    let accountant: RegisteredPerson;
+    let tenant: RegisteredPerson;
+    let ownerOfTenantUnit: RegisteredPerson;
+    let outsiderMember: RegisteredPerson;
+
+    let buildingId: string;
+    let tenantUnitId: string;
+    let emptyUnitId: string;
+
+    beforeAll(async () => {
+      ({ app, prisma } = await bootstrapTestApp());
+
+      manager = await registerPerson(app);
+      createdPhones.push(manager.phone);
+      buildingId = await createBuilding(app, manager.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 2,
+      });
+      createdBuildingIds.push(buildingId);
+
+      const unitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      [tenantUnitId, emptyUnitId] = unitsRes.body.data.map((u: { id: string }) => u.id);
+
+      // `CreateMembershipRequestDto.role` only accepts OWNER/MANAGER — same
+      // direct-seed precedent this file's own Opening Balance Correction
+      // describe already established for a real, current ACCOUNTANT
+      // Membership.
+      accountant = await registerPerson(app);
+      createdPhones.push(accountant.phone);
+      await prisma.membership.create({
+        data: { personId: accountant.personId, buildingId, role: 'ACCOUNTANT' },
+      });
+
+      // `tenantUnitId` — has BOTH a current owner AND a current tenant, so
+      // `assertValidPayerForUnit`'s tenant-priority branch is exercised.
+      tenant = await registerPerson(app);
+      ownerOfTenantUnit = await registerPerson(app);
+      createdPhones.push(tenant.phone, ownerOfTenantUnit.phone);
+      await prisma.ownership.create({
+        data: { unitId: tenantUnitId, personId: ownerOfTenantUnit.personId },
+      });
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${tenantUnitId}/tenancy`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({ tenantPersonId: tenant.personId })
+        .expect(201);
+
+      // A real building member with NO unit-level Ownership/Tenancy
+      // anywhere — the "role alone is not enough" case, and also stands
+      // in for "unrelated member" on `emptyUnitId` (no tenancy, no
+      // ownership at all there — the owners-branch rejection).
+      outsiderMember = await registerPerson(app);
+      createdPhones.push(outsiderMember.phone);
+      await joinBuildingAsApprovedMember(
+        app,
+        buildingId,
+        outsiderMember.accessToken,
+        manager.accessToken,
+      );
+    });
+
+    afterAll(async () => {
+      await cleanupBuildings(prisma, createdBuildingIds);
+      await cleanupPhones(prisma, createdPhones);
+      await app.close();
+    });
+
+    it('Authorization: Manager and Accountant can both report a manual payment on behalf of an eligible payer (201, correct payerId)', async () => {
+      const managerReportedId = await reportPayment(
+        app,
+        buildingId,
+        tenantUnitId,
+        manager.accessToken,
+        tenant.personId,
+        10_000,
+        true,
+      );
+      const managerReported = await prisma.payment.findUnique({
+        where: { id: managerReportedId },
+      });
+      expect(managerReported?.payerId).toBe(tenant.personId);
+
+      const accountantReportedId = await reportPayment(
+        app,
+        buildingId,
+        tenantUnitId,
+        accountant.accessToken,
+        tenant.personId,
+        5_000,
+        true,
+      );
+      const accountantReported = await prisma.payment.findUnique({
+        where: { id: accountantReportedId },
+      });
+      expect(accountantReported?.payerId).toBe(tenant.personId);
+    });
+
+    it('Authorization: rejects an approved OWNER member with no unit-level Ownership from calling the route directly (403 AUTHORIZATION_ERROR) — role alone is never enough', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${tenantUnitId}/payments`)
+        .set('Authorization', `Bearer ${outsiderMember.accessToken}`)
+        .send({
+          amount: 10_000,
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: outsiderMember.personId,
+          idempotencyKey: nextIdempotencyKey('auth-outsider'),
+        })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it("Authorization: rejects the unit's own current tenant from calling the route directly (403 AUTHORIZATION_ERROR) — holding no staff Membership at all", async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${tenantUnitId}/payments`)
+        .set('Authorization', `Bearer ${tenant.accessToken}`)
+        .send({
+          amount: 10_000,
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: tenant.personId,
+          idempotencyKey: nextIdempotencyKey('auth-tenant-self'),
+        })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('Payer Validation: active tenant accepted as payer', async () => {
+      const paymentId = await reportPayment(
+        app,
+        buildingId,
+        tenantUnitId,
+        manager.accessToken,
+        tenant.personId,
+        11_000,
+        true,
+      );
+      const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+      expect(payment?.payerId).toBe(tenant.personId);
+    });
+
+    it('Payer Validation: rejects naming the unit\'s owner as payer while an active tenancy exists (403, "must be the unit\'s current tenant")', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${tenantUnitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({
+          amount: 10_000,
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: ownerOfTenantUnit.personId,
+          idempotencyKey: nextIdempotencyKey('payer-owner-vs-tenant'),
+        })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+      expect(res.body.errors[0].message).toContain('current tenant');
+    });
+
+    it('Payer Validation: rejects an unrelated building member as payer on a unit with no tenancy or ownership at all (403, "must be one of the unit\'s current owners")', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${emptyUnitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({
+          amount: 10_000,
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: outsiderMember.personId,
+          idempotencyKey: nextIdempotencyKey('payer-unrelated-member'),
+        })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+      expect(res.body.errors[0].message).toContain('current owners');
+    });
+
+    it('Identity Semantics: Payment.payerId is exactly payerPersonId, never actorPersonId; AuditLog.actorId is the reporting staff member, not the payer', async () => {
+      const paymentId = await reportPayment(
+        app,
+        buildingId,
+        tenantUnitId,
+        manager.accessToken,
+        tenant.personId,
+        12_000,
+        true,
+      );
+
+      const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+      expect(payment?.payerId).toBe(tenant.personId);
+      expect(payment?.payerId).not.toBe(manager.personId);
+
+      const auditEntry = await prisma.auditLog.findFirst({
+        where: { entityType: 'Payment', entityId: paymentId, action: 'PaymentReported' },
+      });
+      expect(auditEntry).toBeTruthy();
+      expect(auditEntry?.actorId).toBe(manager.personId);
+      expect(auditEntry?.actorId).not.toBe(tenant.personId);
+    });
+
+    it('Idempotency: an identical retry (same payerId/buildingId/idempotencyKey and same body) returns the same Payment, creating no second row', async () => {
+      const key = nextIdempotencyKey('idem-identical-retry');
+      const body = {
+        amount: 40_000,
+        method: 'CASH' as const,
+        isManualAmount: true,
+        payerPersonId: tenant.personId,
+        idempotencyKey: key,
+      };
+
+      const first = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${tenantUnitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send(body)
+        .expect(201);
+
+      const second = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${tenantUnitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send(body)
+        .expect(201);
+
+      expect(second.body.data.id).toBe(first.body.data.id);
+
+      const rows = await prisma.payment.findMany({
+        where: { payerId: tenant.personId, buildingId, idempotencyKey: key },
+      });
+      expect(rows).toHaveLength(1);
+    });
+
+    it('Idempotency: the same idempotencyKey reused with a materially different body 409s (ConflictError)', async () => {
+      const key = nextIdempotencyKey('idem-conflict');
+      await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${tenantUnitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({
+          amount: 20_000,
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: tenant.personId,
+          idempotencyKey: key,
+        })
+        .expect(201);
+
+      const conflict = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${tenantUnitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({
+          amount: 21_000, // different amount — same key, materially different content.
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: tenant.personId,
+          idempotencyKey: key,
+        })
+        .expect(409);
+      expect(conflict.body.errors[0].code).toBe('CONFLICT');
+    });
+
+    it('Idempotency: concurrent identical retries (fired together) create exactly one Payment row', async () => {
+      const key = nextIdempotencyKey('idem-concurrent');
+      const body = {
+        amount: 33_000,
+        method: 'CASH' as const,
+        isManualAmount: true,
+        payerPersonId: tenant.personId,
+        idempotencyKey: key,
+      };
+
+      const [first, second] = await Promise.all([
+        request(app.getHttpServer())
+          .post(`/api/v1/buildings/${buildingId}/units/${tenantUnitId}/payments`)
+          .set('Authorization', `Bearer ${manager.accessToken}`)
+          .send(body),
+        request(app.getHttpServer())
+          .post(`/api/v1/buildings/${buildingId}/units/${tenantUnitId}/payments`)
+          .set('Authorization', `Bearer ${manager.accessToken}`)
+          .send(body),
+      ]);
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(first.body.data.id).toBe(second.body.data.id);
+
+      const rows = await prisma.payment.findMany({
+        where: { payerId: tenant.personId, buildingId, idempotencyKey: key },
+      });
+      expect(rows).toHaveLength(1);
+    });
+  });
+
+  // --- Group 2: former tenant/owner + cross-unit/cross-building payer rejection ---
+  // Budget: 5 calls to POST /auth/otp/request (manager, formerTenant,
+  // formerOwner, ownerOnly, otherBuildingOwner) — own app/throttle bucket.
+  describe('Payer validation — former occupants and cross-unit/cross-building owners', () => {
+    let app: INestApplication;
+    let prisma: PrismaService;
+    const createdPhones: string[] = [];
+    const createdBuildingIds: string[] = [];
+
+    let manager: RegisteredPerson;
+    let formerTenant: RegisteredPerson;
+    let formerOwner: RegisteredPerson;
+    let ownerOnly: RegisteredPerson;
+    let otherBuildingOwner: RegisteredPerson;
+
+    let buildingId: string;
+    let formerTenantUnitId: string;
+    let formerOwnerUnitId: string;
+    let ownerOnlyUnitId: string;
+    let targetUnitId: string;
+
+    let otherBuildingId: string;
+    let otherUnitId: string;
+
+    beforeAll(async () => {
+      ({ app, prisma } = await bootstrapTestApp());
+
+      manager = await registerPerson(app);
+      createdPhones.push(manager.phone);
+      buildingId = await createBuilding(app, manager.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 4,
+      });
+      createdBuildingIds.push(buildingId);
+
+      const unitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      const unitIds = unitsRes.body.data.map((u: { id: string }) => u.id);
+      [formerTenantUnitId, formerOwnerUnitId, ownerOnlyUnitId, targetUnitId] = unitIds;
+
+      // `formerTenantUnitId` — a tenancy that has already ended (direct
+      // seed, same `isCurrent: false, endDate` precedent `building.e2e-
+      // spec.ts`'s own Ownership Transfer describe established for a
+      // historical, no-longer-current row) and no current owner at all,
+      // so the former tenant falls through to (and fails) the owners
+      // branch.
+      formerTenant = await registerPerson(app);
+      createdPhones.push(formerTenant.phone);
+      await prisma.tenancy.create({
+        data: {
+          unitId: formerTenantUnitId,
+          personId: formerTenant.personId,
+          status: 'ENDED',
+          isCurrent: false,
+          endDate: new Date(),
+        },
+      });
+
+      // `formerOwnerUnitId` — an Ownership that has already ended, same
+      // direct-seed precedent, no current tenancy.
+      formerOwner = await registerPerson(app);
+      createdPhones.push(formerOwner.phone);
+      await prisma.ownership.create({
+        data: {
+          unitId: formerOwnerUnitId,
+          personId: formerOwner.personId,
+          isCurrent: false,
+          endDate: new Date(),
+        },
+      });
+
+      // `ownerOnly` genuinely owns `ownerOnlyUnitId` — just not
+      // `targetUnitId`, and `RolesGuard`/`assertValidPayerForUnit` never
+      // let real ownership of a DIFFERENT unit substitute.
+      ownerOnly = await registerPerson(app);
+      createdPhones.push(ownerOnly.phone);
+      await prisma.ownership.create({
+        data: { unitId: ownerOnlyUnitId, personId: ownerOnly.personId },
+      });
+
+      // A person who owns a unit in a COMPLETELY DIFFERENT building —
+      // also that other building's own MANAGER/creator, saving a separate
+      // registration purely to spin up the second building.
+      otherBuildingOwner = await registerPerson(app);
+      createdPhones.push(otherBuildingOwner.phone);
+      otherBuildingId = await createBuilding(app, otherBuildingOwner.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 1,
+      });
+      createdBuildingIds.push(otherBuildingId);
+      const otherUnitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${otherBuildingId}/units`)
+        .set('Authorization', `Bearer ${otherBuildingOwner.accessToken}`)
+        .expect(200);
+      otherUnitId = otherUnitsRes.body.data[0].id;
+      await prisma.ownership.create({
+        data: { unitId: otherUnitId, personId: otherBuildingOwner.personId },
+      });
+    });
+
+    afterAll(async () => {
+      await cleanupBuildings(prisma, createdBuildingIds);
+      await cleanupPhones(prisma, createdPhones);
+      await app.close();
+    });
+
+    it('Payer Validation: rejects a former (ended) tenant as payer on their old unit (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${formerTenantUnitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({
+          amount: 10_000,
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: formerTenant.personId,
+          idempotencyKey: nextIdempotencyKey('payer-former-tenant'),
+        })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('Payer Validation: rejects a former (ended) owner as payer on their old unit (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${formerOwnerUnitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({
+          amount: 10_000,
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: formerOwner.personId,
+          idempotencyKey: nextIdempotencyKey('payer-former-owner'),
+        })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('Payer Validation: rejects a payer who owns a DIFFERENT unit in the same building (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${targetUnitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({
+          amount: 10_000,
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: ownerOnly.personId,
+          idempotencyKey: nextIdempotencyKey('payer-cross-unit'),
+        })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+
+    it('Payer Validation: rejects a payer who owns a unit in a DIFFERENT building entirely (403)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/units/${targetUnitId}/payments`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .send({
+          amount: 10_000,
+          method: 'CASH',
+          isManualAmount: true,
+          payerPersonId: otherBuildingOwner.personId,
+          idempotencyKey: nextIdempotencyKey('payer-cross-building'),
+        })
+        .expect(403);
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    });
+  });
+
+  // --- Group 3: multi-owner explicit selection + idempotency across distinct payers ---
+  // Budget: 3 calls to POST /auth/otp/request (manager, ownerA, ownerB) —
+  // own app/throttle bucket.
+  describe('Payer validation — multi-owner explicit selection, and idempotency across distinct payers', () => {
+    let app: INestApplication;
+    let prisma: PrismaService;
+    const createdPhones: string[] = [];
+    const createdBuildingIds: string[] = [];
+
+    let manager: RegisteredPerson;
+    let ownerA: RegisteredPerson;
+    let ownerB: RegisteredPerson;
+
+    let buildingId: string;
+    let multiOwnerUnitId: string;
+
+    beforeAll(async () => {
+      ({ app, prisma } = await bootstrapTestApp());
+
+      manager = await registerPerson(app);
+      createdPhones.push(manager.phone);
+      buildingId = await createBuilding(app, manager.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 1,
+      });
+      createdBuildingIds.push(buildingId);
+
+      const unitsRes = await request(app.getHttpServer())
+        .get(`/api/v1/buildings/${buildingId}/units`)
+        .set('Authorization', `Bearer ${manager.accessToken}`)
+        .expect(200);
+      multiOwnerUnitId = unitsRes.body.data[0].id;
+
+      // Two current owners, no tenancy — the caller must name a specific
+      // one; nothing auto-picks.
+      ownerA = await registerPerson(app);
+      ownerB = await registerPerson(app);
+      createdPhones.push(ownerA.phone, ownerB.phone);
+      await prisma.ownership.create({
+        data: { unitId: multiOwnerUnitId, personId: ownerA.personId },
+      });
+      await prisma.ownership.create({
+        data: { unitId: multiOwnerUnitId, personId: ownerB.personId },
+      });
+    });
+
+    afterAll(async () => {
+      await cleanupBuildings(prisma, createdBuildingIds);
+      await cleanupPhones(prisma, createdPhones);
+      await app.close();
+    });
+
+    it('Payer Validation: a multi-owner unit accepts either explicitly-named owner, correctly setting payerId to whichever was named — never silently defaulting to "the first one"', async () => {
+      const paymentAId = await reportPayment(
+        app,
+        buildingId,
+        multiOwnerUnitId,
+        manager.accessToken,
+        ownerA.personId,
+        15_000,
+        true,
+      );
+      const paymentA = await prisma.payment.findUnique({ where: { id: paymentAId } });
+      expect(paymentA?.payerId).toBe(ownerA.personId);
+      expect(paymentA?.payerId).not.toBe(ownerB.personId);
+
+      const paymentBId = await reportPayment(
+        app,
+        buildingId,
+        multiOwnerUnitId,
+        manager.accessToken,
+        ownerB.personId,
+        15_000,
+        true,
+      );
+      const paymentB = await prisma.payment.findUnique({ where: { id: paymentBId } });
+      expect(paymentB?.payerId).toBe(ownerB.personId);
+      expect(paymentB?.payerId).not.toBe(ownerA.personId);
+      expect(paymentB?.id).not.toBe(paymentA?.id);
+    });
+
+    it('Idempotency: the same idempotencyKey used by a DIFFERENT eligible payer on the same unit does not collide — two distinct rows, one per payer', async () => {
+      const key = nextIdempotencyKey('idem-different-payer');
+
+      const paymentAId = await reportPayment(
+        app,
+        buildingId,
+        multiOwnerUnitId,
+        manager.accessToken,
+        ownerA.personId,
+        5_000,
+        true,
+        key,
+      );
+      const paymentBId = await reportPayment(
+        app,
+        buildingId,
+        multiOwnerUnitId,
+        manager.accessToken,
+        ownerB.personId,
+        5_000,
+        true,
+        key,
+      );
+
+      expect(paymentAId).not.toBe(paymentBId);
+
+      const rows = await prisma.payment.findMany({
+        where: { buildingId, idempotencyKey: key },
+        orderBy: { createdAt: 'asc' },
+      });
+      // Exactly the two rows this test itself created for this key (ownerA,
+      // ownerB) — the composite unique constraint is (payerId, buildingId,
+      // idempotencyKey), so a different payerId with the same key is a
+      // distinct row, never a collision.
+      expect(rows.map((r) => r.payerId).sort()).toEqual([ownerA.personId, ownerB.personId].sort());
+    });
   });
 });

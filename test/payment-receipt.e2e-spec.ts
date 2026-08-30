@@ -55,6 +55,14 @@ function nextPostalCode(): string {
   return `${RUN_ID}${postalCodeCounter.toString().padStart(5, '0')}`;
 }
 
+// FIN-MVP-GAP-04C — `CreatePaymentDto.idempotencyKey` is now required;
+// same counter-based uniqueness as `finance.e2e-spec.ts`'s own helper.
+let idempotencyCounter = 0;
+function nextIdempotencyKey(label = 'pay'): string {
+  idempotencyCounter += 1;
+  return `${RUN_ID}-${label}-${idempotencyCounter}`;
+}
+
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
   const moduleFixture: TestingModule = await Test.createTestingModule({
     imports: [AppModule],
@@ -359,17 +367,36 @@ async function joinAsApprovedMember(
     .expect(200);
 }
 
+/**
+ * FIN-MVP-GAP-04C — `reporterAccessToken` must now be a MANAGER/
+ * ACCOUNTANT of the building (route-level `RolesGuard`); `payerPersonId`
+ * is the separate, required economic-payer field. Every pre-existing call
+ * site in this file used `payer.accessToken` as BOTH reporter and payer
+ * (the pre-04C "payerId = whoever calls" contract) — migrated to
+ * `manager.accessToken` reporting on behalf of `payer.personId` (given
+ * real unit `Ownership` in `beforeAll` below), which is exactly the
+ * staff-recorded/resident-payer scenario this file's receipt-authorization
+ * coverage needs anyway (receipt access is payerId-gated — see
+ * `FinanceService.getPaymentForPayer`'s own doc comment).
+ */
 async function reportBankTransferPayment(
   app: INestApplication,
   buildingId: string,
   unitId: string,
-  accessToken: string,
+  reporterAccessToken: string,
+  payerPersonId: string,
   amount = 100_000,
 ): Promise<string> {
   const res = await request(app.getHttpServer())
     .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
-    .set('Authorization', `Bearer ${accessToken}`)
-    .send({ amount, method: 'BANK_TRANSFER', isManualAmount: true })
+    .set('Authorization', `Bearer ${reporterAccessToken}`)
+    .send({
+      amount,
+      method: 'BANK_TRANSFER',
+      isManualAmount: true,
+      payerPersonId,
+      idempotencyKey: nextIdempotencyKey('bank-transfer'),
+    })
     .expect(201);
   return res.body.data.id as string;
 }
@@ -378,13 +405,20 @@ async function reportCashPayment(
   app: INestApplication,
   buildingId: string,
   unitId: string,
-  accessToken: string,
+  reporterAccessToken: string,
+  payerPersonId: string,
   amount = 100_000,
 ): Promise<string> {
   const res = await request(app.getHttpServer())
     .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
-    .set('Authorization', `Bearer ${accessToken}`)
-    .send({ amount, method: 'CASH', isManualAmount: true })
+    .set('Authorization', `Bearer ${reporterAccessToken}`)
+    .send({
+      amount,
+      method: 'CASH',
+      isManualAmount: true,
+      payerPersonId,
+      idempotencyKey: nextIdempotencyKey('cash'),
+    })
     .expect(201);
   return res.body.data.id as string;
 }
@@ -454,16 +488,34 @@ describe('Payment Receipt Upload/Finalize/Download (e2e, FIN-REC-01B)', () => {
       data: { personId: boardMember.personId, buildingId, role: 'BOARD_MEMBER' },
     });
 
-    // `payer` reports both payments against their own unit, as the acting
-    // payer — see `createPayment`'s own doc comment ("payerId =
-    // actorPersonId, whoever calls the endpoint").
+    // FIN-MVP-GAP-04C — `payer` is only an approved building-level OWNER
+    // member so far (no unit-level Ownership — `assertValidPayerForUnit`
+    // never reads Membership); give them real Ownership of `unitId` so
+    // they remain a valid `payerPersonId` for the manager-recorded
+    // payments below.
+    await prisma.ownership.create({ data: { unitId, personId: payer.personId } });
+
+    // FIN-MVP-GAP-04C — `payer` can no longer report their own payment
+    // directly (RolesGuard now requires MANAGER/ACCOUNTANT); `manager`
+    // reports both payments on `payer`'s behalf instead, which is exactly
+    // the staff-recorded/resident-payer scenario this file's receipt-
+    // authorization tests need (see `FinanceService.getPaymentForPayer`'s
+    // own doc comment — receipt access is payerId-gated, so `payer` below
+    // still owns and can view/download these receipts).
     bankTransferPaymentId = await reportBankTransferPayment(
       app,
       buildingId,
       unitId,
-      payer.accessToken,
+      manager.accessToken,
+      payer.personId,
     );
-    cashPaymentId = await reportCashPayment(app, buildingId, unitId, payer.accessToken);
+    cashPaymentId = await reportCashPayment(
+      app,
+      buildingId,
+      unitId,
+      manager.accessToken,
+      payer.personId,
+    );
   });
 
   afterAll(async () => {
@@ -608,7 +660,8 @@ describe('Payment Receipt Upload/Finalize/Download (e2e, FIN-REC-01B)', () => {
           app,
           buildingId,
           unitId,
-          payer.accessToken,
+          manager.accessToken,
+          payer.personId,
         );
         const intent = await requestIntent(paymentId, payer.accessToken);
 
@@ -672,7 +725,8 @@ describe('Payment Receipt Upload/Finalize/Download (e2e, FIN-REC-01B)', () => {
           app,
           buildingId,
           unitId,
-          payer.accessToken,
+          manager.accessToken,
+          payer.personId,
         );
         const intent = await requestIntent(paymentId, payer.accessToken);
         await fetch(intent.uploadUrl, { method: 'PUT', body: TEXT_BYTES });
@@ -696,13 +750,15 @@ describe('Payment Receipt Upload/Finalize/Download (e2e, FIN-REC-01B)', () => {
           app,
           buildingId,
           unitId,
-          payer.accessToken,
+          manager.accessToken,
+          payer.personId,
         );
         const paymentB = await reportBankTransferPayment(
           app,
           buildingId,
           unitId,
-          payer.accessToken,
+          manager.accessToken,
+          payer.personId,
         );
         const intentForA = await requestIntent(paymentA, payer.accessToken);
         await fetch(intentForA.uploadUrl, { method: 'PUT', body: PDF_BYTES });

@@ -46,6 +46,14 @@ function nextPostalCode(): string {
   return `${RUN_ID}${postalCounter.toString().padStart(5, '0')}`;
 }
 
+// FIN-MVP-GAP-04C — `CreatePaymentDto.idempotencyKey` is now required;
+// same counter-based uniqueness as `finance.e2e-spec.ts`'s own helper.
+let idempotencyCounter = 0;
+function nextIdempotencyKey(label = 'pay'): string {
+  idempotencyCounter += 1;
+  return `${RUN_ID}-${label}-${idempotencyCounter}`;
+}
+
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
   const moduleFixture: TestingModule = await Test.createTestingModule({
     imports: [AppModule],
@@ -364,13 +372,20 @@ async function reportAndApprovePayment(
   buildingId: string,
   unitId: string,
   accessToken: string,
+  payerPersonId: string,
   amount: number,
   isManualAmount = false,
 ): Promise<string> {
   const reportRes = await request(app.getHttpServer())
     .post(`/api/v1/buildings/${buildingId}/units/${unitId}/payments`)
     .set('Authorization', `Bearer ${accessToken}`)
-    .send({ amount, method: 'CASH', isManualAmount })
+    .send({
+      amount,
+      method: 'CASH',
+      isManualAmount,
+      payerPersonId,
+      idempotencyKey: nextIdempotencyKey('admin-report'),
+    })
     .expect(201);
   const paymentId = reportRes.body.data.id as string;
 
@@ -435,11 +450,16 @@ describe('Financial Administration (e2e) — Backoffice Payment List/Detail/Reve
 
     await issueFixedChargeBatch(app, buildingId, manager.accessToken, 1_000_000);
 
+    // FIN-MVP-GAP-04C — manager needs real Ownership of unitId to be an
+    // eligible `payerPersonId` for the two payments reported below.
+    await prisma.ownership.create({ data: { unitId, personId: manager.personId } });
+
     paymentAId = await reportAndApprovePayment(
       app,
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       1_000_000,
     );
     // Finance QA correction: paymentA above already fully settled this
@@ -455,6 +475,7 @@ describe('Financial Administration (e2e) — Backoffice Payment List/Detail/Reve
       buildingId,
       unitId,
       manager.accessToken,
+      manager.personId,
       1_000_000,
       true,
     );

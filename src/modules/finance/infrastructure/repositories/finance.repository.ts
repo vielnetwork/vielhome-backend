@@ -600,6 +600,26 @@ export class FinanceRepository {
    * never exceed it — that gap is exactly what let repeated taps create
    * duplicate PENDING_APPROVAL payments for the same debt. Intent is never
    * inferred from the amount itself; it is always this explicit flag.
+   *
+   * FIN-MVP-GAP-04C — `idempotencyKey` is now required (`CreatePaymentDto`'s
+   * own doc comment) and given the exact same replay-safety
+   * `createExplicitPayment` below already established: checked, under the
+   * SAME per-unit advisory lock, against the existing
+   * `@@unique([payerId, buildingId, idempotencyKey])` constraint. The
+   * conflict comparison below covers the canonical persisted payment
+   * request/content — `unitId`, the resolved `fundId`, `amount`, `method`,
+   * `reference`, `note` — so an identical replay (same payerId/buildingId/
+   * idempotencyKey AND the same values for all of those) returns the
+   * existing Payment unchanged; the same key reused with a materially
+   * different value for any of them throws `ConflictError`. `isManualAmount`
+   * is a request-time remaining-payable validation override, not persisted
+   * Payment identity (there is no `Payment.isManualAmount` column — see
+   * `CreatePaymentDto`'s own doc comment), and therefore is not part of
+   * this replay payload comparison. The lookup happens BEFORE the
+   * remaining-payable check for the same reason `createExplicitPayment`
+   * checks it first: a blocked concurrent retry must resolve to the
+   * winner's already-committed row without ever re-evaluating (and
+   * potentially failing) the ceiling a second time.
    */
   createPayment(params: {
     buildingId: string;
@@ -608,12 +628,36 @@ export class FinanceRepository {
     payerId: string;
     amount: number;
     method: PaymentMethod;
+    idempotencyKey: string;
     reference?: string;
     note?: string;
     isManualAmount: boolean;
   }) {
     return this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'finance-payment:' + params.unitId}))`;
+
+      const existing = await tx.payment.findFirst({
+        where: {
+          payerId: params.payerId,
+          buildingId: params.buildingId,
+          idempotencyKey: params.idempotencyKey,
+        },
+      });
+      if (existing) {
+        const same =
+          existing.unitId === params.unitId &&
+          existing.fundId === params.fundId &&
+          existing.amount === params.amount &&
+          existing.method === params.method &&
+          (existing.reference ?? null) === (params.reference ?? null) &&
+          (existing.note ?? null) === (params.note ?? null);
+        if (!same) {
+          throw new ConflictError(
+            'Idempotency key was already used with a different payment request.',
+          );
+        }
+        return existing;
+      }
 
       if (!params.isManualAmount) {
         const snapshot = await this.computeDebtSnapshot(tx, params.unitId);
@@ -635,6 +679,7 @@ export class FinanceRepository {
           method: params.method,
           reference: params.reference,
           note: params.note,
+          idempotencyKey: params.idempotencyKey,
           status: 'PENDING_APPROVAL',
         },
       });

@@ -1148,22 +1148,34 @@ export class FinanceService {
   // --- Payments ----------------------------------------------------------------
 
   /**
-   * Any current building member may report a payment for any unit — the
-   * MVP does not check that the reporter is that unit's owner/tenant, only
-   * that they belong to the building (route-level MembershipGuard). This
-   * keeps "I paid, please confirm" friction-free (e.g. a family member
-   * paying on an owner's behalf, or a manager entering cash collected in
-   * person) at the cost of not restricting *who* can report; the real
-   * gate is the ACCOUNTANT/MANAGER approval step below, where nothing
-   * touches the ledger until a human with the right role confirms it.
+   * FIN-MVP-GAP-04C — the controlled Manual / On-Behalf Payment contract.
+   * Restricted to MANAGER/ACCOUNTANT of the building (route-level
+   * `RolesGuard` — see `FinanceController.createPayment`); resident
+   * self-service lives on `createExplicitPayment` below, unchanged.
+   *
+   * The reporting staff member (`actorPersonId`) is NEVER the payer —
+   * `dto.payerPersonId` is a separate, required field, validated by
+   * `assertValidPayerForUnit` below against the unit's current
+   * responsible-payer set before it is ever written to `Payment.payerId`.
+   * `AuditLog.actorId` stays `actorPersonId`. The two are now free to
+   * differ, which is exactly the point (FIN-MVP-GAP-04B): the persisted
+   * system can distinguish "Manager X recorded this" (`AuditLog.actorId`)
+   * from "Owner/Tenant Y is the payer" (`Payment.payerId`), where before
+   * this change both were always silently the same value. No third-party/
+   * external-payer identity is modeled or needed — a family member
+   * physically handing over cash is attributed to the unit's current
+   * Owner/Tenant of record, resolved the exact same way as every other
+   * on-behalf scenario.
    *
    * Finance QA correction (physical-device duplicate-payment bug, 2026-08)
-   * — `FinanceRepository.createPayment` now validates `dto.amount` against
+   * — `FinanceRepository.createPayment` validates `dto.amount` against
    * the unit's current *remaining payable* (confirmed debt minus whatever
    * is already PENDING_APPROVAL) unless `dto.isManualAmount` is set, and
    * does so atomically per-unit so two near-simultaneous reports can't
    * both slip past the same stale figure — see that method's own doc
-   * comment for the full model and the concurrency mechanism.
+   * comment for the full model, the concurrency mechanism, and (as of
+   * FIN-MVP-GAP-04C) the same `idempotencyKey` replay-safety
+   * `createExplicitPayment` already established.
    */
   async createPayment(
     buildingId: string,
@@ -1173,6 +1185,7 @@ export class FinanceService {
     requestId: string,
   ) {
     await this.getOwnUnit(buildingId, unitId);
+    await this.assertValidPayerForUnit(unitId, dto.payerPersonId);
     this.paymentPolicy.assertPositiveAmount(dto.amount);
 
     const fund = await this.resolveFundForWrite(buildingId, dto.fundId);
@@ -1181,9 +1194,10 @@ export class FinanceService {
       buildingId,
       unitId,
       fundId: fund.id,
-      payerId: actorPersonId,
+      payerId: dto.payerPersonId,
       amount: dto.amount,
       method: dto.method,
+      idempotencyKey: dto.idempotencyKey,
       reference: dto.reference,
       note: dto.note,
       isManualAmount: dto.isManualAmount ?? false,
@@ -1196,10 +1210,40 @@ export class FinanceService {
       entityType: 'Payment',
       entityId: payment.id,
       requestId,
-      metadata: { unitId, amount: dto.amount, method: dto.method },
+      metadata: { unitId, payerPersonId: dto.payerPersonId, amount: dto.amount, method: dto.method },
     });
 
     return payment;
+  }
+
+  /**
+   * FIN-MVP-GAP-04C — the unit's current responsible-payer set: its
+   * active tenant if one exists, else one of its current owners.
+   * Deliberately reuses the exact same `BuildingRepository` primitives
+   * `assertCanPayExactUnit` already relies on
+   * (`findCurrentTenancyForUnit`/`isCurrentOwnerOfUnit`) rather than
+   * inventing new payer-resolution logic — but is NOT `assertCanPayExactUnit`
+   * itself, since that method's MANAGER bypass answers "who may call this
+   * endpoint," not "who may this payment be economically attributed to."
+   * A Manager/Accountant naming themselves as `payerPersonId` must
+   * independently qualify as the unit's current tenant or one of its
+   * current owners, exactly like anyone else — never given a free pass by
+   * their staff role. When the unit has more than one current owner and
+   * no active tenancy, the caller must name the specific owner who paid;
+   * this method never guesses among them.
+   */
+  private async assertValidPayerForUnit(unitId: string, payerPersonId: string): Promise<void> {
+    const tenancy = await this.buildings.findCurrentTenancyForUnit(unitId);
+    if (tenancy) {
+      if (tenancy.personId !== payerPersonId) {
+        throw new AuthorizationError("The payer must be the unit's current tenant.");
+      }
+      return;
+    }
+    const isOwner = await this.buildings.isCurrentOwnerOfUnit(unitId, payerPersonId);
+    if (!isOwner) {
+      throw new AuthorizationError("The payer must be one of the unit's current owners.");
+    }
   }
 
   private async assertCanPayExactUnit(
