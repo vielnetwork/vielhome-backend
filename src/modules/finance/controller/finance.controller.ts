@@ -109,6 +109,34 @@ export class FinanceController {
     return this.finance.getFund(id, fundId);
   }
 
+  /**
+   * FIN-SUM-01A — one Fund's paginated, cash-moving statement. Same
+   * `MembershipGuard` read tier as `financial-summary`/`ledger` (any
+   * current member may read it — see the class doc comment above).
+   * Mounted as a sibling of `GET :id/funds/:fundId` (not under a
+   * `/finance/` prefix) to match the dominant route shape this
+   * controller already uses for every Fund/Payment/Expense sub-resource
+   * (`:id/payments/:paymentId/refunds`, `:id/expenses/:expenseId`, …) —
+   * `:id/finance/unit-debts` is this controller's one outlier, not the
+   * norm. `getFundStatement`'s own fund-isolation guard (same one
+   * `getFund` above uses) 404s if `fundId` doesn't belong to `id`.
+   */
+  @Get(':id/funds/:fundId/statement')
+  @UseGuards(MembershipGuard)
+  async getFundStatement(
+    @Param('id') id: string,
+    @Param('fundId') fundId: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const { items, meta } = await this.finance.getFundStatement(
+      id,
+      fundId,
+      parsePagination(page, limit),
+    );
+    return withEnvelope(items, { metadata: { pagination: meta } });
+  }
+
   @Patch(':id/funds/:fundId')
   @UseGuards(RolesGuard)
   @Roles('MANAGER')

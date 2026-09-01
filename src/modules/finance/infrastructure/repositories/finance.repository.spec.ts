@@ -72,7 +72,7 @@ describe('FinanceRepository', () => {
       findUniqueOrThrow: jest.Mock;
       updateMany: jest.Mock;
     };
-    ledgerEntry: { create: jest.Mock };
+    ledgerEntry: { create: jest.Mock; findMany: jest.Mock; count: jest.Mock };
     expense: {
       create: jest.Mock;
       findUnique: jest.Mock;
@@ -148,7 +148,7 @@ describe('FinanceRepository', () => {
         findUniqueOrThrow: jest.fn(),
         updateMany: jest.fn(),
       },
-      ledgerEntry: { create: jest.fn() },
+      ledgerEntry: { create: jest.fn(), findMany: jest.fn(), count: jest.fn() },
       expense: {
         create: jest.fn(),
         findUnique: jest.fn(),
@@ -2000,6 +2000,97 @@ describe('FinanceRepository', () => {
         _sum: { amount: true },
       });
       expect(summary.totalExpenses).toBe(350_000);
+    });
+  });
+
+  describe('getFundStatement (FIN-SUM-01A)', () => {
+    it('filters to the requested building + fund and to the 5 cash-moving entry types only', async () => {
+      prisma.ledgerEntry.findMany.mockResolvedValue([]);
+      prisma.ledgerEntry.count.mockResolvedValue(0);
+
+      await repo.getFundStatement('b1', 'fund-1', { skip: 0, take: 20 });
+
+      expect(prisma.ledgerEntry.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            buildingId: 'b1',
+            fundId: 'fund-1',
+            entryType: { in: ['OPENING_BALANCE', 'PAYMENT', 'EXPENSE', 'REFUND', 'REVERSAL'] },
+          },
+        }),
+      );
+      expect(prisma.ledgerEntry.count).toHaveBeenCalledWith({
+        where: {
+          buildingId: 'b1',
+          fundId: 'fund-1',
+          entryType: { in: ['OPENING_BALANCE', 'PAYMENT', 'EXPENSE', 'REFUND', 'REVERSAL'] },
+        },
+      });
+      // CHARGE/ADJUSTMENT/CREDIT_APPLIED never appear in the `in` list above —
+      // the `where` clause itself is the exclusion proof, there's no separate
+      // filter step that could independently be wrong.
+    });
+
+    it('orders newest-first with a deterministic id tiebreak, and honors skip/take', async () => {
+      prisma.ledgerEntry.findMany.mockResolvedValue([]);
+      prisma.ledgerEntry.count.mockResolvedValue(0);
+
+      await repo.getFundStatement('b1', 'fund-1', { skip: 40, take: 20 });
+
+      expect(prisma.ledgerEntry.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          skip: 40,
+          take: 20,
+        }),
+      );
+    });
+
+    it("batch-resolves every EXPENSE row's Expense in one findMany, deduplicated by referenceId", async () => {
+      prisma.ledgerEntry.findMany.mockResolvedValue([
+        { id: 'le-1', entryType: 'EXPENSE', direction: 'DEBIT', referenceId: 'exp-1' },
+        { id: 'le-2', entryType: 'EXPENSE', direction: 'CREDIT', referenceId: 'exp-1' },
+        { id: 'le-3', entryType: 'PAYMENT', direction: 'CREDIT', referenceId: 'pay-1' },
+      ]);
+      prisma.ledgerEntry.count.mockResolvedValue(3);
+      prisma.expense.findMany.mockResolvedValue([
+        { id: 'exp-1', title: 'Elevator repair', occurredAt: new Date('2026-01-05') },
+      ]);
+
+      const result = await repo.getFundStatement('b1', 'fund-1', { skip: 0, take: 20 });
+
+      // le-1 and le-2 both reference exp-1 — one call, one id, not two.
+      expect(prisma.expense.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.expense.findMany).toHaveBeenCalledWith({
+        where: { id: { in: ['exp-1'] } },
+        select: { id: true, title: true, occurredAt: true },
+      });
+      expect(result.expenses).toEqual([
+        { id: 'exp-1', title: 'Elevator repair', occurredAt: new Date('2026-01-05') },
+      ]);
+    });
+
+    it('skips the Expense batch query entirely when the page has no EXPENSE rows', async () => {
+      prisma.ledgerEntry.findMany.mockResolvedValue([
+        { id: 'le-1', entryType: 'PAYMENT', direction: 'CREDIT', referenceId: 'pay-1' },
+      ]);
+      prisma.ledgerEntry.count.mockResolvedValue(1);
+
+      await repo.getFundStatement('b1', 'fund-1', { skip: 0, take: 20 });
+
+      expect(prisma.expense.findMany).not.toHaveBeenCalled();
+    });
+
+    it('returns items/total/expenses', async () => {
+      const entries = [
+        { id: 'le-1', entryType: 'REFUND', direction: 'DEBIT', referenceId: 'ref-1' },
+      ];
+      prisma.ledgerEntry.findMany.mockResolvedValue(entries);
+      prisma.ledgerEntry.count.mockResolvedValue(7);
+
+      const result = await repo.getFundStatement('b1', 'fund-1', { skip: 0, take: 20 });
+
+      expect(result).toEqual({ items: entries, total: 7, expenses: [] });
     });
   });
 });

@@ -55,6 +55,32 @@ function affectsFundBalance(entryType: LedgerEntryType): boolean {
   );
 }
 
+/**
+ * FIN-SUM-01A — the Fund Statement's own inclusion list, deliberately a
+ * separate constant from `affectsFundBalance` above even though the two
+ * overlap heavily. `affectsFundBalance` answers "does writing this entry
+ * change `Fund.balance` right now" (a balance-cache-maintenance question);
+ * this answers "is this a cash-moving event a member should see on a
+ * Fund's statement" (a reporting question). They diverge on
+ * OPENING_BALANCE: it's a real cash-moving event that belongs on a
+ * statement, but its balance effect is applied directly by `createFund`
+ * (a plain `fund.update({ balance: { increment } })`, not gated through
+ * `affectsFundBalance`), so including it here would be a coincidental,
+ * fragile coupling to a helper that exists for an unrelated purpose.
+ * CHARGE (a receivable, not cash), ADJUSTMENT (corrects what a unit owes,
+ * not what the fund holds), and CREDIT_APPLIED (a reallocation of cash
+ * already counted when the original overpayment posted) are excluded —
+ * same reasoning `affectsFundBalance`'s own doc comment already gives for
+ * why they don't move the balance cache either.
+ */
+const FUND_STATEMENT_ENTRY_TYPES: LedgerEntryType[] = [
+  'OPENING_BALANCE',
+  'PAYMENT',
+  'EXPENSE',
+  'REFUND',
+  'REVERSAL',
+];
+
 function computeItemStatus(paidAmount: number, amount: number): ChargeItemStatus {
   if (paidAmount <= 0) return 'UNPAID';
   if (paidAmount >= amount) return 'PAID';
@@ -2349,6 +2375,58 @@ export class FinanceRepository {
       this.prisma.ledgerEntry.count({ where }),
     ]);
     return { items, total };
+  }
+
+  /**
+   * FIN-SUM-01A — one building Fund's cash statement: the same
+   * `LedgerEntry` table `listLedger` above already reads, narrowed to
+   * `FUND_STATEMENT_ENTRY_TYPES` and always scoped to one Fund (unlike
+   * `listLedger`'s optional `fundId`). Ordered newest-first with `id` as
+   * a deterministic tiebreak for entries sharing one `createdAt`
+   * millisecond — `createdAt` alone is not guaranteed unique.
+   *
+   * Batch-resolves every EXPENSE-typed row's `Expense` in one extra
+   * query (`id: { in: [...] }`, the same batch-fetch shape
+   * `createExplicitPayment`'s obligation-selection resolution already
+   * uses in this file) rather than one `findUnique` per row — avoids
+   * N+1 on a page that may contain many Expense create/void entries.
+   * Both an EXPENSE create (DEBIT) and its void counter-entry (CREDIT)
+   * store the same `referenceId` (the Expense's own id — see
+   * `createExpense`/`voidExpense` above), so one Map lookup serves both
+   * directions; the caller (service layer) decides what to do with a
+   * miss. Only `id`/`title`/`occurredAt` are selected — the fields the
+   * statement projection actually needs — nothing else on `Expense` is
+   * fetched.
+   */
+  async getFundStatement(
+    buildingId: string,
+    fundId: string,
+    pagination: { skip: number; take: number },
+  ) {
+    const where = { buildingId, fundId, entryType: { in: FUND_STATEMENT_ENTRY_TYPES } };
+    const [items, total] = await Promise.all([
+      this.prisma.ledgerEntry.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: pagination.skip,
+        take: pagination.take,
+      }),
+      this.prisma.ledgerEntry.count({ where }),
+    ]);
+
+    const expenseIds = [
+      ...new Set(
+        items.filter((entry) => entry.entryType === 'EXPENSE').map((entry) => entry.referenceId),
+      ),
+    ];
+    const expenses = expenseIds.length
+      ? await this.prisma.expense.findMany({
+          where: { id: { in: expenseIds } },
+          select: { id: true, title: true, occurredAt: true },
+        })
+      : [];
+
+    return { items, total, expenses };
   }
 
   /**

@@ -1,6 +1,6 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
-import { FinanceService } from './finance.service';
+import { FinanceService, projectStatementRow } from './finance.service';
 import { FinanceRepository } from '../infrastructure/repositories/finance.repository';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { ChargePolicy } from '../domain/policies/charge.policy';
@@ -104,6 +104,7 @@ describe('FinanceService', () => {
       listRefundsByPayment: jest.fn(),
       getFinancialSummary: jest.fn(),
       listLedger: jest.fn(),
+      getFundStatement: jest.fn(),
       getCollectionRate: jest.fn(),
       getPaymentRegistrationRate: jest.fn(),
       createExpense: jest.fn(),
@@ -2330,5 +2331,185 @@ describe('FinanceService', () => {
 
       expect(result).toEqual({ id: 'exp-1', buildingId: 'b1' });
     });
+  });
+
+  describe('getFundStatement (FIN-SUM-01A)', () => {
+    const FUND_B1 = { id: 'fund-1', buildingId: 'b1', name: 'Current', type: 'CURRENT' as const };
+
+    it('threads pagination through to the repository, scoped to the requested fund', async () => {
+      finance.findFundById.mockResolvedValue(FUND_B1);
+      finance.getFundStatement.mockResolvedValue({ items: [], total: 0, expenses: [] });
+
+      await service.getFundStatement('b1', 'fund-1', { page: 2, limit: 10 });
+
+      expect(finance.getFundStatement).toHaveBeenCalledWith('b1', 'fund-1', {
+        skip: 10,
+        take: 10,
+      });
+    });
+
+    it('returns items/meta built from the repository total, with each row projected', async () => {
+      finance.findFundById.mockResolvedValue(FUND_B1);
+      finance.getFundStatement.mockResolvedValue({
+        items: [
+          {
+            id: 'le-1',
+            entryType: 'PAYMENT',
+            direction: 'CREDIT',
+            amount: 500_000,
+            createdAt: new Date('2026-03-01T00:00:00Z'),
+          },
+        ],
+        total: 1,
+        expenses: [],
+      });
+
+      const result = await service.getFundStatement('b1', 'fund-1', { page: 1, limit: 20 });
+
+      expect(result.meta).toEqual({ page: 1, limit: 20, total: 1, totalPages: 1 });
+      expect(result.items).toEqual([
+        {
+          id: 'le-1',
+          direction: 'CREDIT',
+          amount: 500_000,
+          type: 'PAYMENT',
+          occurredAt: new Date('2026-03-01T00:00:00Z'),
+          descriptionCode: 'UNIT_CHARGE_PAYMENT',
+          description: null,
+        },
+      ]);
+    });
+
+    it("404s — cross-building fund isolation: a fundId belonging to another building can't be read via this buildingId", async () => {
+      finance.findFundById.mockResolvedValue({ ...FUND_B1, buildingId: 'other-building' });
+
+      await expect(
+        service.getFundStatement('b1', 'fund-1', { page: 1, limit: 20 }),
+      ).rejects.toBeInstanceOf(NotFoundAppError);
+      expect(finance.getFundStatement).not.toHaveBeenCalled();
+    });
+
+    it('404s when the fund does not exist at all', async () => {
+      finance.findFundById.mockResolvedValue(null);
+
+      await expect(
+        service.getFundStatement('b1', 'missing-fund', { page: 1, limit: 20 }),
+      ).rejects.toBeInstanceOf(NotFoundAppError);
+      expect(finance.getFundStatement).not.toHaveBeenCalled();
+    });
+  });
+});
+
+/**
+ * FIN-SUM-01A — `projectStatementRow` unit tests. A pure function (no DB,
+ * no `FinanceService` instance needed), so these are plain input/output
+ * assertions against every (entryType, direction) branch the ticket's
+ * projection-rules table specifies, run outside the `describe(
+ * 'FinanceService', ...)` block above since they don't need any of its
+ * mocked dependencies.
+ */
+describe('projectStatementRow (FIN-SUM-01A projection rules)', () => {
+  const CREATED_AT = new Date('2026-04-10T12:00:00Z');
+  const EXPENSE_OCCURRED_AT = new Date('2026-04-01T00:00:00Z');
+
+  function entry(overrides: Record<string, unknown>) {
+    return {
+      id: 'le-1',
+      buildingId: 'b1',
+      fundId: 'fund-1',
+      amount: 100_000,
+      referenceType: 'X',
+      referenceId: 'ref-1',
+      description: null,
+      actorId: null,
+      requestId: null,
+      createdAt: CREATED_AT,
+      ...overrides,
+    } as never;
+  }
+
+  it('OPENING_BALANCE/CREDIT — descriptionCode OPENING_BALANCE, no description, occurredAt is createdAt', () => {
+    const row = projectStatementRow(
+      entry({ entryType: 'OPENING_BALANCE', direction: 'CREDIT' }),
+      new Map(),
+    );
+    expect(row).toEqual({
+      id: 'le-1',
+      direction: 'CREDIT',
+      amount: 100_000,
+      type: 'OPENING_BALANCE',
+      occurredAt: CREATED_AT,
+      descriptionCode: 'OPENING_BALANCE',
+      description: null,
+    });
+  });
+
+  it('PAYMENT/CREDIT — descriptionCode UNIT_CHARGE_PAYMENT, never exposes unit number or payer identity', () => {
+    const row = projectStatementRow(
+      entry({ entryType: 'PAYMENT', direction: 'CREDIT', referenceId: 'pay-1' }),
+      new Map(),
+    );
+    expect(row.descriptionCode).toBe('UNIT_CHARGE_PAYMENT');
+    expect(row.description).toBeNull();
+    // The row is a closed, whitelisted object — no unitId/unitNumber/payerId/
+    // payerName field can appear even by accident, since projectStatementRow
+    // only ever writes the 6 named FundStatementRow keys.
+    expect(Object.keys(row).sort()).toEqual(
+      ['amount', 'description', 'descriptionCode', 'direction', 'id', 'occurredAt', 'type'].sort(),
+    );
+  });
+
+  it('EXPENSE/DEBIT — uses Expense.title as description and Expense.occurredAt as occurredAt', () => {
+    const expenseById = new Map([
+      ['exp-1', { id: 'exp-1', title: 'Elevator repair', occurredAt: EXPENSE_OCCURRED_AT }],
+    ]);
+    const row = projectStatementRow(
+      entry({ entryType: 'EXPENSE', direction: 'DEBIT', referenceId: 'exp-1' }),
+      expenseById,
+    );
+    expect(row.description).toBe('Elevator repair');
+    expect(row.occurredAt).toEqual(EXPENSE_OCCURRED_AT);
+    expect(row.occurredAt).not.toEqual(CREATED_AT);
+    expect(row.descriptionCode).toBeNull();
+  });
+
+  it('EXPENSE/DEBIT — falls back to null description (not a throw) when the Expense lookup misses', () => {
+    const row = projectStatementRow(
+      entry({ entryType: 'EXPENSE', direction: 'DEBIT', referenceId: 'exp-missing' }),
+      new Map(),
+    );
+    expect(row.description).toBeNull();
+    expect(row.occurredAt).toEqual(CREATED_AT);
+  });
+
+  it('EXPENSE/CREDIT (void counter-entry) — descriptionCode EXPENSE_VOID, occurredAt is the ledger posting createdAt, NOT Expense.occurredAt', () => {
+    const expenseById = new Map([
+      ['exp-1', { id: 'exp-1', title: 'Elevator repair', occurredAt: EXPENSE_OCCURRED_AT }],
+    ]);
+    const row = projectStatementRow(
+      entry({ entryType: 'EXPENSE', direction: 'CREDIT', referenceId: 'exp-1' }),
+      expenseById,
+    );
+    expect(row.descriptionCode).toBe('EXPENSE_VOID');
+    expect(row.description).toBe('Elevator repair');
+    expect(row.occurredAt).toEqual(CREATED_AT);
+    expect(row.occurredAt).not.toEqual(EXPENSE_OCCURRED_AT);
+  });
+
+  it('REFUND/DEBIT — descriptionCode PAYMENT_REFUND', () => {
+    const row = projectStatementRow(entry({ entryType: 'REFUND', direction: 'DEBIT' }), new Map());
+    expect(row.descriptionCode).toBe('PAYMENT_REFUND');
+    expect(row.description).toBeNull();
+    expect(row.occurredAt).toEqual(CREATED_AT);
+  });
+
+  it('REVERSAL/DEBIT — descriptionCode PAYMENT_REVERSAL', () => {
+    const row = projectStatementRow(
+      entry({ entryType: 'REVERSAL', direction: 'DEBIT' }),
+      new Map(),
+    );
+    expect(row.descriptionCode).toBe('PAYMENT_REVERSAL');
+    expect(row.description).toBeNull();
+    expect(row.occurredAt).toEqual(CREATED_AT);
   });
 });

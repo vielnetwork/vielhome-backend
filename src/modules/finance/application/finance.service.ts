@@ -1,6 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { ChargeKind, Prisma, PaymentStatus, ExpenseCategory, ExpenseStatus } from '@prisma/client';
+import {
+  ChargeKind,
+  Prisma,
+  PaymentStatus,
+  ExpenseCategory,
+  ExpenseStatus,
+  type Expense,
+  type LedgerEntry,
+} from '@prisma/client';
 import { FinanceRepository } from '../infrastructure/repositories/finance.repository';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { ChargePolicy } from '../domain/policies/charge.policy';
@@ -42,6 +50,155 @@ import {
 /** ADR-095 — defensive backstop against `Adjustment`'s `@@unique([sourceType, sourceId])` racing a concurrent duplicate late-fee application; the `findAdjustmentBySource` pre-check in `applyLateFee` handles the non-concurrent case. */
 function isUniqueConstraintViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
+
+/**
+ * FIN-SUM-01A — stable, Mobile-localizable codes for the Fund Statement.
+ * Deliberately NOT free-text: Mobile maps each code to a localized
+ * string client-side (same reason `descriptionCode` exists at all
+ * instead of just shipping `description` everywhere), so these values
+ * are a contract Mobile depends on and must not be renamed casually.
+ */
+export type FundStatementDescriptionCode =
+  | 'OPENING_BALANCE'
+  | 'UNIT_CHARGE_PAYMENT'
+  | 'EXPENSE_VOID'
+  | 'PAYMENT_REFUND'
+  | 'PAYMENT_REVERSAL';
+
+/** FIN-SUM-01A — one row of `GET :id/funds/:fundId/statement`'s response. */
+export interface FundStatementRow {
+  id: string;
+  occurredAt: Date;
+  direction: 'CREDIT' | 'DEBIT';
+  amount: number;
+  type: LedgerEntry['entryType'];
+  descriptionCode: FundStatementDescriptionCode | null;
+  description: string | null;
+}
+
+/**
+ * FIN-SUM-01A — projects one raw, cash-moving `LedgerEntry` into the
+ * Fund Statement's public row shape. Exported and kept as a standalone
+ * pure function (no DB access, no `this`) specifically so it can be
+ * unit-tested against every (entryType, direction) combination directly,
+ * without going through `FinanceService.getFundStatement`'s DB-mocking
+ * setup.
+ *
+ * Every branch below is one line straight from the ticket's projection
+ * rules table; the comments on each case are what's NOT obvious from the
+ * rule alone:
+ *  - OPENING_BALANCE/CREDIT and PAYMENT/CREDIT: `description` stays
+ *    `null` on purpose. The stored `LedgerEntry.description` for
+ *    OPENING_BALANCE is a raw Persian string written at Fund-creation
+ *    time (`FinanceRepository.createFund`) — exposing it here would
+ *    both violate "no localized strings in Backend except existing
+ *    stored *user* data" (that string isn't user data, it's a Backend-
+ *    authored label) and duplicate what `descriptionCode` already
+ *    conveys. PAYMENT never carries a description in the first place —
+ *    `createPayment`/`approvePayment` never write one — and even if it
+ *    did, a payment's `LedgerEntry` is never joined to Unit/Person data
+ *    here, so there is nothing unit- or payer-identifying to leak either
+ *    way.
+ *  - EXPENSE/DEBIT: no `descriptionCode` — `Expense.title` is real,
+ *    specific, human-authored text (not a template Mobile would
+ *    localize), so a stable code would be redundant. `occurredAt` is
+ *    `Expense.occurredAt` (the business date), NOT this ledger entry's
+ *    own `createdAt` (when it was recorded) — the two can legitimately
+ *    differ, and the business date is what a statement reader expects
+ *    to see next to a real-world expense.
+ *  - EXPENSE/CREDIT (void counter-entry): `occurredAt` is this entry's
+ *    OWN `createdAt` (the void posting time), never the original
+ *    Expense's `occurredAt` — reusing the expense's business date here
+ *    would misdate when the fund's cash actually came back. `title` is
+ *    still safe to surface (an expense title, e.g. "Elevator repair",
+ *    carries no unit number or payer identity).
+ *  - A miss in `expenseById` (the batch-resolved Expense somehow wasn't
+ *    found — should not happen given `LedgerEntry`'s append-only,
+ *    Expense-referencing-only-itself invariant, but handled
+ *    defensively rather than throwing mid-page) falls back to a `null`
+ *    description rather than a raw id or an exception.
+ *  - REFUND/DEBIT and REVERSAL/DEBIT: plain code, no description — same
+ *    "nothing on this entry to describe beyond its type" reasoning as
+ *    PAYMENT.
+ *  - Any other (entryType, direction) pair is unreachable given
+ *    `FUND_STATEMENT_ENTRY_TYPES`' 5-type filter and the fixed direction
+ *    each of those types is always written with in this codebase (see
+ *    `FinanceRepository`'s `createFund`/`approvePayment`/`createExpense`
+ *    /`voidExpense`/`createRefund`/`reversePayment` — confirmed by audit
+ *    before writing this), but is still handled defensively (null
+ *    code/description, this entry's own `createdAt`) rather than thrown,
+ *    so an unexpected future entry shape degrades gracefully instead of
+ *    500ing the whole page.
+ */
+export function projectStatementRow(
+  entry: LedgerEntry,
+  expenseById: Map<string, Pick<Expense, 'id' | 'title' | 'occurredAt'>>,
+): FundStatementRow {
+  const base = {
+    id: entry.id,
+    direction: entry.direction,
+    amount: entry.amount,
+    type: entry.entryType,
+  };
+
+  if (entry.entryType === 'OPENING_BALANCE' && entry.direction === 'CREDIT') {
+    return {
+      ...base,
+      occurredAt: entry.createdAt,
+      descriptionCode: 'OPENING_BALANCE',
+      description: null,
+    };
+  }
+
+  if (entry.entryType === 'PAYMENT' && entry.direction === 'CREDIT') {
+    return {
+      ...base,
+      occurredAt: entry.createdAt,
+      descriptionCode: 'UNIT_CHARGE_PAYMENT',
+      description: null,
+    };
+  }
+
+  if (entry.entryType === 'EXPENSE' && entry.direction === 'DEBIT') {
+    const expense = expenseById.get(entry.referenceId);
+    return {
+      ...base,
+      occurredAt: expense?.occurredAt ?? entry.createdAt,
+      descriptionCode: null,
+      description: expense?.title ?? null,
+    };
+  }
+
+  if (entry.entryType === 'EXPENSE' && entry.direction === 'CREDIT') {
+    const expense = expenseById.get(entry.referenceId);
+    return {
+      ...base,
+      occurredAt: entry.createdAt,
+      descriptionCode: 'EXPENSE_VOID',
+      description: expense?.title ?? null,
+    };
+  }
+
+  if (entry.entryType === 'REFUND' && entry.direction === 'DEBIT') {
+    return {
+      ...base,
+      occurredAt: entry.createdAt,
+      descriptionCode: 'PAYMENT_REFUND',
+      description: null,
+    };
+  }
+
+  if (entry.entryType === 'REVERSAL' && entry.direction === 'DEBIT') {
+    return {
+      ...base,
+      occurredAt: entry.createdAt,
+      descriptionCode: 'PAYMENT_REVERSAL',
+      description: null,
+    };
+  }
+
+  return { ...base, occurredAt: entry.createdAt, descriptionCode: null, description: null };
 }
 import { ChargeBatchCancelledEvent, ChargeBatchIssuedEvent } from '../events/charge-batch.events';
 import {
@@ -1835,6 +1992,38 @@ export class FinanceService {
       toSkipTake(pagination),
     );
     return { items, meta: buildPaginationMeta(pagination, total) };
+  }
+
+  /**
+   * FIN-SUM-01A — one Fund's paginated, member-facing cash statement.
+   * Same building-existence + fund-isolation guard `getFund`/`updateFund`
+   * already use (`getFund` 404s as "Fund not found" whenever the fundId
+   * doesn't belong to this buildingId — this is what stops one building's
+   * member from reading another building's Fund statement by supplying
+   * its fundId directly), then delegates the actual row selection/
+   * filtering/Expense batch-resolution to `FinanceRepository.
+   * getFundStatement`, and projects each raw `LedgerEntry` into the
+   * statement's public row shape via `projectStatementRow` below —
+   * kept as a separate, individually-testable pure function rather than
+   * inlined here, since it's the one piece of this feature with real
+   * per-type branching logic worth unit-testing in isolation.
+   */
+  async getFundStatement(buildingId: string, fundId: string, pagination: PaginationParams) {
+    await this.getBuilding(buildingId);
+    await this.getFund(buildingId, fundId);
+
+    const { items, total, expenses } = await this.finance.getFundStatement(
+      buildingId,
+      fundId,
+      toSkipTake(pagination),
+    );
+
+    const expenseById = new Map<string, Pick<Expense, 'id' | 'title' | 'occurredAt'>>(
+      expenses.map((expense) => [expense.id, expense]),
+    );
+    const rows = items.map((entry) => projectStatementRow(entry, expenseById));
+
+    return { items: rows, meta: buildPaginationMeta(pagination, total) };
   }
 
   /** 21_ADRs > ADR-055 — `12_Finance_Architecture_v2.0`'s Collection Rate report, see `FinanceRepository.getCollectionRate` for exactly what's computed and how. */
