@@ -4,9 +4,20 @@ import {
   AdCampaignStatus,
   AdExternalProvider,
   AdPlacement,
+  AdPresentationFormat,
   AdSlotFillStrategy,
 } from '@prisma/client';
-import { IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsDateString,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 export const AD_CAMPAIGN_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
 export const AD_CAMPAIGN_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
@@ -84,4 +95,8 @@ export class UpdateAdminAdSlotDto {
   @IsEnum(AdExternalProvider) externalProvider!: AdExternalProvider;
   @IsOptional() @IsString() androidAdUnitId?: string | null;
   @IsOptional() @IsString() iosAdUnitId?: string | null;
+  @IsOptional() @IsEnum(AdPresentationFormat) presentationFormat?: AdPresentationFormat;
+  @IsOptional() @IsInt() @Min(1) @Max(10) minimumDisplaySeconds?: number | null;
+  @IsOptional() @IsBoolean() skippable?: boolean | null;
+  @IsOptional() @IsInt() @Min(1) maxPerSession?: number | null;
 }

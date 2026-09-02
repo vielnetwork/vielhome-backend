@@ -5,6 +5,7 @@ import type {
   AdCampaignStatus,
   AdExternalProvider,
   AdPlacement,
+  AdPresentationFormat,
   AdSlot,
   AdSlotFillStrategy,
 } from '@prisma/client';
@@ -74,6 +75,10 @@ export interface UpdateAdSlotFillInput {
   externalProvider: AdExternalProvider;
   androidAdUnitId?: string | null;
   iosAdUnitId?: string | null;
+  presentationFormat?: AdPresentationFormat;
+  minimumDisplaySeconds?: number | null;
+  skippable?: boolean | null;
+  maxPerSession?: number | null;
 }
 
 const SOURCES: AdCampaignSource[] = ['DIRECT', 'MARKETPLACE', 'EXTERNAL'];
@@ -82,6 +87,8 @@ const PLACEMENTS: AdPlacement[] = [
   'HOME_TODAY_OFFERS',
   'HOME_CONTENT_CAROUSEL',
   'HOME_FEATURED_LARGE',
+  'HOME_INTERSTITIAL',
+  'PAYMENT_ENTRY_INTERSTITIAL',
 ];
 
 /** Lifecycle transitions this phase allows. `ENDED` is terminal — no
@@ -106,6 +113,8 @@ const SLOT_ZONE_BY_PLACEMENT: Partial<Record<AdPlacement, string>> = {
   HOME_TODAY_OFFERS: 'N',
   HOME_FEATURED_LARGE: 'S',
 };
+
+const INTERSTITIAL_PLACEMENTS: AdPlacement[] = ['HOME_INTERSTITIAL', 'PAYMENT_ENTRY_INTERSTITIAL'];
 
 /**
  * Monetization & Advertising — Phase 3/4 (Backend/Domain Foundation +
@@ -154,12 +163,26 @@ export class AdCampaignService {
   ) {
     const current = await this.repository.findSlotById(id);
     if (!current) throw new NotFoundAppError('Advertising slot not found.');
-    this.assertValidSlotFill(input);
+    const proposed = {
+      ...current,
+      ...input,
+      androidAdUnitId: this.normalizeAdUnitId(input.androidAdUnitId ?? current.androidAdUnitId),
+      iosAdUnitId: this.normalizeAdUnitId(input.iosAdUnitId ?? current.iosAdUnitId),
+    };
+    this.assertValidSlotFill(proposed);
     const updated = await this.repository.updateSlotFill(id, {
       fillStrategy: input.fillStrategy,
       externalProvider: input.externalProvider,
       androidAdUnitId: this.normalizeAdUnitId(input.androidAdUnitId),
       iosAdUnitId: this.normalizeAdUnitId(input.iosAdUnitId),
+      ...(input.presentationFormat !== undefined
+        ? { presentationFormat: input.presentationFormat }
+        : {}),
+      ...(input.minimumDisplaySeconds !== undefined
+        ? { minimumDisplaySeconds: input.minimumDisplaySeconds }
+        : {}),
+      ...(input.skippable !== undefined ? { skippable: input.skippable } : {}),
+      ...(input.maxPerSession !== undefined ? { maxPerSession: input.maxPerSession } : {}),
     });
     await this.audit.record({
       actorId,
@@ -445,6 +468,26 @@ export class AdCampaignService {
     if (input.externalProvider !== 'ADMOB' && (input.androidAdUnitId || input.iosAdUnitId)) {
       throw new ValidationError('Ad unit IDs require the ADMOB provider.');
     }
+    if (input.presentationFormat === 'FULL_SCREEN') {
+      if (input.fillStrategy !== 'DIRECT_ONLY' || input.externalProvider !== 'NONE') {
+        throw new ValidationError(
+          'FULL_SCREEN slots must be direct-only with no external provider.',
+        );
+      }
+      if (
+        input.minimumDisplaySeconds == null ||
+        input.minimumDisplaySeconds < 1 ||
+        input.minimumDisplaySeconds > 10
+      ) {
+        throw new ValidationError('minimumDisplaySeconds must be between 1 and 10.');
+      }
+      if (input.skippable == null) {
+        throw new ValidationError('FULL_SCREEN slots require a skippable policy.');
+      }
+      if (input.maxPerSession == null || input.maxPerSession < 1) {
+        throw new ValidationError('maxPerSession must be at least 1.');
+      }
+    }
   }
 
   private resolveCampaignImageUrl(imageUrl: string): string {
@@ -527,8 +570,19 @@ export class AdCampaignService {
     const slot = await this.repository.findSlotById(input.adSlotId);
     if (!slot) throw new ValidationError('Unknown advertising slot.');
     if (!slot.isActive) throw new BusinessRuleViolationError('Advertising slot is inactive.');
+    if (INTERSTITIAL_PLACEMENTS.includes(input.placement)) {
+      if (slot.presentationFormat !== 'FULL_SCREEN') {
+        throw new ValidationError('Interstitial campaigns require a FULL_SCREEN slot.');
+      }
+      if (input.source !== 'DIRECT') {
+        throw new ValidationError('FULL_SCREEN slots accept DIRECT campaigns only.');
+      }
+    }
+    if (slot.placement !== input.placement) {
+      throw new ValidationError('Advertising slot is not compatible with campaign placement.');
+    }
     const expectedZone = SLOT_ZONE_BY_PLACEMENT[input.placement];
-    if (!expectedZone || slot.page !== 'HOME' || slot.zone !== expectedZone) {
+    if (expectedZone && (slot.page !== 'HOME' || slot.zone !== expectedZone)) {
       throw new ValidationError('Advertising slot is not compatible with campaign placement.');
     }
     if (input.buildingId) {

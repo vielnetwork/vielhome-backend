@@ -161,6 +161,7 @@ async function seedActiveCampaign(
       status: 'ACTIVE',
       source: 'DIRECT',
       placement: 'HOME_TODAY_OFFERS',
+      adSlot: { connect: { id: 'slot-home-n-01' } },
       priority: 5,
       startsAt: new Date(Date.now() - 60_000),
       endsAt: new Date(Date.now() + 60_000),
@@ -383,7 +384,18 @@ describe('Advertising Delivery (GET /buildings/:id/advertising/placements/:place
       .set('Authorization', `Bearer ${member.accessToken}`)
       .expect(200);
 
-    expect(res.body.data).toEqual({ placement: 'HOME_FEATURED_LARGE', items: [] });
+    expect(res.body.data).toEqual(
+      expect.objectContaining({
+        placement: 'HOME_FEATURED_LARGE',
+        items: [],
+        slots: expect.arrayContaining([
+          expect.objectContaining({
+            campaign: null,
+            slot: expect.objectContaining({ code: 'HOM-S-01' }),
+          }),
+        ]),
+      }),
+    );
   });
 
   it('rejects an invalid placement with a validation error, not a 500', async () => {

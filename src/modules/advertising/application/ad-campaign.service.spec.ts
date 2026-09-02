@@ -23,6 +23,11 @@ function makeRepository(overrides: Partial<Record<string, jest.Mock>> = {}) {
       label: 'Home — Top Carousel — Slot 1',
       description: null,
       orientation: 'HORIZONTAL',
+      placement: 'HOME_TODAY_OFFERS',
+      presentationFormat: 'INLINE',
+      minimumDisplaySeconds: null,
+      skippable: null,
+      maxPerSession: null,
       fillStrategy: 'DIRECT_ONLY',
       externalProvider: 'NONE',
       androidAdUnitId: null,
@@ -94,6 +99,11 @@ function campaignFixture(overrides: Partial<AdCampaign> = {}): AdCampaign {
       label: 'Home — Top Carousel — Slot 1',
       description: null,
       orientation: 'HORIZONTAL',
+      placement: 'HOME_TODAY_OFFERS',
+      presentationFormat: 'INLINE',
+      minimumDisplaySeconds: null,
+      skippable: null,
+      maxPerSession: null,
       fillStrategy: 'DIRECT_ONLY',
       externalProvider: 'NONE',
       androidAdUnitId: null,
@@ -390,6 +400,34 @@ describe('AdCampaignService', () => {
           'req',
         ),
       ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('allows only DIRECT campaigns on a full-screen interstitial slot', async () => {
+      const interstitialSlot = {
+        ...(await makeRepository().findSlotById('slot-n-01')),
+        id: 'slot-home-i-01',
+        code: 'HOM-I-01',
+        zone: 'I',
+        placement: 'HOME_INTERSTITIAL',
+        presentationFormat: 'FULL_SCREEN',
+        minimumDisplaySeconds: 3,
+        skippable: true,
+        maxPerSession: 1,
+      };
+      const repository = makeRepository({
+        findSlotById: jest.fn().mockResolvedValue(interstitialSlot),
+        create: jest.fn().mockResolvedValue(campaignFixture()),
+      });
+      const service = new AdCampaignService(repository, makeAudit(), makeStorage());
+      const input = baseInput({
+        placement: 'HOME_INTERSTITIAL',
+        adSlotId: 'slot-home-i-01',
+      });
+
+      await expect(service.createCampaign(input, 'staff-1', 'req-1')).resolves.toBeDefined();
+      await expect(
+        service.createCampaign({ ...input, source: 'EXTERNAL' }, 'staff-1', 'req-2'),
+      ).rejects.toThrow('FULL_SCREEN slots accept DIRECT campaigns only.');
     });
 
     it('rejects an invalid date range (endsAt not after startsAt)', async () => {
@@ -739,6 +777,62 @@ describe('AdCampaignService', () => {
         ).rejects.toBeInstanceOf(ValidationError);
       },
     );
+
+    it.each([0, 11])('rejects invalid full-screen minimumDisplaySeconds %s', async (value) => {
+      const repository = makeRepository({
+        findSlotById: jest.fn().mockResolvedValue({
+          ...(await makeRepository().findSlotById('slot-n-01')),
+          placement: 'HOME_INTERSTITIAL',
+          presentationFormat: 'FULL_SCREEN',
+          minimumDisplaySeconds: 3,
+          skippable: true,
+          maxPerSession: 1,
+        }),
+      });
+      await expect(
+        new AdCampaignService(repository, makeAudit()).updateSlotFill(
+          'slot-i-01',
+          {
+            fillStrategy: 'DIRECT_ONLY',
+            externalProvider: 'NONE',
+            minimumDisplaySeconds: value,
+          },
+          'staff-1',
+          'req-1',
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('rejects invalid full-screen maxPerSession while inline slots require no policy', async () => {
+      const fullScreen = makeRepository({
+        findSlotById: jest.fn().mockResolvedValue({
+          ...(await makeRepository().findSlotById('slot-n-01')),
+          placement: 'HOME_INTERSTITIAL',
+          presentationFormat: 'FULL_SCREEN',
+          minimumDisplaySeconds: 3,
+          skippable: true,
+          maxPerSession: 1,
+        }),
+      });
+      await expect(
+        new AdCampaignService(fullScreen, makeAudit()).updateSlotFill(
+          'slot-i-01',
+          { fillStrategy: 'DIRECT_ONLY', externalProvider: 'NONE', maxPerSession: 0 },
+          'staff-1',
+          'req-1',
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      const inline = makeRepository({ updateSlotFill: jest.fn().mockResolvedValue({}) });
+      await expect(
+        new AdCampaignService(inline, makeAudit()).updateSlotFill(
+          'slot-n-01',
+          { fillStrategy: 'DIRECT_ONLY', externalProvider: 'NONE' },
+          'staff-1',
+          'req-1',
+        ),
+      ).resolves.toBeDefined();
+    });
   });
 
   describe('getPlacementInventory (Phase 4 delivery)', () => {

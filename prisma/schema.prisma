@@ -120,9 +120,9 @@ model Person {
   // Gamification (ADR-028) — `xpBalance` is the denormalized running total
   // described in the Gamification schema section above (Fund.balance-style
   // cache), kept in sync by `GamificationRepository.awardXp`.
-  xpBalance      Int                 @default(0)
-  xpTransactions XpTransaction[]     @relation("XpTransactionPerson")
-  achievements   PersonAchievement[] @relation("PersonAchievementOwner")
+  xpBalance              Int                 @default(0)
+  xpTransactions         XpTransaction[]     @relation("XpTransactionPerson")
+  achievements           PersonAchievement[] @relation("PersonAchievementOwner")
   // 21_ADRs > ADR-124 — nullable, same "only ever populated for a real,
   // API-driven action" shape as `rbacRoleGrantsRevoked` above; a
   // gameplay-unlocked achievement (never revoked) has no entry here.
@@ -1051,13 +1051,13 @@ enum PaymentDebtReservationState {
 model Payment {
   id             String               @id @default(cuid())
   buildingId     String
-  building       Building      @relation(fields: [buildingId], references: [id])
+  building       Building             @relation(fields: [buildingId], references: [id])
   unitId         String
-  unit           Unit          @relation(fields: [unitId], references: [id])
+  unit           Unit                 @relation(fields: [unitId], references: [id])
   fundId         String
-  fund           Fund          @relation(fields: [fundId], references: [id])
+  fund           Fund                 @relation(fields: [fundId], references: [id])
   payerId        String
-  payer          Person        @relation("PaymentPayer", fields: [payerId], references: [id])
+  payer          Person               @relation("PaymentPayer", fields: [payerId], references: [id])
   amount         Int
   method         PaymentMethod
   status         PaymentStatus        @default(PENDING_APPROVAL)
@@ -1066,7 +1066,7 @@ model Payment {
   reference      String?
   note           String?
   approvedById   String?
-  approvedBy     Person?       @relation("PaymentApprovedBy", fields: [approvedById], references: [id])
+  approvedBy     Person?              @relation("PaymentApprovedBy", fields: [approvedById], references: [id])
   approvedAt     DateTime?
   rejectedReason String?
   // Added in ADR-037 — set on reversal (REVERSED) alongside `status`.
@@ -1075,12 +1075,12 @@ model Payment {
   // and reason, the same "don't duplicate what audit already captures"
   // choice made for every other terminal transition in this schema.
   reversedAt     DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
 
-  allocations    PaymentAllocation[]
-  debtSelections PaymentDebtSelection[]
-  refunds        Refund[]
+  allocations          PaymentAllocation[]
+  debtSelections       PaymentDebtSelection[]
+  refunds              Refund[]
   receiptUploadIntents DocumentUploadIntent[] @relation("PaymentReceiptUploadIntent")
 
   @@unique([payerId, buildingId, idempotencyKey])
@@ -1094,16 +1094,16 @@ model Payment {
 // survive every Payment status transition but never mean accounting was
 // posted; approved application remains PaymentAllocation's responsibility.
 model PaymentDebtSelection {
-  id             String      @id @default(cuid())
-  paymentId      String
-  payment        Payment     @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  chargeItemId   String?
-  chargeItem     ChargeItem? @relation(fields: [chargeItemId], references: [id], onDelete: Restrict)
-  adjustmentId   String?
-  adjustment     Adjustment? @relation(fields: [adjustmentId], references: [id], onDelete: Restrict)
-  selectedAmount Int
+  id               String                       @id @default(cuid())
+  paymentId        String
+  payment          Payment                      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  chargeItemId     String?
+  chargeItem       ChargeItem?                  @relation(fields: [chargeItemId], references: [id], onDelete: Restrict)
+  adjustmentId     String?
+  adjustment       Adjustment?                  @relation(fields: [adjustmentId], references: [id], onDelete: Restrict)
+  selectedAmount   Int
   reservationState PaymentDebtReservationState?
-  createdAt      DateTime    @default(now())
+  createdAt        DateTime                     @default(now())
 
   @@unique([paymentId, chargeItemId])
   @@unique([paymentId, adjustmentId])
@@ -1311,7 +1311,7 @@ model Expense {
   status      ExpenseStatus   @default(POSTED)
 
   createdById String
-  createdBy   Person   @relation("ExpenseCreatedBy", fields: [createdById], references: [id])
+  createdBy   Person @relation("ExpenseCreatedBy", fields: [createdById], references: [id])
 
   voidedAt   DateTime?
   voidedById String?
@@ -2501,8 +2501,6 @@ model XpTransaction {
   referenceId   String?
   createdAt     DateTime  @default(now())
 
-  @@index([personId])
-  @@index([personId, reason])
   // 21_ADRs > ADR-123 — replaces the old plain (referenceType,
   // referenceId) index with a UNIQUE composite index that also includes
   // `reason`. This is the durable, DB-level idempotency guarantee behind
@@ -2531,6 +2529,8 @@ model XpTransaction {
   // be silently suppressed by this constraint the way a genuine
   // duplicate gameplay award should be.
   @@unique([referenceType, referenceId, reason])
+  @@index([personId])
+  @@index([personId, reason])
   @@map("xp_transactions")
 }
 
@@ -2589,9 +2589,9 @@ model PersonAchievement {
   // forever. Only `GamificationAdministrationService.revokeAchievement`
   // ever sets these, mirroring `StaffRole.revokedById`/`revokedAt`'s own
   // nullable-actor-FK shape exactly.
-  revokedById String?
-  revokedBy   Person?   @relation("PersonAchievementRevokedBy", fields: [revokedById], references: [id])
-  revokedAt   DateTime?
+  revokedById  String?
+  revokedBy    Person?               @relation("PersonAchievementRevokedBy", fields: [revokedById], references: [id])
+  revokedAt    DateTime?
 
   @@index([personId, definitionId])
   @@index([personId])
@@ -3338,31 +3338,31 @@ model FraudCaseEvidence {
 // the letter of Rule 019 while preserving its substance (a documented,
 // staff-decided appeal outcome).
 model EnforcementAction {
-  id                 String                  @id @default(cuid())
-  fraudCaseId        String
-  fraudCase          FraudCase               @relation(fields: [fraudCaseId], references: [id])
-  type               EnforcementActionType
-  targetType         EnforcementTargetType
-  targetPersonId     String?
-  targetPerson       Person?                 @relation("EnforcementActionTargetPerson", fields: [targetPersonId], references: [id])
-  targetBuildingId   String?
-  targetBuilding     Building?               @relation(fields: [targetBuildingId], references: [id])
-  targetMembershipId String?
-  targetMembership   Membership?             @relation(fields: [targetMembershipId], references: [id])
-  reason             String?
-  issuedById         String
-  issuedBy           Person                  @relation("EnforcementActionIssuedBy", fields: [issuedById], references: [id])
-  issuedAt           DateTime                @default(now())
-  appealStatus       EnforcementAppealStatus @default(NONE)
-  appealReason       String?
-  appealedAt         DateTime?
-  appealDecidedById  String?
-  appealDecidedBy    Person?                 @relation("EnforcementActionAppealDecidedBy", fields: [appealDecidedById], references: [id])
-  appealDecidedAt    DateTime?
-  idempotencyKey     String?                 @unique
-  effectApplied      Boolean                 @default(false)
+  id                  String                  @id @default(cuid())
+  fraudCaseId         String
+  fraudCase           FraudCase               @relation(fields: [fraudCaseId], references: [id])
+  type                EnforcementActionType
+  targetType          EnforcementTargetType
+  targetPersonId      String?
+  targetPerson        Person?                 @relation("EnforcementActionTargetPerson", fields: [targetPersonId], references: [id])
+  targetBuildingId    String?
+  targetBuilding      Building?               @relation(fields: [targetBuildingId], references: [id])
+  targetMembershipId  String?
+  targetMembership    Membership?             @relation(fields: [targetMembershipId], references: [id])
+  reason              String?
+  issuedById          String
+  issuedBy            Person                  @relation("EnforcementActionIssuedBy", fields: [issuedById], references: [id])
+  issuedAt            DateTime                @default(now())
+  appealStatus        EnforcementAppealStatus @default(NONE)
+  appealReason        String?
+  appealedAt          DateTime?
+  appealDecidedById   String?
+  appealDecidedBy     Person?                 @relation("EnforcementActionAppealDecidedBy", fields: [appealDecidedById], references: [id])
+  appealDecidedAt     DateTime?
+  idempotencyKey      String?                 @unique
+  effectApplied       Boolean                 @default(false)
   previousTargetState String?
-  effectReversedAt   DateTime?
+  effectReversedAt    DateTime?
 
   @@index([fraudCaseId])
   @@index([targetPersonId])
@@ -3788,10 +3788,10 @@ model ComplianceCase {
   // why this is on-demand, not scheduler-driven); false when a staff
   // member opens it by hand. `openedById` is null exactly when
   // `isAutoDetected` is true.
-  isAutoDetected Boolean @default(false)
+  isAutoDetected     Boolean @default(false)
   activeDetectionKey String? @unique
-  openedById     String?
-  openedBy       Person? @relation("ComplianceCaseOpenedBy", fields: [openedById], references: [id])
+  openedById         String?
+  openedBy           Person? @relation("ComplianceCaseOpenedBy", fields: [openedById], references: [id])
 
   assignedToId String?
   assignedTo   Person? @relation("ComplianceCaseAssignedTo", fields: [assignedToId], references: [id])
@@ -3984,6 +3984,13 @@ enum AdPlacement {
   HOME_TODAY_OFFERS
   HOME_CONTENT_CAROUSEL
   HOME_FEATURED_LARGE
+  HOME_INTERSTITIAL
+  PAYMENT_ENTRY_INTERSTITIAL
+}
+
+enum AdPresentationFormat {
+  INLINE
+  FULL_SCREEN
 }
 
 enum AdSlotOrientation {
@@ -4003,26 +4010,32 @@ enum AdExternalProvider {
 }
 
 model AdSlot {
-  id               String             @id @default(cuid())
-  code             String             @unique
-  page             String
-  zone             String
-  position         Int
-  label            String
-  description      String?
-  orientation      AdSlotOrientation
-  fillStrategy     AdSlotFillStrategy @default(DIRECT_ONLY)
-  externalProvider AdExternalProvider @default(NONE)
-  androidAdUnitId  String?
-  iosAdUnitId      String?
-  isActive         Boolean            @default(true)
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
+  id                    String               @id @default(cuid())
+  code                  String               @unique
+  page                  String
+  zone                  String
+  position              Int
+  label                 String
+  description           String?
+  orientation           AdSlotOrientation
+  placement             AdPlacement
+  presentationFormat    AdPresentationFormat @default(INLINE)
+  minimumDisplaySeconds Int?
+  skippable             Boolean?
+  maxPerSession         Int?
+  fillStrategy          AdSlotFillStrategy   @default(DIRECT_ONLY)
+  externalProvider      AdExternalProvider   @default(NONE)
+  androidAdUnitId       String?
+  iosAdUnitId           String?
+  isActive              Boolean              @default(true)
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
 
   campaigns AdCampaign[]
 
   @@unique([page, zone, position])
   @@index([page, zone, isActive, position])
+  @@index([placement, isActive, position])
   @@map("ad_slots")
 }
 
@@ -4030,19 +4043,19 @@ model AdSlot {
 // comment for why this is one table rather than Campaign/Placement/
 // Source/Creative each as their own model.
 model AdCampaign {
-  id          String           @id @default(cuid())
-  name        String
-  status      AdCampaignStatus @default(DRAFT)
-  source      AdCampaignSource
-  placement   AdPlacement
-  adSlotId    String?
-  adSlot      AdSlot?          @relation(fields: [adSlotId], references: [id])
+  id        String           @id @default(cuid())
+  name      String
+  status    AdCampaignStatus @default(DRAFT)
+  source    AdCampaignSource
+  placement AdPlacement
+  adSlotId  String?
+  adSlot    AdSlot?          @relation(fields: [adSlotId], references: [id])
   // Higher runs first when multiple eligible campaigns compete for the
   // same placement. No enforced upper bound in this phase — ordering
   // semantics only, not a points/budget system.
-  priority    Int              @default(0)
-  startsAt    DateTime
-  endsAt      DateTime
+  priority  Int              @default(0)
+  startsAt  DateTime
+  endsAt    DateTime
 
   // Creative — deliberately flat fields on this table, not a separate
   // model (see header comment).

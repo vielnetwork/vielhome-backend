@@ -62,7 +62,14 @@ export class AdCampaignRepository {
     id: string,
     data: Pick<
       Prisma.AdSlotUpdateInput,
-      'fillStrategy' | 'externalProvider' | 'androidAdUnitId' | 'iosAdUnitId'
+      | 'fillStrategy'
+      | 'externalProvider'
+      | 'androidAdUnitId'
+      | 'iosAdUnitId'
+      | 'presentationFormat'
+      | 'minimumDisplaySeconds'
+      | 'skippable'
+      | 'maxPerSession'
     >,
   ) {
     return this.prisma.adSlot.update({ where: { id }, data });
@@ -148,6 +155,9 @@ export class AdCampaignRepository {
    * (composable, independent dimensions — a null dimension never narrows
    * the result). Ordered `priority DESC` then a fully deterministic
    * `createdAt ASC, id ASC` tie-breaker, capped at `limit`.
+   * TODO(ADV-INT-01C): the implementation below currently orders by slot
+   * position/code and never applies campaign priority. Preserve that N/S
+   * behavior here; add explicit winner resolution with N/S regressions in 01C.
    */
   findEligibleForPlacement(query: EligibleCampaignQuery): Promise<AdCampaignWithSlot[]> {
     return this.prisma.adCampaign.findMany({

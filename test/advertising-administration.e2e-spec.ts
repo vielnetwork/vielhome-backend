@@ -228,6 +228,7 @@ function campaignPayload(buildingId: string, suffix = 'main') {
     name: `Advertising E2E ${RUN_ID} ${suffix}`,
     source: 'DIRECT',
     placement: 'HOME_TODAY_OFFERS',
+    adSlotId: 'slot-home-n-01',
     priority: 10,
     startsAt: '2026-08-01T00:00:00.000Z',
     endsAt: '2026-09-01T00:00:00.000Z',
