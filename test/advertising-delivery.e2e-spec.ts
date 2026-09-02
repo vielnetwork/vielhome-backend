@@ -404,4 +404,79 @@ describe('Advertising Delivery (GET /buildings/:id/advertising/placements/:place
       .set('Authorization', `Bearer ${member.accessToken}`)
       .expect(400);
   });
+
+  it('requires authentication and rejects inline/unknown placements on the interstitial endpoint', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/advertising/placements/HOME_INTERSTITIAL')
+      .expect(401);
+    for (const placement of ['HOME_TODAY_OFFERS', 'NOT_A_REAL_PLACEMENT']) {
+      await request(app.getHttpServer())
+        .get(`/api/v1/advertising/placements/${placement}`)
+        .set('Authorization', `Bearer ${member.accessToken}`)
+        .expect(400);
+    }
+  });
+
+  it('accepts both interstitial placements and returns successful no-fill', async () => {
+    for (const placement of ['HOME_INTERSTITIAL', 'PAYMENT_ENTRY_INTERSTITIAL']) {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/advertising/placements/${placement}`)
+        .set('Authorization', `Bearer ${member.accessToken}`)
+        .expect(200);
+      expect(res.body.data).toEqual({ placement, winner: null });
+    }
+  });
+
+  it('validates optional buildingId and denies inaccessible building context without leaking it', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/advertising/placements/HOME_INTERSTITIAL?buildingId=not-a-uuid')
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get(`/api/v1/advertising/placements/HOME_INTERSTITIAL?buildingId=${otherBuildingId}`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .get(`/api/v1/advertising/placements/HOME_INTERSTITIAL?buildingId=${buildingId}`)
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(200);
+  });
+
+  it('without building context delivers only a global Direct winner with authoritative policy', async () => {
+    const globalId = await seedActiveCampaign(prisma, {
+      placement: 'HOME_INTERSTITIAL',
+      adSlot: { connect: { id: 'slot-home-i-01' } },
+      title: 'global interstitial',
+    });
+    const countryId = await seedActiveCampaign(prisma, {
+      placement: 'HOME_INTERSTITIAL',
+      adSlot: { connect: { id: 'slot-home-i-01' } },
+      targetCountry: 'IR',
+      title: 'country interstitial',
+    });
+    campaignIds.push(globalId, countryId);
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/advertising/placements/HOME_INTERSTITIAL')
+      .set('Authorization', `Bearer ${member.accessToken}`)
+      .expect(200);
+    expect(res.body.data.winner).toEqual(
+      expect.objectContaining({
+        id: globalId,
+        source: 'DIRECT',
+        slot: {
+          id: 'slot-home-i-01',
+          code: 'HOM-I-01',
+          placement: 'HOME_INTERSTITIAL',
+          presentationFormat: 'FULL_SCREEN',
+          minimumDisplaySeconds: 3,
+          skippable: true,
+          maxPerSession: 1,
+        },
+      }),
+    );
+    expect(JSON.stringify(res.body.data)).not.toMatch(
+      /paymentId|unitId|amount|debt|obligationId|receipt|phone/i,
+    );
+  });
 });

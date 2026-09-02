@@ -16,6 +16,7 @@ import type { PaginationParams } from '../../../common/pagination/pagination.uti
 import { AuditService } from '../../../common/audit/audit.service';
 import { StorageService } from '../../../common/storage/storage.service';
 import {
+  AuthorizationError,
   BusinessRuleViolationError,
   NotFoundAppError,
   ValidationError,
@@ -70,6 +71,24 @@ export interface PlacementInventoryResponse {
   }>;
 }
 
+export interface InterstitialInventoryResponse {
+  placement: AdPlacement;
+  winner:
+    | (Omit<PlacementInventoryItem, 'slot'> & {
+        slot: Pick<
+          AdSlot,
+          | 'id'
+          | 'code'
+          | 'placement'
+          | 'presentationFormat'
+          | 'minimumDisplaySeconds'
+          | 'skippable'
+          | 'maxPerSession'
+        >;
+      })
+    | null;
+}
+
 export interface UpdateAdSlotFillInput {
   fillStrategy: AdSlotFillStrategy;
   externalProvider: AdExternalProvider;
@@ -115,6 +134,15 @@ const SLOT_ZONE_BY_PLACEMENT: Partial<Record<AdPlacement, string>> = {
 };
 
 const INTERSTITIAL_PLACEMENTS: AdPlacement[] = ['HOME_INTERSTITIAL', 'PAYMENT_ENTRY_INTERSTITIAL'];
+const INTERSTITIAL_SLOT_CODE: Record<'HOME_INTERSTITIAL' | 'PAYMENT_ENTRY_INTERSTITIAL', string> = {
+  HOME_INTERSTITIAL: 'HOM-I-01',
+  PAYMENT_ENTRY_INTERSTITIAL: 'PAY-I-01',
+};
+
+// Combinations inherit the most specific restriction actually present:
+// building > city > country > no targeting.
+const targetSpecificity = (campaign: AdCampaign): number =>
+  campaign.buildingId ? 3 : campaign.targetCity ? 2 : campaign.targetCountry ? 1 : 0;
 
 /**
  * Monetization & Advertising — Phase 3/4 (Backend/Domain Foundation +
@@ -455,6 +483,84 @@ export class AdCampaignService {
       placement,
       items,
       slots: slots.map((slot) => ({ slot, campaign: campaignBySlot.get(slot.id) ?? null })),
+    };
+  }
+
+  async getInterstitialInventory(
+    personId: string,
+    placementInput: string,
+    buildingId: string | undefined,
+    now: Date,
+  ): Promise<InterstitialInventoryResponse> {
+    if (!INTERSTITIAL_PLACEMENTS.includes(placementInput as AdPlacement)) {
+      throw new ValidationError(`Unsupported interstitial placement: ${placementInput}.`);
+    }
+    const placement = placementInput as AdPlacement;
+    let geography: { country: string; city: string } | null = null;
+    if (buildingId) {
+      if (!(await this.repository.hasBuildingMembership(personId, buildingId))) {
+        throw new AuthorizationError('You do not have access to this building.');
+      }
+      geography = await this.repository.findBuildingGeography(buildingId);
+      if (!geography) throw new AuthorizationError('You do not have access to this building.');
+    }
+
+    const slot = await this.repository.findInterstitialSlot(
+      INTERSTITIAL_SLOT_CODE[placement as keyof typeof INTERSTITIAL_SLOT_CODE],
+    );
+    if (
+      !slot ||
+      !slot.isActive ||
+      slot.presentationFormat !== 'FULL_SCREEN' ||
+      slot.placement !== placement ||
+      slot.fillStrategy !== 'DIRECT_ONLY' ||
+      slot.externalProvider !== 'NONE' ||
+      slot.minimumDisplaySeconds == null ||
+      slot.skippable == null ||
+      slot.maxPerSession == null
+    ) {
+      return { placement, winner: null };
+    }
+
+    const candidates = await this.repository.findInterstitialCandidates({
+      placement,
+      now,
+      buildingId,
+      country: geography?.country,
+      city: geography?.city,
+    });
+    const winner = candidates
+      .filter((campaign) => campaign.adSlotId === slot.id && campaign.adSlot?.id === slot.id)
+      .sort(
+        (a, b) =>
+          targetSpecificity(b) - targetSpecificity(a) ||
+          b.priority - a.priority ||
+          a.createdAt.getTime() - b.createdAt.getTime() ||
+          a.id.localeCompare(b.id),
+      )[0];
+    if (!winner) return { placement, winner: null };
+
+    return {
+      placement,
+      winner: {
+        id: winner.id,
+        source: winner.source,
+        title: winner.title,
+        description: winner.description,
+        imageUrl: this.resolveCampaignImageUrl(winner.imageUrl),
+        ctaLabel: winner.ctaLabel,
+        ctaUrl: winner.ctaUrl,
+        sponsored: true,
+        slot: {
+          id: slot.id,
+          code: slot.code,
+          placement: slot.placement,
+          presentationFormat: slot.presentationFormat,
+          minimumDisplaySeconds: slot.minimumDisplaySeconds,
+          skippable: slot.skippable,
+          maxPerSession: slot.maxPerSession,
+        },
+      },
     };
   }
 

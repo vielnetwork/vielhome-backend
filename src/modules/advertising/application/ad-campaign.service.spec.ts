@@ -2,6 +2,7 @@ import { AdCampaignService, CreateAdCampaignInput } from './ad-campaign.service'
 import { AdCampaignRepository } from '../infrastructure/repositories/ad-campaign.repository';
 import { AuditService } from '../../../common/audit/audit.service';
 import {
+  AuthorizationError,
   BusinessRuleViolationError,
   NotFoundAppError,
   ValidationError,
@@ -39,6 +40,9 @@ function makeRepository(overrides: Partial<Record<string, jest.Mock>> = {}) {
     buildingExists: jest.fn().mockResolvedValue(null),
     findBuildingGeography: jest.fn().mockResolvedValue(null),
     findEligibleForPlacement: jest.fn().mockResolvedValue([]),
+    hasBuildingMembership: jest.fn().mockResolvedValue(true),
+    findInterstitialSlot: jest.fn().mockResolvedValue(null),
+    findInterstitialCandidates: jest.fn().mockResolvedValue([]),
     findActiveSlots: jest.fn().mockResolvedValue([]),
     listAdmin: jest.fn(),
     update: jest.fn(),
@@ -988,6 +992,171 @@ describe('AdCampaignService', () => {
       const result = await service.getPlacementInventory('bldg-1', 'HOME_TODAY_OFFERS', now);
 
       expect(result.items.map((i) => i.id)).toEqual(['camp-high', 'camp-mid', 'camp-low']);
+    });
+  });
+
+  describe('getInterstitialInventory', () => {
+    const now = new Date('2026-08-15T00:00:00.000Z');
+    const slot = {
+      id: 'slot-home-i-01',
+      code: 'HOM-I-01',
+      page: 'HOME',
+      zone: 'I',
+      position: 1,
+      label: 'Home interstitial',
+      description: null,
+      orientation: 'VERTICAL',
+      placement: 'HOME_INTERSTITIAL',
+      presentationFormat: 'FULL_SCREEN',
+      minimumDisplaySeconds: 3,
+      skippable: true,
+      maxPerSession: 1,
+      fillStrategy: 'DIRECT_ONLY',
+      externalProvider: 'NONE',
+      androidAdUnitId: null,
+      iosAdUnitId: null,
+      isActive: true,
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-01T00:00:00.000Z'),
+    };
+    const candidate = (overrides: Record<string, unknown> = {}) => ({
+      ...campaignFixture({
+        status: 'ACTIVE',
+        placement: 'HOME_INTERSTITIAL',
+        startsAt: new Date('2026-08-01T00:00:00.000Z'),
+        endsAt: new Date('2026-09-01T00:00:00.000Z'),
+      }),
+      adSlotId: slot.id,
+      adSlot: slot,
+      ...overrides,
+    });
+
+    it.each(['HOME_TODAY_OFFERS', 'NOT_REAL'])('rejects unsupported placement %s', async (p) => {
+      await expect(
+        new AdCampaignService(makeRepository(), makeAudit()).getInterstitialInventory(
+          'person-1',
+          p,
+          undefined,
+          now,
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('authorizes building context before geography and hides inaccessible buildings', async () => {
+      const repository = makeRepository({
+        hasBuildingMembership: jest.fn().mockResolvedValue(false),
+      });
+      await expect(
+        new AdCampaignService(repository, makeAudit()).getInterstitialInventory(
+          'person-1',
+          'HOME_INTERSTITIAL',
+          'building-1',
+          now,
+        ),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+      expect(repository.findBuildingGeography).not.toHaveBeenCalled();
+    });
+
+    it('returns clean no-fill for absent, inactive, or malformed authoritative slots', async () => {
+      for (const invalid of [
+        null,
+        { ...slot, isActive: false },
+        { ...slot, presentationFormat: 'INLINE' },
+      ]) {
+        const repository = makeRepository({
+          findInterstitialSlot: jest.fn().mockResolvedValue(invalid),
+        });
+        await expect(
+          new AdCampaignService(repository, makeAudit()).getInterstitialInventory(
+            'person-1',
+            'HOME_INTERSTITIAL',
+            undefined,
+            now,
+          ),
+        ).resolves.toEqual({ placement: 'HOME_INTERSTITIAL', winner: null });
+      }
+    });
+
+    it('uses building > city > country > global, then priority/date/id deterministically', async () => {
+      const sameDate = new Date('2026-08-02T00:00:00.000Z');
+      const candidates = [
+        candidate({ id: 'global', priority: 999 }),
+        candidate({ id: 'country', targetCountry: 'IR', priority: 999 }),
+        candidate({ id: 'city', targetCountry: 'IR', targetCity: 'Tehran', priority: 999 }),
+        candidate({ id: 'building-z', buildingId: 'building-1', priority: 7, createdAt: sameDate }),
+        candidate({ id: 'building-a', buildingId: 'building-1', priority: 7, createdAt: sameDate }),
+      ];
+      const repository = makeRepository({
+        findBuildingGeography: jest.fn().mockResolvedValue({ country: 'IR', city: 'Tehran' }),
+        findInterstitialSlot: jest.fn().mockResolvedValue(slot),
+        findInterstitialCandidates: jest.fn().mockResolvedValue(candidates),
+      });
+      const result = await new AdCampaignService(repository, makeAudit()).getInterstitialInventory(
+        'person-1',
+        'HOME_INTERSTITIAL',
+        'building-1',
+        now,
+      );
+      expect(result.winner?.id).toBe('building-a');
+      expect(result.winner?.slot).toEqual({
+        id: slot.id,
+        code: 'HOM-I-01',
+        placement: 'HOME_INTERSTITIAL',
+        presentationFormat: 'FULL_SCREEN',
+        minimumDisplaySeconds: 3,
+        skippable: true,
+        maxPerSession: 1,
+      });
+    });
+
+    it('isolates candidates to the authoritative placement slot', async () => {
+      const repository = makeRepository({
+        findInterstitialSlot: jest.fn().mockResolvedValue(slot),
+        findInterstitialCandidates: jest.fn().mockResolvedValue([
+          candidate({
+            adSlotId: 'slot-payment-i-01',
+            adSlot: { ...slot, id: 'slot-payment-i-01' },
+          }),
+        ]),
+      });
+      await expect(
+        new AdCampaignService(repository, makeAudit()).getInterstitialInventory(
+          'person-1',
+          'HOME_INTERSTITIAL',
+          undefined,
+          now,
+        ),
+      ).resolves.toEqual({ placement: 'HOME_INTERSTITIAL', winner: null });
+    });
+
+    it.each([
+      [[candidate({ id: 'low', priority: 1 }), candidate({ id: 'high', priority: 2 })], 'high'],
+      [
+        [
+          candidate({ id: 'new', priority: 2, createdAt: new Date('2026-08-03') }),
+          candidate({ id: 'old', priority: 2, createdAt: new Date('2026-08-02') }),
+        ],
+        'old',
+      ],
+      [
+        [
+          candidate({ id: 'z-id', priority: 2, createdAt: new Date('2026-08-02') }),
+          candidate({ id: 'a-id', priority: 2, createdAt: new Date('2026-08-02') }),
+        ],
+        'a-id',
+      ],
+    ])('applies deterministic same-specificity tie breakers', async (candidates, expected) => {
+      const repository = makeRepository({
+        findInterstitialSlot: jest.fn().mockResolvedValue(slot),
+        findInterstitialCandidates: jest.fn().mockResolvedValue(candidates),
+      });
+      const result = await new AdCampaignService(repository, makeAudit()).getInterstitialInventory(
+        'person-1',
+        'HOME_INTERSTITIAL',
+        undefined,
+        now,
+      );
+      expect(result.winner?.id).toBe(expected);
     });
   });
 });

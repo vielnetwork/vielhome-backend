@@ -8,6 +8,7 @@ import { AdvertisingAdministrationController } from './controller/advertising-ad
 import { BackofficeRbacModule } from '../backoffice-rbac/backoffice-rbac.module';
 import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
 import { BackOfficeRepository } from '../backoffice/infrastructure/repositories/backoffice.repository';
+import { InterstitialDeliveryController } from './controller/interstitial-delivery.controller';
 
 /**
  * Monetization & Advertising — Phase 3/4 (Backend/Domain Foundation +
@@ -32,7 +33,11 @@ import { BackOfficeRepository } from '../backoffice/infrastructure/repositories/
  */
 @Module({
   imports: [BuildingModule, BackofficeRbacModule],
-  controllers: [AdvertisingDeliveryController, AdvertisingAdministrationController],
+  controllers: [
+    AdvertisingDeliveryController,
+    AdvertisingAdministrationController,
+    InterstitialDeliveryController,
+  ],
   providers: [
     AdCampaignRepository,
     AdCampaignService,

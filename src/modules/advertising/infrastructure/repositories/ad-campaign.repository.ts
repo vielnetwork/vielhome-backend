@@ -19,6 +19,14 @@ export interface EligibleCampaignQuery {
   limit: number;
 }
 
+export interface InterstitialCandidateQuery {
+  placement: AdPlacement;
+  now: Date;
+  buildingId?: string;
+  country?: string;
+  city?: string;
+}
+
 export interface AdminCampaignFilters {
   status?: AdCampaignStatus;
   source?: AdCampaignSource;
@@ -143,6 +151,39 @@ export class AdCampaignRepository {
     return this.prisma.building.findUnique({
       where: { id: buildingId },
       select: { country: true, city: true },
+    });
+  }
+
+  async hasBuildingMembership(personId: string, buildingId: string): Promise<boolean> {
+    const count = await this.prisma.membership.count({
+      where: { personId, buildingId, isCurrent: true },
+    });
+    return count > 0;
+  }
+
+  findInterstitialSlot(code: string) {
+    return this.prisma.adSlot.findUnique({ where: { code } });
+  }
+
+  findInterstitialCandidates(query: InterstitialCandidateQuery): Promise<AdCampaignWithSlot[]> {
+    const targeting = query.buildingId
+      ? [
+          { OR: [{ targetCountry: null }, { targetCountry: query.country }] },
+          { OR: [{ targetCity: null }, { targetCity: query.city }] },
+          { OR: [{ buildingId: null }, { buildingId: query.buildingId }] },
+        ]
+      : [{ targetCountry: null }, { targetCity: null }, { buildingId: null }];
+    return this.prisma.adCampaign.findMany({
+      where: {
+        source: 'DIRECT',
+        placement: query.placement,
+        status: 'ACTIVE',
+        startsAt: { lte: query.now },
+        endsAt: { gte: query.now },
+        AND: targeting,
+      },
+      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      include: { adSlot: true },
     });
   }
 
