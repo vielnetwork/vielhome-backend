@@ -9,23 +9,37 @@ import { HOME_AD_SLOTS } from '../../../../prisma/seed/ad-slots.seed';
 describe('interstitial slot foundation', () => {
   const byCode = (code: string) => HOME_AD_SLOTS.filter((slot) => slot.code === code);
 
-  it('preserves the existing N/S slots as inline with their placement and fill semantics', () => {
+  it('keeps all N slots Direct-only and all S slots independently external-fallback eligible', () => {
     const inline = HOME_AD_SLOTS.filter((slot) => /^HOM-[NS]-/.test(slot.code));
     expect(inline).toHaveLength(9);
-    expect(inline).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: 'HOM-N-06',
-          placement: AdPlacement.HOME_TODAY_OFFERS,
-          presentationFormat: AdPresentationFormat.INLINE,
-          fillStrategy: AdSlotFillStrategy.DIRECT_THEN_EXTERNAL,
-          externalProvider: AdExternalProvider.ADMOB,
-        }),
-      ]),
-    );
     expect(inline.every((slot) => slot.presentationFormat === AdPresentationFormat.INLINE)).toBe(
       true,
     );
+    const native = inline.filter((slot) => slot.zone === 'N');
+    expect(native).toHaveLength(6);
+    expect(
+      native.every(
+        (slot) =>
+          slot.placement === AdPlacement.HOME_TODAY_OFFERS &&
+          slot.fillStrategy === AdSlotFillStrategy.DIRECT_ONLY &&
+          slot.externalProvider === AdExternalProvider.NONE &&
+          slot.androidAdUnitId === null &&
+          slot.iosAdUnitId === null,
+      ),
+    ).toBe(true);
+
+    const sponsored = inline.filter((slot) => slot.zone === 'S');
+    expect(sponsored.map((slot) => slot.code)).toEqual(['HOM-S-01', 'HOM-S-02', 'HOM-S-03']);
+    expect(
+      sponsored.every(
+        (slot) =>
+          slot.placement === AdPlacement.HOME_FEATURED_LARGE &&
+          slot.fillStrategy === AdSlotFillStrategy.DIRECT_THEN_EXTERNAL &&
+          slot.externalProvider === AdExternalProvider.ADMOB &&
+          slot.androidAdUnitId === null &&
+          slot.iosAdUnitId === null,
+      ),
+    ).toBe(true);
   });
 
   it.each([

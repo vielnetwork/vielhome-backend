@@ -17,6 +17,13 @@ describe('advertising slot registry seed and migration', () => {
     ),
     'utf8',
   );
+  const correctiveMigration = readFileSync(
+    join(
+      process.cwd(),
+      'prisma/migrations/20260903120000_align_home_ad_slot_fallback_policy/migration.sql',
+    ),
+    'utf8',
+  );
 
   it('defines all nine immutable Home codes exactly once in the migration', () => {
     for (const zone of ['N', 'S']) {
@@ -41,12 +48,24 @@ describe('advertising slot registry seed and migration', () => {
     expect(migration).toContain(`"adSlotId" = 'slot-home-s-01'`);
   });
 
-  it('keeps every slot direct-only by default and enables QA fallback only for HOM-N-06', () => {
+  it('preserves the historical N6 migration and corrects deployed N/S policy additively', () => {
     expect(fillMigration).toContain(`DEFAULT 'DIRECT_ONLY'`);
     expect(fillMigration).toContain(`DEFAULT 'NONE'`);
     expect(fillMigration).toContain(`WHERE "code" = 'HOM-N-06'`);
-    expect(fillMigration).toContain('ca-app-pub-3940256099942544/2247696110');
-    expect(fillMigration).toContain('ca-app-pub-3940256099942544/3986624511');
-    expect(seed).toContain('index === 5');
+    for (let position = 1; position <= 6; position += 1) {
+      expect(correctiveMigration).toContain(`'HOM-N-0${position}'`);
+    }
+    for (let position = 1; position <= 3; position += 1) {
+      expect(correctiveMigration).toContain(`'HOM-S-0${position}'`);
+    }
+    expect(correctiveMigration).toContain(`"fillStrategy" = 'DIRECT_ONLY'`);
+    expect(correctiveMigration).toContain(`"externalProvider" = 'NONE'`);
+    expect(correctiveMigration).toContain(`"fillStrategy" = 'DIRECT_THEN_EXTERNAL'`);
+    expect(correctiveMigration).toContain(`"externalProvider" = 'ADMOB'`);
+    expect(correctiveMigration.match(/"androidAdUnitId" = NULL/g)).toHaveLength(2);
+    expect(correctiveMigration.match(/"iosAdUnitId" = NULL/g)).toHaveLength(2);
+    expect(correctiveMigration).not.toContain('ca-app-pub-');
+    expect(seed).not.toContain('index === 5');
+    expect(seed).not.toContain('ca-app-pub-');
   });
 });
