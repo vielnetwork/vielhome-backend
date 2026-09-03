@@ -597,13 +597,15 @@ describe('Governance (e2e) — Manager Verification Prerequisite (ADR-029/038)',
     expect(membership?.managerState).toBe('VERIFIED');
   });
 
-  it('rejects approving again once the case is already resolved (no open case)', async () => {
+  it('returns a conflict when approving an existing, already-resolved verification', async () => {
+    // The VERIFIED case still exists: no PENDING case means a state conflict,
+    // not a missing resource (manager-verification hardening, 84975bf).
     const res = await request(app.getHttpServer())
       .post(`/api/v1/buildings/${buildingId}/manager-verification/approve`)
       .set('Authorization', `Bearer ${owner.accessToken}`)
-      .expect(404);
+      .expect(409);
 
-    expect(res.body.errors[0].code).toBe('NOT_FOUND');
+    expect(res.body.errors[0].code).toBe('CONFLICT');
   });
 
   it('the now-VERIFIED manager can create a vote — VerifiedRolesGuard now passes', async () => {

@@ -1,5 +1,5 @@
 import { ManagerVerificationService } from './manager-verification.service';
-import { ConflictError } from '../../../common/errors/app-error';
+import { ConflictError, NotFoundAppError } from '../../../common/errors/app-error';
 
 describe('ManagerVerificationService hardened mutation sequencing', () => {
   const kase = {
@@ -92,6 +92,21 @@ describe('ManagerVerificationService hardened mutation sequencing', () => {
     });
     await service.approveByOwner('building-1', 'owner-2', 'request-2');
     expect(events.emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns not found for owner approval only when no verification case exists', async () => {
+    backOffice.getOpenManagerVerificationCaseForBuilding.mockResolvedValue(null);
+    backOffice.findLatestManagerVerificationCaseForBuilding.mockResolvedValue(null);
+
+    await expect(
+      service.approveByOwner('building-1', 'owner-1', 'request-1'),
+    ).rejects.toBeInstanceOf(NotFoundAppError);
+    expect(backOffice.findLatestManagerVerificationCaseForBuilding).toHaveBeenCalledWith(
+      'building-1',
+    );
+    expect(backOffice.castManagerVerificationApprovalAtomically).not.toHaveBeenCalled();
+    expect(audit.record).not.toHaveBeenCalled();
+    expect(events.emit).not.toHaveBeenCalled();
   });
 
   it('does not emit restore notification when the single-use restore boundary conflicts', async () => {
