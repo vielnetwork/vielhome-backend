@@ -1,6 +1,8 @@
 import { NotFoundAppError } from '../../../common/errors/app-error';
 import { SubscriptionService } from './subscription.service';
 import { SubscriptionPolicy } from '../domain/policies/subscription.policy';
+import { SubscriptionFeatureResolverService } from '../../../common/subscription/subscription-feature-resolver.service';
+import type { PrismaService } from '../../../common/prisma/prisma.service';
 import type { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import type { AuditService } from '../../../common/audit/audit.service';
 import type {
@@ -88,6 +90,13 @@ function makeService(subscription: SubscriptionFixture | null) {
 }
 
 describe('SubscriptionService read contract', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(now);
+  });
+
+  afterEach(() => jest.useRealTimers());
+
   it('returns the exact stable detail projection and preserves nullable dates', async () => {
     const source = subscriptionFixture();
     const { service } = makeService(source);
@@ -180,5 +189,168 @@ describe('SubscriptionService read contract', () => {
 
     await expect(service.getHistory('building-1')).resolves.toEqual(history);
     expect(backOffice.listSubscriptionHistory).toHaveBeenCalledWith('subscription-1');
+  });
+
+  it.each([
+    {
+      name: 'active paid plan',
+      plan: 'PRO',
+      status: 'ACTIVE',
+      grant: 'none',
+      feature: 'SMS',
+      result: 'ALLOWED',
+      source: 'PLAN',
+    },
+    {
+      name: 'active grant overrides free plan',
+      plan: 'FREE',
+      status: 'ACTIVE',
+      grant: 'active',
+      feature: 'SMS',
+      result: 'ALLOWED',
+      source: 'GRANT',
+    },
+    {
+      name: 'grant survives cancellation',
+      plan: 'FREE',
+      status: 'CANCELLED',
+      grant: 'active',
+      feature: 'SMS',
+      result: 'ALLOWED',
+      source: 'GRANT',
+    },
+    {
+      name: 'cancelled free plan without grant',
+      plan: 'FREE',
+      status: 'CANCELLED',
+      grant: 'none',
+      feature: 'SMS',
+      result: 'DENIED',
+      source: 'PLAN',
+    },
+    {
+      name: 'expired grant',
+      plan: 'FREE',
+      status: 'ACTIVE',
+      grant: 'expired',
+      feature: 'SMS',
+      result: 'DENIED',
+      source: 'PLAN',
+    },
+    {
+      name: 'expiry boundary is exclusive',
+      plan: 'FREE',
+      status: 'CANCELLED',
+      grant: 'boundary',
+      feature: 'SMS',
+      result: 'DENIED',
+      source: 'PLAN',
+    },
+    {
+      name: 'revoked grant',
+      plan: 'FREE',
+      status: 'ACTIVE',
+      grant: 'revoked',
+      feature: 'SMS',
+      result: 'DENIED',
+      source: 'PLAN',
+    },
+    {
+      name: 'unrelated grant',
+      plan: 'FREE',
+      status: 'ACTIVE',
+      grant: 'active',
+      feature: 'EMAIL',
+      result: 'DENIED',
+      source: 'PLAN',
+    },
+    {
+      name: 'free core access survives cancellation',
+      plan: 'FREE',
+      status: 'CANCELLED',
+      grant: 'none',
+      feature: 'DEBT_VIEW',
+      result: 'ALLOWED',
+      source: 'PLAN',
+    },
+    {
+      name: 'revocation is not a plan deny',
+      plan: 'PRO',
+      status: 'ACTIVE',
+      grant: 'revoked',
+      feature: 'SMS',
+      result: 'ALLOWED',
+      source: 'PLAN',
+    },
+    {
+      name: 'grant wins source when plan also allows',
+      plan: 'PRO',
+      status: 'ACTIVE',
+      grant: 'active',
+      feature: 'SMS',
+      result: 'ALLOWED',
+      source: 'GRANT',
+    },
+    {
+      name: 'null expiry is an explicit permanent grant',
+      plan: 'FREE',
+      status: 'CANCELLED',
+      grant: 'permanent',
+      feature: 'SMS',
+      result: 'ALLOWED',
+      source: 'GRANT',
+    },
+    {
+      name: 'status alone does not rewrite stored plan',
+      plan: 'PRO',
+      status: 'CANCELLED',
+      grant: 'none',
+      feature: 'SMS',
+      result: 'ALLOWED',
+      source: 'PLAN',
+    },
+  ] as const)('$name: read and runtime resolvers agree', async (scenario) => {
+    const fixture = subscriptionFixture();
+    fixture.plan = scenario.plan;
+    fixture.status = scenario.status;
+    if (scenario.grant === 'none') fixture.featureGrants = [];
+    else {
+      const grant = fixture.featureGrants[0];
+      if (scenario.grant === 'expired') grant.expiresAt = new Date(now.getTime() - 1);
+      if (scenario.grant === 'boundary') grant.expiresAt = now;
+      if (scenario.grant === 'revoked') grant.revokedAt = now;
+      if (scenario.grant === 'permanent') grant.expiresAt = null;
+    }
+    const { service } = makeService(fixture);
+    const response = await service.resolveEffectiveFeatures('building-1');
+    expect(response.features.find((entry) => entry.featureKey === scenario.feature)).toEqual({
+      featureKey: scenario.feature,
+      result: scenario.result,
+      source: scenario.source,
+    });
+    const prisma = { subscription: { findUnique: jest.fn().mockResolvedValue(fixture) } };
+    const runtime = new SubscriptionFeatureResolverService(
+      prisma as unknown as PrismaService,
+      new SubscriptionPolicy(),
+    );
+    await expect(runtime.isFeatureEnabled('building-1', scenario.feature)).resolves.toBe(
+      scenario.result === 'ALLOWED',
+    );
+  });
+
+  it('changes from GRANT to PLAN at the actual expiry instant', async () => {
+    const { service } = makeService({ ...subscriptionFixture(), status: 'CANCELLED' });
+    jest.setSystemTime(new Date(later.getTime() - 1));
+    expect(
+      (await service.resolveEffectiveFeatures('building-1')).features.find(
+        (entry) => entry.featureKey === 'SMS',
+      ),
+    ).toMatchObject({ result: 'ALLOWED', source: 'GRANT' });
+    jest.setSystemTime(later);
+    expect(
+      (await service.resolveEffectiveFeatures('building-1')).features.find(
+        (entry) => entry.featureKey === 'SMS',
+      ),
+    ).toMatchObject({ result: 'DENIED', source: 'PLAN' });
   });
 });
