@@ -26,6 +26,7 @@ import { parsePagination } from '../../../common/pagination/pagination.util';
 import { ValidationError } from '../../../common/errors/app-error';
 import { PaymentStatus, ExpenseCategory, ExpenseStatus } from '@prisma/client';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
+import { FinanceUnitReadGuard } from '../application/finance-unit-read.guard';
 
 /** Backend ↔ Mobile Contract Alignment — every legal `Payment.status` value, for validating the optional `?status=` filter on `GET :id/payments` below. */
 const VALID_PAYMENT_STATUSES: string[] = Object.values(PaymentStatus);
@@ -51,10 +52,10 @@ const VALID_EXPENSE_STATUSES: string[] = Object.values(ExpenseStatus);
  *     and reverse/refund Payments (08.05/08.06 — see 21_ADRs > ADR-037;
  *     same role pairing as payment approval, since both are financial
  *     corrections with the same real-money consequence).
- *   - Any current member may report a Payment and read Fund/Charge/Payment/
- *     Adjustment/Refund/Ledger data for their building — see
- *     FinanceService.createPayment's doc comment for why payment
- *     *reporting* isn't further role-gated.
+ *   - MANAGER/ACCOUNTANT may read building-wide private financial records.
+ *   - OWNER/TENANT may read private per-unit records only for the exact unit
+ *     on their current membership; safe building aggregates remain readable
+ *     by any current member.
  */
 @ApiTags('finance')
 @ApiBearerAuth()
@@ -64,7 +65,8 @@ export class FinanceController {
   constructor(private readonly finance: FinanceService) {}
 
   @Get(':id/finance/unit-debts')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
   async listUnitDebtSummaries(
     @Param('id') id: string,
     @Query('page') page?: string,
@@ -226,7 +228,8 @@ export class FinanceController {
 
   /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/charges')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
   async listChargeBatches(
     @Param('id') id: string,
     @Query('page') page?: string,
@@ -237,7 +240,8 @@ export class FinanceController {
   }
 
   @Get(':id/charges/:chargeBatchId')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
   getChargeBatch(@Param('id') id: string, @Param('chargeBatchId') chargeBatchId: string) {
     return this.finance.getChargeBatch(id, chargeBatchId);
   }
@@ -270,7 +274,7 @@ export class FinanceController {
 
   /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/units/:unitId/charge-items')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceUnitReadGuard)
   async listUnitChargeItems(
     @Param('id') id: string,
     @Param('unitId') unitId: string,
@@ -287,7 +291,7 @@ export class FinanceController {
 
   /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/units/:unitId/payments')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceUnitReadGuard)
   async listUnitPayments(
     @Param('id') id: string,
     @Param('unitId') unitId: string,
@@ -325,7 +329,7 @@ export class FinanceController {
   }
 
   @Get(':id/units/:unitId/obligations')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceUnitReadGuard)
   getSelectableObligations(
     @Param('id') id: string,
     @Param('unitId') unitId: string,
@@ -349,14 +353,14 @@ export class FinanceController {
   // --- Adjustments (08.05 Rule 014 — see 21_ADRs > ADR-037) --------------------
 
   @Get(':id/units/:unitId/debt')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceUnitReadGuard)
   getUnitDebt(@Param('id') id: string, @Param('unitId') unitId: string) {
     return this.finance.getUnitDebt(id, unitId);
   }
 
   /** Finance Correction Pass — read-side companion to `correctOpeningBalance` below; see `FinanceService.getUnitOpeningBalance`'s own doc comment. */
   @Get(':id/units/:unitId/opening-balance')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceUnitReadGuard)
   getUnitOpeningBalance(@Param('id') id: string, @Param('unitId') unitId: string) {
     return this.finance.getUnitOpeningBalance(id, unitId);
   }
@@ -383,7 +387,7 @@ export class FinanceController {
 
   /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/units/:unitId/adjustments')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceUnitReadGuard)
   async listUnitAdjustments(
     @Param('id') id: string,
     @Param('unitId') unitId: string,
@@ -449,7 +453,8 @@ export class FinanceController {
    * migration — `Payment` already carries `@@index([buildingId, status])`.
    */
   @Get(':id/payments')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
   async listPayments(
     @Param('id') id: string,
     @Query('page') page?: string,
@@ -524,7 +529,8 @@ export class FinanceController {
 
   /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/payments/:paymentId/refunds')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
   async listPaymentRefunds(
     @Param('id') id: string,
     @Param('paymentId') paymentId: string,
@@ -618,7 +624,8 @@ export class FinanceController {
 
   /** Finance Hardening Pass — paginated, see `listFunds`'s own doc comment. */
   @Get(':id/ledger')
-  @UseGuards(MembershipGuard)
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
   async listLedger(
     @Param('id') id: string,
     @Query('fundId') fundId?: string,

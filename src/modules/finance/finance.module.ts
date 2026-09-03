@@ -10,6 +10,7 @@ import { ChargeFundAlignmentPolicy } from './domain/policies/charge-fund-alignme
 import { MembershipGuard } from '../../common/guards/membership.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { BuildingModule } from '../building/building.module';
+import { FinanceUnitReadGuard } from './application/finance-unit-read.guard';
 
 @Module({
   // BuildingModule exports BuildingRepository (added for exactly this
@@ -27,6 +28,7 @@ import { BuildingModule } from '../building/building.module';
     ChargeFundAlignmentPolicy,
     MembershipGuard,
     RolesGuard,
+    FinanceUnitReadGuard,
   ],
   exports: [FinanceService, FinanceRepository],
 })

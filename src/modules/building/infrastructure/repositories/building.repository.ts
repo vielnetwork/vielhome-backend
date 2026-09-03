@@ -38,6 +38,28 @@ export class BuildingRepository {
   }
 
   /**
+   * Finance read authorization: privileged Finance roles may read every
+   * unit in their building, while resident roles are scoped to the exact
+   * unit carried by their current Membership. Including the Unit relation
+   * in this single query also prevents a mismatched building/unit URL from
+   * becoming an existence oracle.
+   */
+  async canReadUnitFinance(personId: string, buildingId: string, unitId: string): Promise<boolean> {
+    const count = await this.prisma.membership.count({
+      where: {
+        personId,
+        buildingId,
+        isCurrent: true,
+        OR: [
+          { role: { in: ['MANAGER', 'ACCOUNTANT'] } },
+          { role: { in: ['OWNER', 'TENANT'] }, unitId, unit: { buildingId } },
+        ],
+      },
+    });
+    return count > 0;
+  }
+
+  /**
    * Duplicate-detection lookup (BuildingSetupPolicy.assertPostalCodeAvailable).
    * Only returns the fields the client is allowed to see about someone
    * else's building — never the full record.
@@ -872,7 +894,10 @@ export class BuildingRepository {
   // FirstName/ownerLastName` — see that type's own doc comment for why.
 
   /** Every unitId in this building where `personId` currently holds an Ownership row. */
-  async findCurrentOwnedUnitIdsForPerson(buildingId: string, personId: string): Promise<Set<string>> {
+  async findCurrentOwnedUnitIdsForPerson(
+    buildingId: string,
+    personId: string,
+  ): Promise<Set<string>> {
     const rows = await this.prisma.ownership.findMany({
       where: { personId, isCurrent: true, unit: { buildingId } },
       select: { unitId: true },
@@ -881,7 +906,10 @@ export class BuildingRepository {
   }
 
   /** Every unitId in this building where `personId` currently holds a Tenancy row. */
-  async findCurrentTenantUnitIdsForPerson(buildingId: string, personId: string): Promise<Set<string>> {
+  async findCurrentTenantUnitIdsForPerson(
+    buildingId: string,
+    personId: string,
+  ): Promise<Set<string>> {
     const rows = await this.prisma.tenancy.findMany({
       where: { personId, isCurrent: true, unit: { buildingId } },
       select: { unitId: true },
@@ -899,12 +927,18 @@ export class BuildingRepository {
   }
 
   /** The live current-owner identity for ONE unit, or `null` if it has no current Ownership row yet (e.g. still-pending invite). */
-  async findCurrentOwnerSummaryForUnit(
-    unitId: string,
-  ): Promise<{ personId: string; firstName: string | null; lastName: string | null; phone: string } | null> {
+  async findCurrentOwnerSummaryForUnit(unitId: string): Promise<{
+    personId: string;
+    firstName: string | null;
+    lastName: string | null;
+    phone: string;
+  } | null> {
     const ownership = await this.prisma.ownership.findFirst({
       where: { unitId, isCurrent: true },
-      select: { personId: true, person: { select: { firstName: true, lastName: true, phone: true } } },
+      select: {
+        personId: true,
+        person: { select: { firstName: true, lastName: true, phone: true } },
+      },
     });
     if (!ownership) return null;
     return {
@@ -916,12 +950,18 @@ export class BuildingRepository {
   }
 
   /** The live current-tenant identity for ONE unit, or `null` if it has no current Tenancy row. */
-  async findCurrentTenantSummaryForUnit(
-    unitId: string,
-  ): Promise<{ personId: string; firstName: string | null; lastName: string | null; phone: string } | null> {
+  async findCurrentTenantSummaryForUnit(unitId: string): Promise<{
+    personId: string;
+    firstName: string | null;
+    lastName: string | null;
+    phone: string;
+  } | null> {
     const tenancy = await this.prisma.tenancy.findFirst({
       where: { unitId, isCurrent: true },
-      select: { personId: true, person: { select: { firstName: true, lastName: true, phone: true } } },
+      select: {
+        personId: true,
+        person: { select: { firstName: true, lastName: true, phone: true } },
+      },
     });
     if (!tenancy) return null;
     return {
@@ -935,7 +975,12 @@ export class BuildingRepository {
   /** Batched sibling of `findCurrentOwnerSummaryForUnit` — one query for every unit in `unitIds`, keyed by unitId. */
   async findCurrentOwnerSummariesForUnits(
     unitIds: string[],
-  ): Promise<Map<string, { personId: string; firstName: string | null; lastName: string | null; phone: string }>> {
+  ): Promise<
+    Map<
+      string,
+      { personId: string; firstName: string | null; lastName: string | null; phone: string }
+    >
+  > {
     if (unitIds.length === 0) return new Map();
     const rows = await this.prisma.ownership.findMany({
       where: { unitId: { in: unitIds }, isCurrent: true },
@@ -948,7 +993,12 @@ export class BuildingRepository {
     return new Map(
       rows.map((r) => [
         r.unitId,
-        { personId: r.personId, firstName: r.person.firstName, lastName: r.person.lastName, phone: r.person.phone },
+        {
+          personId: r.personId,
+          firstName: r.person.firstName,
+          lastName: r.person.lastName,
+          phone: r.person.phone,
+        },
       ]),
     );
   }
@@ -956,7 +1006,12 @@ export class BuildingRepository {
   /** Batched sibling of `findCurrentTenantSummaryForUnit` — one query for every unit in `unitIds`, keyed by unitId. */
   async findCurrentTenantSummariesForUnits(
     unitIds: string[],
-  ): Promise<Map<string, { personId: string; firstName: string | null; lastName: string | null; phone: string }>> {
+  ): Promise<
+    Map<
+      string,
+      { personId: string; firstName: string | null; lastName: string | null; phone: string }
+    >
+  > {
     if (unitIds.length === 0) return new Map();
     const rows = await this.prisma.tenancy.findMany({
       where: { unitId: { in: unitIds }, isCurrent: true },
@@ -969,7 +1024,12 @@ export class BuildingRepository {
     return new Map(
       rows.map((r) => [
         r.unitId,
-        { personId: r.personId, firstName: r.person.firstName, lastName: r.person.lastName, phone: r.person.phone },
+        {
+          personId: r.personId,
+          firstName: r.person.firstName,
+          lastName: r.person.lastName,
+          phone: r.person.phone,
+        },
       ]),
     );
   }

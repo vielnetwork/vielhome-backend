@@ -975,9 +975,13 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
         createdById: manager.personId,
       },
     });
-    const historicalRead = await request(app.getHttpServer())
+    await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingId}/charges/${historicalSpecial.id}`)
       .set('Authorization', `Bearer ${outsider.accessToken}`)
+      .expect(403);
+    const historicalRead = await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}/charges/${historicalSpecial.id}`)
+      .set('Authorization', `Bearer ${manager.accessToken}`)
       .expect(200);
     expect(historicalRead.body.data.kind).toBe('SPECIAL');
   });
@@ -1120,6 +1124,147 @@ describe('Finance (e2e) — Funds & Charge Batches (12_Finance_Architecture)', (
         periodStart: '2026-10-01T00:00:00.000Z',
       })
       .expect(404);
+  });
+});
+
+describe('Finance read authorization isolation (FIN-AUTHZ-01)', () => {
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const people: RegisteredPerson[] = [];
+  const buildingIds: string[] = [];
+  let manager: RegisteredPerson;
+  let ownerA: RegisteredPerson;
+  let ownerB: RegisteredPerson;
+  let tenantA: RegisteredPerson;
+  let accountant: RegisteredPerson;
+  let buildingId: string;
+  let unitA: string;
+  let unitB: string;
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+    manager = await registerPerson(app);
+    ownerA = await registerPerson(app);
+    ownerB = await registerPerson(app);
+    tenantA = await registerPerson(app);
+    accountant = await registerPerson(app);
+    people.push(manager, ownerA, ownerB, tenantA, accountant);
+    buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 2 });
+    buildingIds.push(buildingId);
+    const units = await prisma.unit.findMany({
+      where: { buildingId },
+      orderBy: { unitNumber: 'asc' },
+    });
+    [unitA, unitB] = units.map((unit) => unit.id);
+
+    await prisma.membership.createMany({
+      data: [
+        { personId: ownerA.personId, buildingId, unitId: unitA, role: 'OWNER' },
+        { personId: ownerB.personId, buildingId, unitId: unitB, role: 'OWNER' },
+        { personId: tenantA.personId, buildingId, unitId: unitA, role: 'TENANT' },
+        { personId: accountant.personId, buildingId, role: 'ACCOUNTANT' },
+        {
+          personId: ownerB.personId,
+          buildingId,
+          unitId: unitA,
+          role: 'OWNER',
+          isCurrent: false,
+          endedAt: new Date(),
+        },
+      ],
+    });
+    await prisma.ownership.createMany({
+      data: [
+        { personId: ownerA.personId, unitId: unitA },
+        { personId: ownerB.personId, unitId: unitB },
+      ],
+    });
+    await prisma.tenancy.create({ data: { personId: tenantA.personId, unitId: unitA } });
+  });
+
+  afterAll(async () => {
+    await cleanupBuildings(prisma, buildingIds);
+    await cleanupPhones(
+      prisma,
+      people.map((person) => person.phone),
+    );
+    await app.close();
+  });
+
+  const get = (token: string, path: string) =>
+    request(app.getHttpServer())
+      .get(`/api/v1/buildings/${buildingId}${path}`)
+      .set('Authorization', `Bearer ${token}`);
+
+  it.each([
+    '/charge-items',
+    '/payments',
+    '/debt',
+    '/opening-balance',
+    '/adjustments',
+    '/obligations',
+  ])('Owner A can read Unit A but not Unit B: %s', async (suffix) => {
+    await get(ownerA.accessToken, `/units/${unitA}${suffix}`).expect(200);
+    await get(ownerA.accessToken, `/units/${unitB}${suffix}`).expect(403);
+  });
+
+  it.each(['/charge-items', '/payments', '/debt', '/opening-balance', '/adjustments'])(
+    'Tenant A can read Unit A but not Unit B: %s',
+    async (suffix) => {
+      await get(tenantA.accessToken, `/units/${unitA}${suffix}`).expect(200);
+      await get(tenantA.accessToken, `/units/${unitB}${suffix}`).expect(403);
+    },
+  );
+
+  it('Owner B cannot read Unit A and an inactive Unit A membership grants nothing', async () => {
+    await get(ownerB.accessToken, `/units/${unitB}/debt`).expect(200);
+    await get(ownerB.accessToken, `/units/${unitA}/debt`).expect(403);
+  });
+
+  it('Manager and Accountant retain appropriate private unit read access', async () => {
+    await get(manager.accessToken, `/units/${unitA}/debt`).expect(200);
+    await get(manager.accessToken, `/units/${unitB}/payments`).expect(200);
+    await get(accountant.accessToken, `/units/${unitA}/debt`).expect(200);
+    await get(accountant.accessToken, `/units/${unitB}/adjustments`).expect(200);
+  });
+
+  it.each([
+    '/finance/unit-debts',
+    '/charges',
+    '/payments',
+    '/ledger',
+    '/payments/nonexistent/refunds',
+  ])('denies sensitive building-wide data to ordinary members: %s', async (path) => {
+    await get(ownerA.accessToken, path).expect(403);
+    await get(tenantA.accessToken, path).expect(403);
+  });
+
+  it('keeps safe building aggregates member-readable', async () => {
+    await get(ownerA.accessToken, '/financial-summary').expect(200);
+    await get(tenantA.accessToken, '/collection-rate').expect(200);
+    await get(ownerA.accessToken, '/payment-registration-rate').expect(200);
+    await get(tenantA.accessToken, '/funds').expect(200);
+  });
+
+  it('keeps privileged building-wide Finance reads available', async () => {
+    await get(manager.accessToken, '/finance/unit-debts').expect(200);
+    await get(accountant.accessToken, '/payments').expect(200);
+    await get(manager.accessToken, '/ledger').expect(200);
+  });
+
+  it('preserves cross-building denial', async () => {
+    const otherBuildingId = await createBuilding(app, manager.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
+    buildingIds.push(otherBuildingId);
+    const otherUnit = await prisma.unit.findFirstOrThrow({
+      where: { buildingId: otherBuildingId },
+    });
+    await request(app.getHttpServer())
+      .get(`/api/v1/buildings/${otherBuildingId}/units/${otherUnit.id}/debt`)
+      .set('Authorization', `Bearer ${ownerA.accessToken}`)
+      .expect(403);
   });
 });
 
@@ -2058,6 +2203,10 @@ describe('Finance (e2e) — Opening Balance Correction (Finance Correction Pass,
     });
 
     await joinBuildingAsApprovedMember(app, buildingId, owner.accessToken, manager.accessToken);
+    await prisma.membership.updateMany({
+      where: { personId: owner.personId, buildingId, role: 'OWNER', isCurrent: true },
+      data: { unitId },
+    });
 
     // FIN-MVP-GAP-04C — `owner` is only an approved building-level OWNER
     // member so far (no unit-level Ownership — `assertValidPayerForUnit`
@@ -2190,7 +2339,7 @@ describe('Finance (e2e) — Opening Balance Correction (Finance Correction Pass,
     expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
   });
 
-  it('an Owner may still read the effective opening balance — the read route is MembershipGuard-only, not role-gated', async () => {
+  it('an Owner may read the effective opening balance only for their membership-scoped unit', async () => {
     const res = await request(app.getHttpServer())
       .get(`/api/v1/buildings/${buildingId}/units/${unitId}/opening-balance`)
       .set('Authorization', `Bearer ${owner.accessToken}`)

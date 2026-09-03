@@ -1147,8 +1147,9 @@ export class FinanceService {
 
   /**
    * Finance Correction Pass — read-side companion to `correctOpeningBalance`
-   * below. Any current member may read it (same `MembershipGuard` tier as
-   * `getUnitDebt`) — only the correction *write* is role-gated.
+   * below. The controller's `FinanceUnitReadGuard` permits privileged staff
+   * or a current OWNER/TENANT membership for this exact unit; only the
+   * correction *write* is role-gated.
    */
   async getUnitOpeningBalance(buildingId: string, unitId: string) {
     await this.getOwnUnit(buildingId, unitId);
