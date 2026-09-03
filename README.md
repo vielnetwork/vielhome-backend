@@ -417,8 +417,10 @@ npx prisma migrate deploy
 # (drops the dev database, reapplies all migrations from scratch — do not
 # run this against anything you care about keeping)
 
-# 5. (optional) seed a dev user
-npm run db:seed
+# 5. Seed reference data (no people or staff); see docs/production-bootstrap.md
+npm run db:seed:reference
+# Optional local demo identities only — NEVER run against production
+NODE_ENV=development npm run db:seed:dev
 
 # 6. Run the API in watch mode
 npm run start:dev

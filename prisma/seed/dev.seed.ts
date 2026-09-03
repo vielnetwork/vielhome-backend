@@ -1,0 +1,84 @@
+// ADR-076 round-1 finding: this script runs standalone via `ts-node
+// prisma/seed/dev.seed.ts` (not through Nest's `ConfigModule.forRoot()`, which is
+// what loads `.env` for `npm run test:e2e`/`npm run start`) — without this
+// explicit load, `PrismaClient` below sees `DATABASE_URL` as undefined and
+// fails immediately. `dotenv` is already an installed transitive
+// dependency (via `@nestjs/config`), so no new dependency is introduced.
+import 'dotenv/config';
+import { PrismaClient } from '@prisma/client';
+// Relative import (not the `@modules/*` tsconfig path alias) — this file
+// runs directly via `ts-node prisma/seed/dev.seed.ts` (see package.json's
+// `db:seed:dev` script), which doesn't resolve path aliases without an extra
+// `tsconfig-paths/register` step nothing else in this repo needs yet.
+import { seedAchievements } from './achievements.seed';
+
+const prisma = new PrismaClient();
+
+/**
+ * Minimal dev seed — one person you can OTP-login as immediately after
+ * `docker-compose up -d && npx prisma migrate dev`. Expand as new domains
+ * land. Gamification (ADR-028) added: `AchievementDefinition` rows must
+ * exist before `GamificationService.awardXp` can unlock them — without
+ * this seed step, XP still awards correctly but achievement unlocks
+ * silently no-op (`GamificationRepository.unlockAchievement` returns null
+ * for an unknown code, by design — see that method's doc comment).
+ * This is local demo data only. Production uses db:seed:reference and
+ * the separate operator-supplied bootstrap:backoffice command.
+ */
+async function main() {
+  if (process.env.NODE_ENV !== 'development') {
+    throw new Error('Demo seed requires NODE_ENV=development. DO NOT run it in production.');
+  }
+  const person = await prisma.person.upsert({
+    where: { phone: '+989120000000' },
+    update: {},
+    create: {
+      phone: '+989120000000',
+      fullName: 'Dev Tester',
+      locale: 'fa',
+    },
+  });
+
+  console.log('Seeded person:', person);
+
+  await seedAchievements(prisma);
+
+  // Dev Tester doubles as the first PLATFORM_ADMIN — a person can hold a
+  // building Membership AND a PlatformStaff row at once, they're
+  // deliberately separate identity concepts (see schema.prisma's
+  // BackOffice section comment).
+  await prisma.platformStaff.upsert({
+    where: { personId: person.id },
+    update: { role: 'PLATFORM_ADMIN', isActive: true },
+    create: { personId: person.id, role: 'PLATFORM_ADMIN' },
+  });
+
+  const reviewer = await prisma.person.upsert({
+    where: { phone: '+989120000001' },
+    update: {},
+    create: {
+      phone: '+989120000001',
+      fullName: 'BackOffice Reviewer',
+      locale: 'fa',
+    },
+  });
+
+  await prisma.platformStaff.upsert({
+    where: { personId: reviewer.id },
+    update: { role: 'REVIEWER', isActive: true },
+    create: { personId: reviewer.id, role: 'REVIEWER' },
+  });
+
+  console.log(
+    'Seeded platform staff: Dev Tester (PLATFORM_ADMIN), BackOffice Reviewer (REVIEWER).',
+  );
+}
+
+main()
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
