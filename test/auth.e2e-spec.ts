@@ -276,17 +276,17 @@ describe('Auth (e2e) — OTP request: Phone Number Input & Normalization (accept
       .post('/api/v1/auth/otp/request')
       .send({ phone: `0${local10}`, purpose: 'LOGIN' })
       .expect(200);
-    expect(
-      await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } }),
-    ).toBe(1);
+    expect(await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } })).toBe(
+      1,
+    );
 
     await request(app.getHttpServer())
       .post('/api/v1/auth/otp/request')
       .send({ phone: local10, purpose: 'LOGIN' })
       .expect(200);
-    expect(
-      await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } }),
-    ).toBe(2);
+    expect(await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } })).toBe(
+      2,
+    );
 
     // Regression: this form (989XXXXXXXXX, no leading +) must resolve to
     // the SAME canonical +989XXXXXXXXX, never to a double-prefixed
@@ -296,9 +296,9 @@ describe('Auth (e2e) — OTP request: Phone Number Input & Normalization (accept
       .post('/api/v1/auth/otp/request')
       .send({ phone: `98${local10}`, purpose: 'LOGIN' })
       .expect(200);
-    expect(
-      await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } }),
-    ).toBe(3);
+    expect(await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } })).toBe(
+      3,
+    );
     expect(
       await prisma.otpRequest.count({ where: { phone: `+98${canonical}`, purpose: 'LOGIN' } }),
     ).toBe(0);
@@ -307,9 +307,9 @@ describe('Auth (e2e) — OTP request: Phone Number Input & Normalization (accept
       .post('/api/v1/auth/otp/request')
       .send({ phone: toPersianDigits(`0${local10}`), purpose: 'LOGIN' })
       .expect(200);
-    expect(
-      await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } }),
-    ).toBe(4);
+    expect(await prisma.otpRequest.count({ where: { phone: canonical, purpose: 'LOGIN' } })).toBe(
+      4,
+    );
   });
 });
 
@@ -422,6 +422,72 @@ describe('Auth (e2e) — OTP verify: registration and login', () => {
   });
 });
 
+describe('Auth (e2e) — atomic OTP consumption (AUTH-PROD-01)', () => {
+  // Budget: 2 calls to POST /auth/otp/request (concurrency + expiry).
+  let app: INestApplication;
+  let prisma: PrismaService;
+  const createdPhones: string[] = [];
+
+  beforeAll(async () => {
+    ({ app, prisma } = await bootstrapTestApp());
+  });
+
+  afterAll(async () => {
+    await cleanupPhones(prisma, createdPhones);
+    await app.close();
+  });
+
+  it('allows exactly one of two concurrent claims and creates only one session', async () => {
+    const phone = nextPhone();
+    createdPhones.push(phone);
+    const code = await requestOtpAndCaptureCode(app, phone);
+
+    const claim = (device: string) =>
+      request(app.getHttpServer())
+        .post('/api/v1/auth/otp/verify')
+        .send({
+          phone,
+          code,
+          purpose: 'LOGIN',
+          deviceToken: `e2e-${phone}-${device}`,
+          platform: 'web',
+        });
+    const responses = await Promise.all([claim('concurrent-a'), claim('concurrent-b')]);
+
+    expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
+    const loser = responses.find((response) => response.status !== 200);
+    expect([403, 422]).toContain(loser?.status);
+    expect(loser?.body.data).toBeNull();
+    expect(responses.filter((response) => response.body.data?.accessToken)).toHaveLength(1);
+    const otpRequest = await prisma.otpRequest.findFirstOrThrow({
+      where: { phone, purpose: 'LOGIN' },
+    });
+    expect(otpRequest.consumedAt).not.toBeNull();
+    expect(await prisma.refreshToken.count({ where: { person: { phone } } })).toBe(1);
+    expect(await prisma.device.count({ where: { person: { phone } } })).toBe(1);
+
+    const reuse = await verifyOtp(app, { phone, code }).expect(422);
+    expect(reuse.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('rejects an expired OTP without consuming it or creating a session', async () => {
+    const phone = nextPhone();
+    createdPhones.push(phone);
+    const code = await requestOtpAndCaptureCode(app, phone);
+    await prisma.otpRequest.updateMany({
+      where: { phone, purpose: 'LOGIN', consumedAt: null },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+
+    const response = await verifyOtp(app, { phone, code }).expect(422);
+    expect(response.body.errors[0].code).toBe('BUSINESS_RULE_VIOLATION');
+    expect(await prisma.refreshToken.count({ where: { person: { phone } } })).toBe(0);
+    expect(
+      await prisma.otpRequest.count({ where: { phone, purpose: 'LOGIN', consumedAt: null } }),
+    ).toBe(1);
+  });
+});
+
 describe('Auth (e2e) — OTP verify: wrong code / no active code', () => {
   // Budget: 2 calls to POST /auth/otp/request (1 + 1; the "no active
   // code" test makes zero — that is the entire point of that test).
@@ -479,7 +545,7 @@ describe('Auth (e2e) — OTP verify: wrong code / no active code', () => {
 });
 
 describe('Auth (e2e) — token refresh', () => {
-  // Budget: 1 call to POST /auth/otp/request.
+  // Budget: 3 calls to POST /auth/otp/request (rotation + concurrency + expiry).
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
@@ -527,6 +593,55 @@ describe('Auth (e2e) — token refresh', () => {
       .expect(404);
 
     expect(res.body.errors[0].code).toBe('NOT_FOUND');
+  });
+
+  it('allows exactly one concurrent refresh rotation and persists one successor', async () => {
+    const phone = nextPhone();
+    createdPhones.push(phone);
+    const code = await requestOtpAndCaptureCode(app, phone);
+    const verifyRes = await verifyOtp(app, { phone, code }).expect(200);
+    const originalRefreshToken = verifyRes.body.data.refreshToken;
+
+    const rotate = () =>
+      request(app.getHttpServer())
+        .post('/api/v1/auth/token/refresh')
+        .send({ refreshToken: originalRefreshToken });
+    const responses = await Promise.all([rotate(), rotate()]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 403]);
+    expect(responses.filter((response) => response.body.data?.refreshToken)).toHaveLength(1);
+    const rows = await prisma.refreshToken.findMany({
+      where: { person: { phone } },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0].revokedAt).not.toBeNull();
+    expect(rows[0].replacedBy).toBe(rows[1].id);
+    expect(rows[1].revokedAt).toBeNull();
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/token/refresh')
+      .send({ refreshToken: originalRefreshToken })
+      .expect(403);
+  });
+
+  it('rejects an expired refresh token without creating a successor', async () => {
+    const phone = nextPhone();
+    createdPhones.push(phone);
+    const code = await requestOtpAndCaptureCode(app, phone);
+    const verifyRes = await verifyOtp(app, { phone, code }).expect(200);
+    const originalRefreshToken = verifyRes.body.data.refreshToken;
+    await prisma.refreshToken.updateMany({
+      where: { person: { phone }, revokedAt: null },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/auth/token/refresh')
+      .send({ refreshToken: originalRefreshToken })
+      .expect(403);
+    expect(response.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    expect(await prisma.refreshToken.count({ where: { person: { phone } } })).toBe(1);
   });
 });
 

@@ -27,7 +27,9 @@ export interface SmsMessage {
  * `NotificationDispatchProcessor` and `AuthService.requestOtp` fall back to
  * their pre-ADR-088 behavior (log-stub dispatch; `console.log`'d OTP code
  * respectively) — no regression for any environment without a real
- * provider configured.
+ * provider configured. Recipient logging is limited to the final four
+ * characters so authentication and notification sends do not place full
+ * phone numbers into aggregated logs.
  */
 @Injectable()
 export class SmsProviderService {
@@ -55,6 +57,6 @@ export class SmsProviderService {
       providerName: 'Twilio',
       form: { To: message.to, From: c.fromNumber, Body: message.body },
     });
-    this.logger.debug(`SMS sent via Twilio to ${message.to}`);
+    this.logger.debug(`SMS sent via Twilio to recipient ending "...${message.to.slice(-4)}"`);
   }
 }

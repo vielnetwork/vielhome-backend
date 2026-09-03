@@ -16,6 +16,7 @@ import {
   AuthorizationError,
   BusinessRuleViolationError,
   NotFoundAppError,
+  ServiceUnavailableError,
 } from '../../../../common/errors/app-error';
 import { PersonAuthenticatedEvent } from '../events/person-authenticated.event';
 import type { AppConfig } from '../../../../config/configuration';
@@ -96,7 +97,17 @@ export class AuthService {
       throw new AuthorizationError('Incorrect code.');
     }
 
-    await this.repo.consumeOtp(otpRequest.id);
+    const claimed = await this.repo.claimOtp({
+      id: otpRequest.id,
+      phone: dto.phone,
+      purpose: dto.purpose,
+      codeHash: otpRequest.codeHash,
+      attempts: otpRequest.attempts,
+      now: new Date(),
+    });
+    if (!claimed) {
+      throw new AuthorizationError('This code has already been used or is no longer valid.');
+    }
 
     let person = await this.repo.findPersonByPhone(dto.phone);
     const isNewPerson = !person;
@@ -171,8 +182,18 @@ export class AuthService {
       );
     }
 
-    const tokens = await this.issueTokenPair(existing.personId, existing.deviceId);
-    await this.repo.revokeRefreshToken(existing.id);
+    const prepared = await this.prepareTokenPair(existing.personId, existing.deviceId);
+    const rotated = await this.repo.rotateRefreshToken({
+      id: existing.id,
+      personId: existing.personId,
+      deviceId: existing.deviceId,
+      successorTokenHash: prepared.tokenHash,
+      successorExpiresAt: prepared.refreshExpiresAt,
+      now: new Date(),
+    });
+    if (!rotated) {
+      throw new AuthorizationError('Refresh token has already been used or is no longer valid.');
+    }
 
     await this.audit.record({
       actorId: existing.personId,
@@ -182,10 +203,21 @@ export class AuthService {
       requestId,
     });
 
-    return tokens;
+    return prepared.tokens;
   }
 
   private async issueTokenPair(personId: string, deviceId: string): Promise<TokenPair> {
+    const prepared = await this.prepareTokenPair(personId, deviceId);
+    await this.repo.createRefreshToken({
+      personId,
+      deviceId,
+      tokenHash: prepared.tokenHash,
+      expiresAt: prepared.refreshExpiresAt,
+    });
+    return prepared.tokens;
+  }
+
+  private async prepareTokenPair(personId: string, deviceId: string) {
     const auth = this.config.get('auth', { infer: true });
     const payload = { sub: personId, deviceId };
 
@@ -197,14 +229,11 @@ export class AuthService {
     const rawRefreshToken = randomUUID() + randomUUID();
     const refreshExpiresAt = new Date(Date.now() + this.parseDurationMs(auth.refreshExpiresIn));
 
-    await this.repo.createRefreshToken({
-      personId,
-      deviceId,
+    return {
+      tokens: { accessToken, refreshToken: rawRefreshToken, expiresIn: auth.accessExpiresIn },
       tokenHash: this.hashToken(rawRefreshToken),
-      expiresAt: refreshExpiresAt,
-    });
-
-    return { accessToken, refreshToken: rawRefreshToken, expiresIn: auth.accessExpiresIn };
+      refreshExpiresAt,
+    };
   }
 
   /**
@@ -216,14 +245,11 @@ export class AuthService {
    * `SmsProviderService` instead, the same infrastructure Notifications'
    * own SMS channel uses (`NotificationDispatchProcessor`).
    *
-   * A provider failure does NOT fail the whole `requestOtp` call — the
-   * `OtpRequest` row already exists and a resend flow already covers "I
-   * didn't get it," so hard-failing the request over a transient downstream
-   * SMS hiccup would be worse UX than falling back to the pre-ADR-088
-   * console-log stub for that one attempt (logged as a `warn`, not
-   * silently swallowed, so a real outage is still visible in production
-   * logs — just not by leaking the credential itself). When no provider is
-   * configured at all, behavior is byte-for-byte the pre-ADR-088 stub.
+   * Production deliberately fails closed when the provider is missing or
+   * rejects delivery: the public response is a generic 503, and neither the
+   * OTP, full phone number, nor raw provider error reaches logs. The local
+   * console fallback remains available only outside production so existing
+   * development and E2E workflows can still obtain their test code.
    */
   private async deliverOtpCode(
     phone: string,
@@ -231,6 +257,7 @@ export class AuthService {
     code: string,
     ttlSeconds: number,
   ): Promise<void> {
+    const isProduction = this.config.get('env', { infer: true }) === 'production';
     if (this.smsProvider.isConfigured()) {
       try {
         await this.smsProvider.send({
@@ -238,17 +265,26 @@ export class AuthService {
           body: `Your VielHome verification code is ${code}. It expires in ${Math.round(ttlSeconds / 60)} minute(s).`,
         });
         return;
-      } catch (error) {
-        this.logger.warn(
-          `Real SMS OTP delivery failed for ${phone} (${purpose}), falling back to console log ` +
-            `this one time: ${(error as Error).message}`,
-        );
+      } catch {
+        if (isProduction) {
+          this.logger.warn('SMS OTP delivery failed.');
+          throw new ServiceUnavailableError(
+            'Verification code delivery is temporarily unavailable. Please try again.',
+          );
+        }
+        this.logger.warn(`Real SMS OTP delivery failed for ${phone} (${purpose}).`);
       }
     }
 
-    // Pre-ADR-088 stub, unchanged — see this method's own doc comment for
-    // when this still runs (no provider configured, or a provider call
-    // just failed above).
+    if (isProduction) {
+      this.logger.warn('SMS OTP delivery is unavailable because the provider is not configured.');
+      throw new ServiceUnavailableError(
+        'Verification code delivery is temporarily unavailable. Please try again.',
+      );
+    }
+
+    // Local/development-only stand-in. Production returns a controlled
+    // failure above and can never reach this credential-bearing log.
     // eslint-disable-next-line no-console
     console.log(`[OTP] ${phone} (${purpose}): ${code} — expires in ${ttlSeconds}s`);
   }

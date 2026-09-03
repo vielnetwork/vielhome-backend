@@ -54,11 +54,27 @@ export class AuthRepository {
     });
   }
 
-  consumeOtp(id: string) {
-    return this.prisma.otpRequest.update({
-      where: { id },
+  async claimOtp(params: {
+    id: string;
+    phone: string;
+    purpose: OtpPurpose;
+    codeHash: string;
+    attempts: number;
+    now: Date;
+  }): Promise<boolean> {
+    const claimed = await this.prisma.otpRequest.updateMany({
+      where: {
+        id: params.id,
+        phone: params.phone,
+        purpose: params.purpose,
+        codeHash: params.codeHash,
+        attempts: params.attempts,
+        consumedAt: null,
+        expiresAt: { gt: params.now },
+      },
       data: { consumedAt: new Date() },
     });
+    return claimed.count === 1;
   }
 
   upsertDevice(params: { personId: string; deviceToken: string; platform: string }) {
@@ -78,14 +94,44 @@ export class AuthRepository {
     return this.prisma.refreshToken.create({ data: params });
   }
 
-  findRefreshTokenByHash(tokenHash: string) {
-    return this.prisma.refreshToken.findUnique({ where: { tokenHash } });
+  async rotateRefreshToken(params: {
+    id: string;
+    personId: string;
+    deviceId: string;
+    successorTokenHash: string;
+    successorExpiresAt: Date;
+    now: Date;
+  }): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.refreshToken.updateMany({
+        where: {
+          id: params.id,
+          personId: params.personId,
+          deviceId: params.deviceId,
+          revokedAt: null,
+          expiresAt: { gt: params.now },
+        },
+        data: { revokedAt: params.now },
+      });
+      if (claimed.count !== 1) return false;
+
+      const successor = await tx.refreshToken.create({
+        data: {
+          personId: params.personId,
+          deviceId: params.deviceId,
+          tokenHash: params.successorTokenHash,
+          expiresAt: params.successorExpiresAt,
+        },
+      });
+      await tx.refreshToken.update({
+        where: { id: params.id },
+        data: { replacedBy: successor.id },
+      });
+      return true;
+    });
   }
 
-  revokeRefreshToken(id: string, replacedBy?: string) {
-    return this.prisma.refreshToken.update({
-      where: { id },
-      data: { revokedAt: new Date(), replacedBy },
-    });
+  findRefreshTokenByHash(tokenHash: string) {
+    return this.prisma.refreshToken.findUnique({ where: { tokenHash } });
   }
 }

@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SmsProviderService } from './sms-provider.service';
 import { ProviderHttpError } from './http-json.util';
@@ -45,6 +46,7 @@ describe('SmsProviderService', () => {
 
   describe('send', () => {
     it('POSTs form-encoded to the Twilio Messages API with HTTP Basic Auth (sid:token, base64)', async () => {
+      const debugSpy = jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
       const fetchMock = jest
         .fn()
         .mockResolvedValue({ ok: true, status: 201, text: async () => '{"sid":"SMxyz"}' });
@@ -69,6 +71,8 @@ describe('SmsProviderService', () => {
       expect(params.get('To')).toBe('+15559876543');
       expect(params.get('From')).toBe('+15551234567');
       expect(params.get('Body')).toBe('Your code is 12345.');
+      expect(debugSpy).toHaveBeenCalledWith('SMS sent via Twilio to recipient ending "...6543"');
+      expect(debugSpy.mock.calls.flat().join(' ')).not.toContain('+15559876543');
     });
 
     it('throws ProviderHttpError on a non-2xx response', async () => {
