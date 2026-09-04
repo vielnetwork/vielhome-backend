@@ -78,7 +78,7 @@ export class PushProviderService {
         },
       },
     });
-    this.logger.debug(`Push sent via FCM to device token ending "...${message.token.slice(-6)}"`);
+    this.logger.debug('Push request accepted by FCM.');
   }
 
   /** Returns a cached, still-valid bearer token, or exchanges a fresh service-account JWT for a new one. */

@@ -57,6 +57,6 @@ export class SmsProviderService {
       providerName: 'Twilio',
       form: { To: message.to, From: c.fromNumber, Body: message.body },
     });
-    this.logger.debug(`SMS sent via Twilio to recipient ending "...${message.to.slice(-4)}"`);
+    this.logger.debug('SMS request accepted by Twilio.');
   }
 }

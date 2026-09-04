@@ -71,7 +71,7 @@ describe('SmsProviderService', () => {
       expect(params.get('To')).toBe('+15559876543');
       expect(params.get('From')).toBe('+15551234567');
       expect(params.get('Body')).toBe('Your code is 12345.');
-      expect(debugSpy).toHaveBeenCalledWith('SMS sent via Twilio to recipient ending "...6543"');
+      expect(debugSpy).toHaveBeenCalledWith('SMS request accepted by Twilio.');
       expect(debugSpy.mock.calls.flat().join(' ')).not.toContain('+15559876543');
     });
 

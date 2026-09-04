@@ -30,8 +30,7 @@ import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
 // this sandbox has never had and cannot spin up locally — there is no
 // free, self-hostable equivalent to point `docker-compose.yml` at. This
 // file's `NOTIFICATION_PROVIDERS_CONFIGURED_FOR_TEST` branch therefore
-// asserts the "not configured" stub-fallback path (guaranteed in this
-// sandbox/CI — proving ADR-088's dispatch-routing change didn't regress
+// asserts truthful terminal failures when providers are unavailable
 // the existing async pipeline) OR, only if the user has actually set real
 // provider credentials in their own `.env`, a real dispatch attempt
 // through the actual HTTP API — see this file's own doc comment on that
@@ -297,18 +296,21 @@ describe('Notifications — Real Push/Email/SMS Provider Dispatch (e2e, ADR-088)
         expect(sent?.status).toBe('SENT');
       });
     } else {
-      it('an EMAIL delivery reaches SENT via the pre-ADR-088 stub when EMAIL is NOT configured (this environment)', async () => {
+      it('an EMAIL delivery becomes FAILED when EMAIL is not configured', async () => {
         const delivery = await waitForWelcomeEmailDelivery(prisma, personA.personId);
         expect(delivery).toBeDefined();
 
-        const sent = await waitFor(async () => {
+        const failed = await waitFor(async () => {
           const row = await prisma.notificationDelivery.findUnique({ where: { id: delivery!.id } });
-          return row?.status === 'SENT' ? row : null;
+          return row?.status === 'FAILED' ? row : null;
         });
-        expect(sent?.status).toBe('SENT');
+        expect(failed).toMatchObject({
+          status: 'FAILED',
+          failureReason: 'PROVIDER_NOT_CONFIGURED',
+        });
       });
 
-      it('a PUSH delivery reaches SENT via the pre-ADR-088 stub when PUSH is NOT configured OR the recipient has no push token yet', async () => {
+      it('a PUSH delivery becomes FAILED when PUSH is unavailable or has no eligible device', async () => {
         // personB never called PATCH /notifications/push-token, so even
         // though `pushEnabled` defaults to true, there is no Device row
         // with a pushToken to dispatch to — same fallback path as "not
@@ -316,11 +318,12 @@ describe('Notifications — Real Push/Email/SMS Provider Dispatch (e2e, ADR-088)
         const delivery = await waitForWelcomePushDelivery(prisma, personB.personId);
         expect(delivery).toBeDefined();
 
-        const sent = await waitFor(async () => {
+        const failed = await waitFor(async () => {
           const row = await prisma.notificationDelivery.findUnique({ where: { id: delivery!.id } });
-          return row?.status === 'SENT' ? row : null;
+          return row?.status === 'FAILED' ? row : null;
         });
-        expect(sent?.status).toBe('SENT');
+        expect(failed?.status).toBe('FAILED');
+        expect(['PROVIDER_NOT_CONFIGURED', 'NO_ELIGIBLE_DEVICE']).toContain(failed?.failureReason);
       });
     }
   });

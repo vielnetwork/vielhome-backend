@@ -58,6 +58,6 @@ export class EmailProviderService {
         content: [{ type: 'text/plain', value: message.body }],
       },
     });
-    this.logger.debug(`Email sent via SendGrid to ${message.to}`);
+    this.logger.debug('Email request accepted by SendGrid.');
   }
 }

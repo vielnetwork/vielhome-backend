@@ -1,377 +1,186 @@
+import { ProviderHttpError } from '../../../common/notification-providers/http-json.util';
 import {
   NotificationDispatchProcessor,
   DISPATCH_DELIVERY_JOB,
 } from './notification-dispatch.processor';
-import { NotificationRepository } from '../infrastructure/repositories/notification.repository';
-import { EmailProviderService } from '../../../common/notification-providers/email-provider.service';
-import { SmsProviderService } from '../../../common/notification-providers/sms-provider.service';
-import { PushProviderService } from '../../../common/notification-providers/push-provider.service';
-import { ProviderSettingsService } from '../../provider-settings/application/provider-settings.service';
 
-type Delivery = {
-  id: string;
-  channel: 'EMAIL' | 'SMS' | 'PUSH' | 'IN_APP';
-  status: string;
+const base = {
+  id: 'd1',
+  channel: 'EMAIL',
+  status: 'PENDING',
   notification: {
-    title: string;
-    body: string;
-    recipientId: string;
-    recipient: {
-      email: string | null;
-      phone: string;
-      devices: Array<{ pushToken: string | null }>;
-    };
-  };
+    title: 'private title',
+    body: 'private body',
+    recipientId: 'p1',
+    recipient: { email: 'private@example.com', phone: '+15551234567', devices: [] },
+  },
 };
 
-function makeDelivery(overrides: Partial<Delivery> = {}): Delivery {
-  return {
-    id: 'delivery-1',
-    channel: 'EMAIL',
-    status: 'PENDING',
-    notification: {
-      title: 'Charge published',
-      body: 'A new charge is ready for review.',
-      recipientId: 'person-1',
-      recipient: { email: 'owner@example.com', phone: '+15551234567', devices: [] },
-    },
-    ...overrides,
-  };
-}
-
-function makeMocks(delivery: Delivery | null) {
-  const notifications = {
+function setup(override: Record<string, unknown> = {}) {
+  const delivery = { ...base, ...override };
+  const repo = {
     findDeliveryById: jest.fn().mockResolvedValue(delivery),
-    markDeliverySent: jest.fn().mockResolvedValue(undefined),
-    markDeliveryFailed: jest.fn().mockResolvedValue(undefined),
-  } as unknown as NotificationRepository;
-
-  const emailProvider = {
-    isConfigured: jest.fn().mockReturnValue(false),
-    send: jest.fn().mockResolvedValue(undefined),
-  } as unknown as EmailProviderService;
-
-  const smsProvider = {
-    isConfigured: jest.fn().mockReturnValue(false),
-    send: jest.fn().mockResolvedValue(undefined),
-  } as unknown as SmsProviderService;
-
-  const pushProvider = {
-    isConfigured: jest.fn().mockReturnValue(false),
-    send: jest.fn().mockResolvedValue(undefined),
-  } as unknown as PushProviderService;
-
-  const providerSettings = {
-    isEnabled: jest.fn().mockReturnValue(true),
-  } as unknown as ProviderSettingsService;
-
-  return { notifications, emailProvider, smsProvider, pushProvider, providerSettings };
+    markDeliverySent: jest.fn(),
+    markDeliveryFailed: jest.fn(),
+  };
+  const email = { isConfigured: jest.fn().mockReturnValue(true), send: jest.fn() };
+  const sms = { isConfigured: jest.fn().mockReturnValue(true), send: jest.fn() };
+  const push = { isConfigured: jest.fn().mockReturnValue(true), send: jest.fn() };
+  const settings = { isEnabled: jest.fn().mockReturnValue(true) };
+  const processor = new NotificationDispatchProcessor(
+    repo as never,
+    email as never,
+    sms as never,
+    push as never,
+    settings as never,
+  );
+  const job = {
+    name: DISPATCH_DELIVERY_JOB,
+    data: { deliveryId: 'd1' },
+    opts: { attempts: 3 },
+  } as never;
+  return { processor, repo, email, sms, push, settings, job };
 }
 
-function makeJob(deliveryId = 'delivery-1') {
-  return { name: DISPATCH_DELIVERY_JOB, data: { deliveryId } } as never;
-}
+describe('NotificationDispatchProcessor truthful outcomes', () => {
+  it('allows IN_APP to become SENT without an external provider', async () => {
+    const c = setup({ channel: 'IN_APP' });
+    await c.processor.process(c.job);
+    expect(c.repo.markDeliverySent).toHaveBeenCalledWith('d1');
+    expect(c.email.send).not.toHaveBeenCalled();
+  });
 
-describe('NotificationDispatchProcessor', () => {
-  it('ignores a job whose name is not the dispatch job', async () => {
-    const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-      makeMocks(null);
-    const processor = new NotificationDispatchProcessor(
-      notifications,
-      emailProvider,
-      smsProvider,
-      pushProvider,
-      providerSettings,
+  it.each(['EMAIL', 'SMS', 'PUSH'] as const)(
+    '%s configured and successful becomes SENT',
+    async (channel) => {
+      const notification =
+        channel === 'PUSH'
+          ? {
+              ...base.notification,
+              recipient: {
+                ...base.notification.recipient,
+                devices: [{ pushToken: 'secret-token' }],
+              },
+            }
+          : base.notification;
+      const c = setup({ channel, notification });
+      await c.processor.process(c.job);
+      expect(c.repo.markDeliverySent).toHaveBeenCalledWith('d1');
+      expect({ EMAIL: c.email, SMS: c.sms, PUSH: c.push }[channel].send).toHaveBeenCalled();
+    },
+  );
+
+  it.each(['EMAIL', 'SMS', 'PUSH'] as const)(
+    '%s unconfigured becomes FAILED without a provider call',
+    async (channel) => {
+      const c = setup({ channel });
+      ({ EMAIL: c.email, SMS: c.sms, PUSH: c.push })[channel].isConfigured.mockReturnValue(false);
+      await c.processor.process(c.job);
+      expect(c.repo.markDeliveryFailed).toHaveBeenCalledWith('d1', 'PROVIDER_NOT_CONFIGURED');
+      expect(c.repo.markDeliverySent).not.toHaveBeenCalled();
+      expect({ EMAIL: c.email, SMS: c.sms, PUSH: c.push }[channel].send).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['EMAIL', 'SMS', 'PUSH'] as const)(
+    '%s disabled becomes FAILED without a provider call',
+    async (channel) => {
+      const c = setup({ channel });
+      c.settings.isEnabled.mockReturnValue(false);
+      await c.processor.process(c.job);
+      expect(c.repo.markDeliveryFailed).toHaveBeenCalledWith('d1', 'PROVIDER_DISABLED');
+      expect(c.repo.markDeliverySent).not.toHaveBeenCalled();
+      expect({ EMAIL: c.email, SMS: c.sms, PUSH: c.push }[channel].send).not.toHaveBeenCalled();
+    },
+  );
+
+  it('PUSH without an eligible device becomes FAILED without retry', async () => {
+    const c = setup({ channel: 'PUSH' });
+    await c.processor.process(c.job);
+    expect(c.repo.markDeliveryFailed).toHaveBeenCalledWith('d1', 'NO_ELIGIBLE_DEVICE');
+    expect(c.push.send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['EMAIL', null],
+    ['SMS', ''],
+  ] as const)('%s without a destination becomes FAILED', async (channel, destination) => {
+    const recipient = {
+      ...base.notification.recipient,
+      [channel === 'EMAIL' ? 'email' : 'phone']: destination,
+    };
+    const c = setup({ channel, notification: { ...base.notification, recipient } });
+    await c.processor.process(c.job);
+    expect(c.repo.markDeliveryFailed).toHaveBeenCalledWith('d1', 'NO_DESTINATION');
+    expect(c.repo.markDeliverySent).not.toHaveBeenCalled();
+  });
+
+  it('a permanent provider rejection becomes sanitized FAILED without retry', async () => {
+    const c = setup();
+    c.email.send.mockRejectedValue(new ProviderHttpError('secret private@example.com', 400));
+    await c.processor.process(c.job);
+    expect(c.repo.markDeliveryFailed).toHaveBeenCalledWith('d1', 'PROVIDER_REQUEST_FAILED');
+    expect(c.repo.markDeliverySent).not.toHaveBeenCalled();
+    expect(JSON.stringify(c.repo.markDeliveryFailed.mock.calls)).not.toContain(
+      'private@example.com',
     );
-    await processor.process({ name: 'something-else', data: { deliveryId: 'x' } } as never);
-    expect(notifications.findDeliveryById).not.toHaveBeenCalled();
   });
 
-  it('skips a delivery that is no longer PENDING (already handled by an earlier attempt)', async () => {
-    const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } = makeMocks(
-      makeDelivery({ status: 'SENT' }),
+  it('a transient provider failure remains PENDING while BullMQ retries', async () => {
+    const c = setup();
+    c.email.send.mockRejectedValue(new ProviderHttpError('secret', 503));
+    await expect(c.processor.process(c.job)).rejects.toThrow('PROVIDER_REQUEST_FAILED');
+    expect(c.repo.markDeliveryFailed).not.toHaveBeenCalled();
+    expect(c.repo.markDeliverySent).not.toHaveBeenCalled();
+  });
+
+  it('marks a retryable failure FAILED only after retry exhaustion with sanitized reason', async () => {
+    const c = setup();
+    await c.processor.onFailed(
+      {
+        name: DISPATCH_DELIVERY_JOB,
+        data: { deliveryId: 'd1' },
+        attemptsMade: 2,
+        opts: { attempts: 3 },
+      } as never,
+      new Error('secret-token'),
     );
-    const processor = new NotificationDispatchProcessor(
-      notifications,
-      emailProvider,
-      smsProvider,
-      pushProvider,
-      providerSettings,
+    expect(c.repo.markDeliveryFailed).not.toHaveBeenCalled();
+    await c.processor.onFailed(
+      {
+        name: DISPATCH_DELIVERY_JOB,
+        data: { deliveryId: 'd1' },
+        attemptsMade: 3,
+        opts: { attempts: 3 },
+      } as never,
+      new Error('secret-token'),
     );
-    await processor.process(makeJob());
-    expect(notifications.markDeliverySent).not.toHaveBeenCalled();
+    expect(c.repo.markDeliveryFailed).toHaveBeenCalledWith('d1', 'DISPATCH_FAILED');
   });
 
-  describe('EMAIL channel', () => {
-    it('falls back to the stub when EmailProviderService is not configured', async () => {
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(makeDelivery());
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await processor.process(makeJob());
-      expect(emailProvider.send).not.toHaveBeenCalled();
-      expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
-    });
-
-    it('falls back to the stub when configured but the recipient has no email', async () => {
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(
-          makeDelivery({
-            notification: {
-              ...makeDelivery().notification,
-              recipient: { email: null, phone: '+1', devices: [] },
-            },
-          }),
-        );
-      (emailProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await processor.process(makeJob());
-      expect(emailProvider.send).not.toHaveBeenCalled();
-      expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
-    });
-
-    it('dispatches via the real provider when configured and the recipient has an email', async () => {
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(makeDelivery());
-      (emailProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await processor.process(makeJob());
-      expect(emailProvider.send).toHaveBeenCalledWith({
-        to: 'owner@example.com',
-        subject: 'Charge published',
-        body: 'A new charge is ready for review.',
-      });
-      expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
-    });
-
-    it('propagates a real provider failure (for BullMQ to retry) instead of falling back', async () => {
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(makeDelivery());
-      (emailProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      (emailProvider.send as jest.Mock).mockRejectedValue(new Error('SendGrid 500'));
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await expect(processor.process(makeJob())).rejects.toThrow('SendGrid 500');
-      expect(notifications.markDeliverySent).not.toHaveBeenCalled();
-    });
-
-    it('21_ADRs > ADR-116 — falls back to the stub when configured but administratively disabled', async () => {
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(makeDelivery());
-      (emailProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      (providerSettings.isEnabled as jest.Mock).mockReturnValue(false);
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await processor.process(makeJob());
-      expect(providerSettings.isEnabled).toHaveBeenCalledWith('EMAIL');
-      expect(emailProvider.send).not.toHaveBeenCalled();
-      expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
-    });
+  it('PUSH partial fan-out follows aggregate success semantics', async () => {
+    const notification = {
+      ...base.notification,
+      recipient: {
+        ...base.notification.recipient,
+        devices: [{ pushToken: 'a' }, { pushToken: 'b' }],
+      },
+    };
+    const c = setup({ channel: 'PUSH', notification });
+    c.push.send.mockRejectedValueOnce(new Error('failed')).mockResolvedValueOnce(undefined);
+    await c.processor.process(c.job);
+    expect(c.push.send).toHaveBeenCalledTimes(2);
+    expect(c.repo.markDeliverySent).toHaveBeenCalledWith('d1');
   });
 
-  describe('SMS channel', () => {
-    it('dispatches via the real provider when configured — recipient.phone is always present', async () => {
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(makeDelivery({ channel: 'SMS' }));
-      (smsProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await processor.process(makeJob());
-      expect(smsProvider.send).toHaveBeenCalledWith({
-        to: '+15551234567',
-        body: 'Charge published: A new charge is ready for review.',
-      });
-      expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
-    });
-
-    it('falls back to the stub when not configured', async () => {
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(makeDelivery({ channel: 'SMS' }));
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await processor.process(makeJob());
-      expect(smsProvider.send).not.toHaveBeenCalled();
-      expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
-    });
-
-    it('21_ADRs > ADR-116 — falls back to the stub when configured but administratively disabled', async () => {
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(makeDelivery({ channel: 'SMS' }));
-      (smsProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      (providerSettings.isEnabled as jest.Mock).mockReturnValue(false);
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await processor.process(makeJob());
-      expect(providerSettings.isEnabled).toHaveBeenCalledWith('SMS');
-      expect(smsProvider.send).not.toHaveBeenCalled();
-      expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
-    });
-  });
-
-  describe('PUSH channel', () => {
-    it('falls back to the stub when configured but the recipient has no devices', async () => {
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(makeDelivery({ channel: 'PUSH' }));
-      (pushProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await processor.process(makeJob());
-      expect(pushProvider.send).not.toHaveBeenCalled();
-      expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
-    });
-
-    it('21_ADRs > ADR-116 — falls back to the stub when configured but administratively disabled', async () => {
-      const delivery = makeDelivery({
-        channel: 'PUSH',
-        notification: {
-          ...makeDelivery().notification,
-          recipient: { email: 'x@example.com', phone: '+1', devices: [{ pushToken: 'tokA' }] },
-        },
-      });
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(delivery);
-      (pushProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      (providerSettings.isEnabled as jest.Mock).mockReturnValue(false);
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await processor.process(makeJob());
-      expect(providerSettings.isEnabled).toHaveBeenCalledWith('PUSH');
-      expect(pushProvider.send).not.toHaveBeenCalled();
-      expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
-    });
-
-    it('sends to every device with a pushToken and marks SENT if at least one succeeds', async () => {
-      const delivery = makeDelivery({
-        channel: 'PUSH',
-        notification: {
-          ...makeDelivery().notification,
-          recipient: {
-            email: 'x@example.com',
-            phone: '+1',
-            devices: [{ pushToken: 'tokA' }, { pushToken: 'tokB' }],
-          },
-        },
-      });
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(delivery);
-      (pushProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      (pushProvider.send as jest.Mock)
-        .mockRejectedValueOnce(new Error('stale token'))
-        .mockResolvedValueOnce(undefined);
-
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await processor.process(makeJob());
-
-      expect(pushProvider.send).toHaveBeenCalledTimes(2);
-      expect(notifications.markDeliverySent).toHaveBeenCalledWith('delivery-1');
-    });
-
-    it('throws when every device fails, so BullMQ retries', async () => {
-      const delivery = makeDelivery({
-        channel: 'PUSH',
-        notification: {
-          ...makeDelivery().notification,
-          recipient: { email: 'x@example.com', phone: '+1', devices: [{ pushToken: 'tokA' }] },
-        },
-      });
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(delivery);
-      (pushProvider.isConfigured as jest.Mock).mockReturnValue(true);
-      (pushProvider.send as jest.Mock).mockRejectedValue(new Error('FCM unreachable'));
-
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-      await expect(processor.process(makeJob())).rejects.toThrow('FCM unreachable');
-      expect(notifications.markDeliverySent).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('onFailed', () => {
-    it('marks FAILED only once every configured attempt is exhausted', async () => {
-      const { notifications, emailProvider, smsProvider, pushProvider, providerSettings } =
-        makeMocks(null);
-      const processor = new NotificationDispatchProcessor(
-        notifications,
-        emailProvider,
-        smsProvider,
-        pushProvider,
-        providerSettings,
-      );
-
-      await processor.onFailed(
-        { data: { deliveryId: 'd1' }, attemptsMade: 2, opts: { attempts: 3 } } as never,
-        new Error('boom'),
-      );
-      expect(notifications.markDeliveryFailed).not.toHaveBeenCalled();
-
-      await processor.onFailed(
-        { data: { deliveryId: 'd1' }, attemptsMade: 3, opts: { attempts: 3 } } as never,
-        new Error('boom'),
-      );
-      expect(notifications.markDeliveryFailed).toHaveBeenCalledWith('d1', 'boom');
-    });
+  it('PUSH all-device failure is never SENT', async () => {
+    const notification = {
+      ...base.notification,
+      recipient: { ...base.notification.recipient, devices: [{ pushToken: 'a' }] },
+    };
+    const c = setup({ channel: 'PUSH', notification });
+    c.push.send.mockRejectedValue(new ProviderHttpError('secret-token', 500));
+    await expect(c.processor.process(c.job)).rejects.toThrow('PROVIDER_REQUEST_FAILED');
+    expect(c.repo.markDeliverySent).not.toHaveBeenCalled();
   });
 });
