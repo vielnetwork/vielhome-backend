@@ -1,8 +1,19 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { NotificationCategory } from '@prisma/client';
 import { NotificationsService } from '../application/notifications.service';
 import { UpdatePushTokenDto } from '../application/dto/update-push-token.dto';
+import { RevokePushTokenDto } from '../application/dto/revoke-push-token.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
@@ -53,6 +64,12 @@ export class NotificationsController {
   @Patch('push-token')
   updatePushToken(@CurrentUser() user: JwtPayload, @Body() dto: UpdatePushTokenDto) {
     return this.notifications.updatePushToken(user.sub, dto);
+  }
+
+  /** Idempotently ends Push eligibility for the caller's own current device. */
+  @Delete('push-token')
+  revokePushToken(@CurrentUser() user: JwtPayload, @Body() dto: RevokePushTokenDto) {
+    return this.notifications.revokePushToken(user.sub, dto.deviceToken);
   }
 
   @Get()

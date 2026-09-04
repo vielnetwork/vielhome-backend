@@ -227,6 +227,17 @@ export class NotificationRepository {
     });
     return result.count > 0;
   }
+
+  /** Revocation is ownership-scoped and deliberately idempotent. Marking the
+   * device revoked also makes a late registration from the ended session fail
+   * the existing `revokedAt: null` registration predicate. A future login on
+   * this install reactivates/rebinds the same stable Device via Auth upsert. */
+  async revokeDevicePushToken(personId: string, deviceToken: string): Promise<void> {
+    await this.prisma.device.updateMany({
+      where: { personId, deviceToken },
+      data: { pushToken: null, revokedAt: new Date() },
+    });
+  }
   /**
    * 21_ADRs > ADR-114 — the mutation half of a staff-triggered resend.
    * `NotificationDispatchProcessor.process()` early-exits on any status

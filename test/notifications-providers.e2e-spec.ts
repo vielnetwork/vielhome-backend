@@ -271,6 +271,95 @@ describe('Notifications — Real Push/Email/SMS Provider Dispatch (e2e, ADR-088)
         .send({ deviceToken: personA.deviceToken })
         .expect(400);
     });
+
+    it('revokes only the authenticated caller device, is idempotent, and excludes it from dispatch', async () => {
+      const otherDeviceToken = `${personA.deviceToken}-other`;
+      await prisma.device.create({
+        data: {
+          personId: personA.personId,
+          deviceToken: otherDeviceToken,
+          platform: 'android',
+          pushToken: 'fcm-token-personA-other',
+        },
+      });
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await request(app.getHttpServer())
+          .delete('/api/v1/notifications/push-token')
+          .set('Authorization', `Bearer ${personA.accessToken}`)
+          .send({ deviceToken: personA.deviceToken })
+          .expect(200);
+        expect(response.body.data.ok).toBe(true);
+      }
+
+      const revoked = await prisma.device.findUnique({
+        where: { deviceToken: personA.deviceToken },
+      });
+      const untouched = await prisma.device.findUnique({
+        where: { deviceToken: otherDeviceToken },
+      });
+      expect(revoked).toMatchObject({ pushToken: null });
+      expect(revoked?.revokedAt).not.toBeNull();
+      expect(untouched).toMatchObject({ pushToken: 'fcm-token-personA-other', revokedAt: null });
+
+      const delivery = await waitForWelcomeEmailDelivery(prisma, personA.personId);
+      const dispatchView = await prisma.notificationDelivery.findUnique({
+        where: { id: delivery!.id },
+        include: {
+          notification: {
+            include: {
+              recipient: {
+                include: { devices: { where: { revokedAt: null, pushToken: { not: null } } } },
+              },
+            },
+          },
+        },
+      });
+      expect(
+        dispatchView?.notification.recipient.devices.map((device) => device.deviceToken),
+      ).not.toContain(personA.deviceToken);
+      expect(
+        dispatchView?.notification.recipient.devices.map((device) => device.deviceToken),
+      ).toContain(otherDeviceToken);
+    });
+
+    it('does not expose or mutate another account device, and a late old registration is rejected', async () => {
+      const hidden = await request(app.getHttpServer())
+        .delete('/api/v1/notifications/push-token')
+        .set('Authorization', `Bearer ${personB.accessToken}`)
+        .send({ deviceToken: personA.deviceToken })
+        .expect(200);
+      expect(hidden.body.data.ok).toBe(true);
+
+      await request(app.getHttpServer())
+        .patch('/api/v1/notifications/push-token')
+        .set('Authorization', `Bearer ${personA.accessToken}`)
+        .send({ deviceToken: personA.deviceToken, pushToken: 'late-secret-token' })
+        .expect(404);
+      expect(
+        (await prisma.device.findUnique({ where: { deviceToken: personA.deviceToken } }))
+          ?.pushToken,
+      ).toBeNull();
+    });
+
+    it('allows the next account login to rebind the install and register the current FCM token', async () => {
+      await prisma.device.update({
+        where: { deviceToken: personA.deviceToken },
+        data: { personId: personB.personId, revokedAt: null },
+      });
+      await request(app.getHttpServer())
+        .patch('/api/v1/notifications/push-token')
+        .set('Authorization', `Bearer ${personB.accessToken}`)
+        .send({ deviceToken: personA.deviceToken, pushToken: 'current-account-token' })
+        .expect(200);
+      expect(
+        await prisma.device.findUnique({ where: { deviceToken: personA.deviceToken } }),
+      ).toMatchObject({
+        personId: personB.personId,
+        pushToken: 'current-account-token',
+        revokedAt: null,
+      });
+    });
   });
 
   describe('EMAIL/PUSH dispatch via the real welcome-notification event chain', () => {

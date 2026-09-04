@@ -91,3 +91,18 @@ describe('NotificationsService.resendDelivery', () => {
     },
   );
 });
+
+describe('NotificationsService.revokePushToken', () => {
+  it('delegates an ownership-scoped idempotent revoke and returns success', async () => {
+    const notifications = { revokeDevicePushToken: jest.fn().mockResolvedValue(undefined) };
+    const service = new NotificationsService(
+      notifications as unknown as NotificationRepository,
+      {} as NotificationPolicy,
+      {} as AuditService,
+      {} as never,
+    );
+
+    await expect(service.revokePushToken('person-1', 'device-1')).resolves.toEqual({ ok: true });
+    expect(notifications.revokeDevicePushToken).toHaveBeenCalledWith('person-1', 'device-1');
+  });
+});

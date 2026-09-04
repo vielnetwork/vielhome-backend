@@ -284,6 +284,11 @@ export class NotificationsService {
     return { ok: true };
   }
 
+  async revokePushToken(personId: string, deviceToken: string): Promise<{ ok: true }> {
+    await this.notifications.revokeDevicePushToken(personId, deviceToken);
+    return { ok: true };
+  }
+
   /**
    * 21_ADRs > ADR-114 — the mechanical half of a staff-triggered resend
    * (`NotificationAdministrationService.resend` owns the audit record —
