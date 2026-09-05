@@ -1,6 +1,7 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { ConfigService } from '@nestjs/config';
+import type { Response } from 'express';
 import Redis from 'ioredis';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import type { AppConfig } from '../../config/configuration';
@@ -44,21 +45,17 @@ export class HealthController {
   }
 
   // Readiness: "should traffic be routed to this instance right now" —
-  // checks both hard dependencies this app cannot function without
-  // (closes the other half of the audit's 3.2 gap: "no Redis/queue health
-  // check"). Deliberately still returns HTTP 200 with a `degraded` body
-  // value even when a dependency is down, matching this controller's
-  // pre-existing convention (the original `check()` above never set a
-  // non-2xx status either) rather than introducing a second convention —
-  // a real orchestrator deployment (none exists yet per the audit's own
-  // findings) may want a non-2xx on degraded; flagged as a future
-  // refinement, not built here.
+  // checks both hard dependencies this app cannot function without. A
+  // degraded result must use a non-2xx status so infrastructure health
+  // checks do not route traffic to an instance that has lost either one.
   @SkipThrottle()
   @Get('ready')
-  async ready() {
+  async ready(@Res({ passthrough: true }) response: Response) {
     const [database, redis] = await Promise.all([this.checkDatabase(), this.checkRedis()]);
+    const ready = database === 'up' && redis === 'up';
+    response.status(ready ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE);
     return {
-      status: database === 'up' && redis === 'up' ? 'ok' : 'degraded',
+      status: ready ? 'ok' : 'degraded',
       uptimeSeconds: Math.floor(process.uptime()),
       database,
       redis,
