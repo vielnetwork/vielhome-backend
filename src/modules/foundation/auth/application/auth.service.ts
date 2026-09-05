@@ -276,6 +276,20 @@ export class AuthService {
       }
     }
 
+    const otpConfig = this.config.get('otp', { infer: true });
+    const isAllowlistedStagingLog =
+      this.config.get('applicationEnvironment', { infer: true }) === 'staging' &&
+      otpConfig.stagingLogEnabled &&
+      otpConfig.stagingLogAllowedPhones.includes(phone);
+
+    if (isAllowlistedStagingLog) {
+      // Temporary manual-QA escape hatch. The recipient is intentionally
+      // omitted: the allowlist check happened above, and Render needs only
+      // the short-lived code to complete this explicitly scoped test flow.
+      this.logger.warn(`STAGING TEST OTP: ${code} (allowlisted staging test recipient)`);
+      return;
+    }
+
     if (isProduction) {
       this.logger.warn('SMS OTP delivery is unavailable because the provider is not configured.');
       throw new ServiceUnavailableError(

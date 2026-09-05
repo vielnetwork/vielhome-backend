@@ -1,5 +1,6 @@
 export interface AppConfig {
   env: string;
+  applicationEnvironment: string;
   port: number;
   apiPrefix: string;
   apiVersion: string;
@@ -11,7 +12,13 @@ export interface AppConfig {
     refreshSecret: string;
     refreshExpiresIn: string;
   };
-  otp: { length: number; ttlSeconds: number; maxAttempts: number };
+  otp: {
+    length: number;
+    ttlSeconds: number;
+    maxAttempts: number;
+    stagingLogEnabled: boolean;
+    stagingLogAllowedPhones: string[];
+  };
   throttle: { ttlSeconds: number; limit: number; otpLimit: number };
   /**
    * 21_ADRs > ADR-061 — `origins: []` means "no explicit allowlist
@@ -70,6 +77,11 @@ export default (): AppConfig => {
 
   return {
     env,
+    // Deployment intent is deliberately distinct from NODE_ENV: Render
+    // staging runs optimized production builds, so NODE_ENV cannot safely
+    // distinguish staging-only operational behavior from real production.
+    // An unset/unknown value never grants staging-only behavior.
+    applicationEnvironment: process.env.APP_ENVIRONMENT ?? '',
     port: parseInt(process.env.PORT ?? '3000', 10),
     apiPrefix: process.env.API_PREFIX ?? 'api',
     apiVersion: process.env.API_VERSION ?? 'v1',
@@ -102,6 +114,11 @@ export default (): AppConfig => {
       length: parseInt(process.env.OTP_LENGTH ?? '5', 10),
       ttlSeconds: parseInt(process.env.OTP_TTL_SECONDS ?? '120', 10),
       maxAttempts: parseInt(process.env.OTP_MAX_ATTEMPTS ?? '5', 10),
+      stagingLogEnabled: process.env.OTP_STAGING_LOG_ENABLED === 'true',
+      stagingLogAllowedPhones: (process.env.OTP_STAGING_LOG_ALLOWED_PHONES ?? '')
+        .split(',')
+        .map((phone) => phone.trim())
+        .filter((phone) => /^\+989\d{9}$/.test(phone)),
     },
     throttle: {
       ttlSeconds: parseInt(process.env.THROTTLE_TTL_SECONDS ?? '60', 10),
