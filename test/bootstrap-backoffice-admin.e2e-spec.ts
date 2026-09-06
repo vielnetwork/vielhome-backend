@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { BootstrapBackofficeAdminService } from '../src/modules/backoffice-bootstrap/application/bootstrap-backoffice-admin.service';
+import { BackofficeBootstrapRepository } from '../src/modules/backoffice-bootstrap/infrastructure/repositories/backoffice-bootstrap.repository';
 import { ConflictError, NotFoundAppError, ValidationError } from '../src/common/errors/app-error';
 import type { AppConfig } from '../src/config/configuration';
 import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
@@ -131,12 +132,14 @@ describe('Initial Backoffice Bootstrap (e2e) — ADR-118', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let service: BootstrapBackofficeAdminService;
+  let bootstrapRepository: BackofficeBootstrapRepository;
   const createdPhones: string[] = [];
   const createdRoleIds: string[] = [];
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
     service = app.get(BootstrapBackofficeAdminService);
+    bootstrapRepository = app.get(BackofficeBootstrapRepository);
   });
 
   afterAll(async () => {
@@ -204,6 +207,8 @@ describe('Initial Backoffice Bootstrap (e2e) — ADR-118', () => {
     expect(staffAudit!.action).toBe('PlatformStaffBootstrapped');
     expect(staffAudit!.actorId).toBeNull();
     expect((staffAudit!.metadata as Record<string, unknown>).source).toBe('SYSTEM_BOOTSTRAP');
+    expect(staffAudit!.metadata).not.toHaveProperty('phone');
+    expect(staffAudit!.metadata).not.toHaveProperty('fullName');
 
     const roleAudit = await prisma.auditLog.findFirst({
       where: { entityType: 'StaffRole', entityId: staffRole!.id },
@@ -253,7 +258,7 @@ describe('Initial Backoffice Bootstrap (e2e) — ADR-118', () => {
     expect(second).toEqual({
       status: 'ALREADY_EXISTS',
       roleName: role.name,
-      admin: first.admin,
+      admin: { ...first.admin, wasNewPerson: false },
     });
 
     const secondPersonExists = await prisma.person.findUnique({ where: { phone: secondPhone } });
@@ -271,7 +276,7 @@ describe('Initial Backoffice Bootstrap (e2e) — ADR-118', () => {
     await expect(service.run({ roleName: role.name })).rejects.toBeInstanceOf(ValidationError);
   });
 
-  it('reuses an existing, unsuspended Person by phone instead of creating a duplicate', async () => {
+  it('refuses to promote an existing normal Person without explicit confirmation and writes nothing', async () => {
     const role = await makeThrowawayRole('reuse-existing-person');
     const phone = nextPhone();
     createdPhones.push(phone);
@@ -280,7 +285,28 @@ describe('Initial Backoffice Bootstrap (e2e) — ADR-118', () => {
       data: { phone, fullName: 'Pre-existing Real User' },
     });
 
-    const result = await service.run({ phone, roleName: role.name });
+    await expect(service.run({ phone, roleName: role.name })).rejects.toBeInstanceOf(ConflictError);
+
+    expect(
+      await prisma.platformStaff.findUnique({ where: { personId: existingPerson.id } }),
+    ).toBeNull();
+    expect(await prisma.staffRole.count({ where: { roleId: role.id } })).toBe(0);
+  });
+
+  it('reuses a confirmed existing Person and preserves fullName', async () => {
+    const role = await makeThrowawayRole('confirmed-existing-person');
+    const phone = nextPhone();
+    createdPhones.push(phone);
+
+    const existingPerson = await prisma.person.create({
+      data: { phone, fullName: 'Pre-existing Real User' },
+    });
+
+    const result = await service.run({
+      phone,
+      roleName: role.name,
+      allowExistingPerson: true,
+    });
 
     expect(result.status).toBe('CREATED');
     expect(result.admin.personId).toBe(existingPerson.id);
@@ -290,6 +316,48 @@ describe('Initial Backoffice Bootstrap (e2e) — ADR-118', () => {
 
     const personCount = await prisma.person.count({ where: { phone } });
     expect(personCount).toBe(1);
+  });
+
+  it('serializes concurrent first-holder attempts so exactly one succeeds', async () => {
+    const role = await makeThrowawayRole('concurrent-first-holder');
+    const phones = [nextPhone(), nextPhone()];
+    createdPhones.push(...phones);
+
+    const results = await Promise.allSettled(
+      phones.map((phone) => service.run({ phone, roleName: role.name })),
+    );
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(await prisma.staffRole.count({ where: { roleId: role.id, revokedAt: null } })).toBe(1);
+    expect(await prisma.person.count({ where: { phone: { in: phones } } })).toBe(1);
+  });
+
+  it('rolls back identity, staff, role, and audit writes when the transaction fails', async () => {
+    const phone = nextPhone();
+    createdPhones.push(phone);
+    const auditCountBefore = await prisma.auditLog.count({
+      where: { action: { in: ['PlatformStaffBootstrapped', 'StaffRoleAssigned'] } },
+    });
+
+    await expect(
+      bootstrapRepository.createBootstrapAdmin({
+        roleId: `missing-role-${RUN_ID}`,
+        roleName: 'Missing Role',
+        phone,
+        fullName: 'Rollback Operator',
+        allowExistingPerson: false,
+      }),
+    ).rejects.toBeDefined();
+
+    expect(await prisma.person.findUnique({ where: { phone } })).toBeNull();
+    expect(await prisma.platformStaff.count({ where: { person: { phone } } })).toBe(0);
+    expect(await prisma.staffRole.count({ where: { roleId: `missing-role-${RUN_ID}` } })).toBe(0);
+    expect(
+      await prisma.auditLog.count({
+        where: { action: { in: ['PlatformStaffBootstrapped', 'StaffRoleAssigned'] } },
+      }),
+    ).toBe(auditCountBefore);
   });
 
   it('refuses to bootstrap a suspended person (ConflictError), and creates no PlatformStaff/StaffRole', async () => {

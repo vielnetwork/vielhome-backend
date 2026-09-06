@@ -101,4 +101,9 @@ ADR-118 is closed. No further action is pending.
 ## Future Review
 
 - **`CRITICAL_AUDIT_ACTIONS` (`dashboard.service.ts`, ADR-110)**: `'PlatformStaffBootstrapped'` is a strong candidate for that allowlist — deliberately not added in this ADR per the explicit "do not modify ADR-108–117 behavior" instruction.
-- **Multi-environment safety rail**: nothing today prevents `npm run bootstrap:backoffice` from being run against a production database with `BOOTSTRAP_ADMIN_PHONE` pointed at the wrong number — a future `NODE_ENV`-aware confirmation prompt (or a required `--force-production` flag when `NODE_ENV=production`) could reduce that operator-error risk, not built here since the current requirement was silent on it.
+- **Resolved by PROD-REL-05B**: production now requires the explicit
+  `--confirm-production` CLI flag before Prisma is constructed; promotion of an
+  existing normal Person requires `--allow-existing-person`; stdout and audit
+  metadata no longer contain phone/full name; and a transaction-scoped advisory
+  lock serializes the first-holder decision per target role without constraining
+  later normal RBAC multi-holder grants.

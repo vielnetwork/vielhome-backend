@@ -23,6 +23,7 @@ function makeBootstrapRepo(
       person: { id: 'person-1', phone: '+989121234567', fullName: DEFAULT_BOOTSTRAP_ADMIN_NAME },
       platformStaff: { id: 'staff-1' },
       staffRole: { id: 'staff-role-1' },
+      wasNewPerson: true,
     }),
     ...overrides,
   } as unknown as BackofficeBootstrapRepository;
@@ -42,6 +43,7 @@ describe('BootstrapBackofficeAdminService', () => {
     const existingHolder = {
       id: 'staff-role-existing',
       staffId: 'staff-existing',
+      roleId: 'role-1',
       staff: {
         person: { id: 'person-existing', phone: '+989120000099', fullName: 'Existing Admin' },
       },
@@ -63,6 +65,8 @@ describe('BootstrapBackofficeAdminService', () => {
         fullName: 'Existing Admin',
         staffId: 'staff-existing',
         staffRoleId: 'staff-role-existing',
+        roleId: 'role-1',
+        wasNewPerson: false,
       },
     });
     expect(bootstrapRepo.createBootstrapAdmin).not.toHaveBeenCalled();
@@ -98,6 +102,7 @@ describe('BootstrapBackofficeAdminService', () => {
       roleName: DEFAULT_BOOTSTRAP_ROLE_NAME,
       phone: '+989121234567',
       fullName: DEFAULT_BOOTSTRAP_ADMIN_NAME,
+      allowExistingPerson: false,
     });
     expect(result).toEqual({
       status: 'CREATED',
@@ -108,6 +113,8 @@ describe('BootstrapBackofficeAdminService', () => {
         fullName: DEFAULT_BOOTSTRAP_ADMIN_NAME,
         staffId: 'staff-1',
         staffRoleId: 'staff-role-1',
+        roleId: 'role-1',
+        wasNewPerson: true,
       },
     });
   });

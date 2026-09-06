@@ -14,12 +14,13 @@
  * been migrated and RBAC-seeded — `npx prisma migrate dev` +
  * `npm run db:seed:rbac`):
  *
- *   BOOTSTRAP_ADMIN_PHONE=+989121234567 npm run bootstrap:backoffice
- *   npm run bootstrap:backoffice -- --phone +989121234567 --full-name "Ada Lovelace"
+ *   BOOTSTRAP_ADMIN_PHONE=+989121234567 npm run bootstrap:backoffice -- --confirm-production
+ *   npm run bootstrap:backoffice -- --confirm-production --phone +989121234567 --full-name "Synthetic Operator"
  *
  * If a Technical Admin already exists, this prints a friendly message
  * and exits 0 without touching anything — no phone number is required in
- * that case. Safe to wire into every deploy unconditionally.
+ * that case. Production deliberately requires an explicit confirmation
+ * flag; this command must never be wired into an automatic deploy hook.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -27,6 +28,10 @@ import { PrismaService } from '../src/common/prisma/prisma.service';
 import { BackofficeRbacRepository } from '../src/modules/backoffice-rbac/infrastructure/repositories/backoffice-rbac.repository';
 import { BackofficeBootstrapRepository } from '../src/modules/backoffice-bootstrap/infrastructure/repositories/backoffice-bootstrap.repository';
 import { BootstrapBackofficeAdminService } from '../src/modules/backoffice-bootstrap/application/bootstrap-backoffice-admin.service';
+import {
+  formatBootstrapBackofficeResult,
+  parseBootstrapBackofficeCli,
+} from '../src/modules/backoffice-bootstrap/application/bootstrap-backoffice-cli';
 
 /**
  * Same minimal inline `.env` loader `scripts/verify-storage-roundtrip.ts`
@@ -55,18 +60,17 @@ function loadDotEnv(): void {
   }
 }
 
-function parseArg(name: string): string | undefined {
-  const flag = `--${name}`;
-  const index = process.argv.indexOf(flag);
-  if (index === -1 || index === process.argv.length - 1) return undefined;
-  return process.argv[index + 1];
-}
-
-async function main() {
+export async function main() {
   loadDotEnv();
-
-  const phone = parseArg('phone') ?? process.env.BOOTSTRAP_ADMIN_PHONE;
-  const fullName = parseArg('full-name') ?? process.env.BOOTSTRAP_ADMIN_FULL_NAME;
+  let options;
+  try {
+    options = parseBootstrapBackofficeCli(process.argv, process.env);
+  } catch (err) {
+    console.error('Bootstrap refused:');
+    console.error(err instanceof Error ? err.message : 'Invalid bootstrap configuration.');
+    process.exitCode = 1;
+    return;
+  }
 
   const prisma = new PrismaService();
   const rbac = new BackofficeRbacRepository(prisma);
@@ -74,23 +78,8 @@ async function main() {
   const service = new BootstrapBackofficeAdminService(rbac, bootstrapRepo);
 
   try {
-    const result = await service.run({ phone, fullName });
-
-    if (result.status === 'ALREADY_EXISTS') {
-      console.log(
-        `${result.roleName} already exists (${result.admin.phone}` +
-          `${result.admin.fullName ? `, ${result.admin.fullName}` : ''}). No changes made.`,
-      );
-    } else {
-      console.log(
-        `Created the first ${result.roleName}: ${result.admin.phone}` +
-          `${result.admin.fullName ? ` (${result.admin.fullName})` : ''}.`,
-      );
-      console.log(
-        'This account can now log in via the normal OTP flow ' +
-          '(POST /api/v1/auth/otp/request then /api/v1/auth/otp/verify) using this phone number.',
-      );
-    }
+    const result = await service.run(options);
+    for (const line of formatBootstrapBackofficeResult(result)) console.log(line);
     await prisma.$disconnect();
   } catch (err) {
     console.error('Bootstrap failed:');
@@ -100,4 +89,4 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) void main();

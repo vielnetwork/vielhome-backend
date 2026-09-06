@@ -41,8 +41,17 @@ export class BackofficeBootstrapRepository {
     roleName: string;
     phone: string;
     fullName: string;
+    allowExistingPerson: boolean;
   }) {
     return this.prisma.$transaction(async (tx) => {
+      // Serialize only the one-time bootstrap decision for this role. The
+      // transaction-scoped lock disappears automatically on commit/rollback
+      // and does not constrain later, ordinary multi-holder RBAC grants.
+      await tx.$queryRaw<Array<{ locked: number }>>`
+        SELECT 1 AS "locked"
+        FROM pg_advisory_xact_lock(hashtextextended(${params.roleId}, 0))
+      `;
+
       const stillNoActiveHolder = await tx.staffRole.count({
         where: { roleId: params.roleId, revokedAt: null },
       });
@@ -50,18 +59,31 @@ export class BackofficeBootstrapRepository {
         throw new ConflictError(`"${params.roleName}" already has an active holder.`);
       }
 
-      let person = await tx.person.findUnique({ where: { phone: params.phone } });
+      let person = await tx.person.findUnique({
+        where: { phone: params.phone },
+        include: { platformStaff: true },
+      });
       let wasNewPerson = false;
       if (!person) {
         person = await tx.person.create({
           data: { phone: params.phone, fullName: params.fullName },
+          include: { platformStaff: true },
         });
         wasNewPerson = true;
       } else if (person.isSuspended) {
         throw new ConflictError(
-          `Cannot bootstrap ${person.phone} as ${params.roleName} — this account is currently suspended.`,
+          `Cannot bootstrap the supplied account as ${params.roleName} because it is suspended.`,
+        );
+      } else if (!person.platformStaff && !params.allowExistingPerson) {
+        throw new ConflictError(
+          'The supplied phone belongs to an existing Person. ' +
+            'Pass --allow-existing-person to confirm promotion explicitly.',
         );
       }
+
+      // All branches above either resolve/create a Person or throw. Keep the
+      // invariant explicit for TypeScript and for future edits to this flow.
+      if (!person) throw new ConflictError('Bootstrap identity could not be resolved.');
 
       const platformStaff = await tx.platformStaff.upsert({
         where: { personId: person.id },
@@ -78,7 +100,6 @@ export class BackofficeBootstrapRepository {
           entityId: platformStaff.id,
           metadata: {
             personId: person.id,
-            phone: params.phone,
             wasNewPerson,
             source: 'SYSTEM_BOOTSTRAP',
           } as never,
@@ -105,7 +126,7 @@ export class BackofficeBootstrapRepository {
         },
       });
 
-      return { person, platformStaff, staffRole };
+      return { person, platformStaff, staffRole, wasNewPerson };
     });
   }
 }

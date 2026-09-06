@@ -21,6 +21,8 @@ export interface BootstrapBackofficeAdminOptions {
   phone?: string;
   fullName?: string;
   roleName?: string;
+  /** Required before a normal, existing Person may be elevated to platform staff. */
+  allowExistingPerson?: boolean;
 }
 
 export interface BootstrapBackofficeAdminAdminInfo {
@@ -29,6 +31,8 @@ export interface BootstrapBackofficeAdminAdminInfo {
   fullName: string | null;
   staffId: string;
   staffRoleId: string;
+  roleId: string;
+  wasNewPerson: boolean;
 }
 
 export type BootstrapBackofficeAdminResult =
@@ -84,6 +88,8 @@ export class BootstrapBackofficeAdminService {
           fullName: holder.staff.person.fullName,
           staffId: holder.staffId,
           staffRoleId: holder.id,
+          roleId: holder.roleId,
+          wasNewPerson: false,
         },
       };
     }
@@ -95,16 +101,18 @@ export class BootstrapBackofficeAdminService {
     }
     const normalizedPhone = normalizeIranianMobilePhone(options.phone);
     if (!normalizedPhone) {
-      throw new ValidationError(`"${options.phone}" is not a valid Iranian mobile phone number.`);
+      throw new ValidationError('The supplied bootstrap phone number is not valid.');
     }
     const fullName = options.fullName?.trim() || DEFAULT_BOOTSTRAP_ADMIN_NAME;
 
-    const { person, platformStaff, staffRole } = await this.bootstrapRepo.createBootstrapAdmin({
-      roleId: role.id,
-      roleName,
-      phone: normalizedPhone,
-      fullName,
-    });
+    const { person, platformStaff, staffRole, wasNewPerson } =
+      await this.bootstrapRepo.createBootstrapAdmin({
+        roleId: role.id,
+        roleName,
+        phone: normalizedPhone,
+        fullName,
+        allowExistingPerson: options.allowExistingPerson ?? false,
+      });
 
     return {
       status: 'CREATED',
@@ -115,6 +123,8 @@ export class BootstrapBackofficeAdminService {
         fullName: person.fullName,
         staffId: platformStaff.id,
         staffRoleId: staffRole.id,
+        roleId: role.id,
+        wasNewPerson,
       },
     };
   }

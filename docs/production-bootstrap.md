@@ -9,7 +9,7 @@ operator environment. Confirm the destination before executing any command.
 npx prisma migrate deploy
 npm run db:seed:reference
 # Supply the real operator-controlled identity; no default phone or credentials.
-npm run bootstrap:backoffice -- --phone "$BOOTSTRAP_ADMIN_PHONE" --full-name "$BOOTSTRAP_ADMIN_FULL_NAME"
+npm run bootstrap:backoffice -- --confirm-production
 ```
 
 Reference bootstrap runs the unchanged authoritative RBAC seed, unchanged
@@ -43,6 +43,22 @@ SYSTEM_BOOTSTRAP audit entries. It creates no password/token. Normal OTP login
 is used. Once an active Technical Admin exists, repeating the command is a
 no-op. It is not an automatic part of reference bootstrap and does not grant
 the Super Admin role. See ADR-118 for its existing policy.
+
+Production refuses to proceed without the literal `--confirm-production` CLI
+flag. Supply `BOOTSTRAP_ADMIN_PHONE` and `BOOTSTRAP_ADMIN_FULL_NAME` through the
+safest runtime input mechanism available; do not place identity values directly
+in persistent Render Job command metadata. CLI `--phone`/`--full-name` remain
+supported and take precedence over environment variables, but expose their
+values to command history and job metadata.
+
+If the supplied phone already belongs to a normal `Person`, the bootstrap
+refuses without `--allow-existing-person`. Add that flag only after independently
+confirming the existing account is the intended operator. Existing profile data,
+including `fullName`, is never overwritten.
+
+The script's stdout contains only status and opaque IDs. Audit metadata contains
+opaque identity/staff/role IDs, role name, creation status, and the
+`SYSTEM_BOOTSTRAP` source marker; it does not contain phone or full name.
 
 For disposable local development only:
 
