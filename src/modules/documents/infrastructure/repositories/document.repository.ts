@@ -1,3 +1,4 @@
+import { enqueueDocumentBackup } from '../../../../backup/backup.request';
 import { Injectable } from '@nestjs/common';
 import {
   DocumentCategory,
@@ -100,6 +101,7 @@ export class DocumentRepository {
           expiresAt: params.expiresAt,
         },
       });
+      await enqueueDocumentBackup(tx, version);
       return { document, version };
     });
   }
@@ -314,7 +316,7 @@ export class DocumentRepository {
         data: { isCurrent: false },
       });
 
-      return tx.documentVersion.create({
+      const version = await tx.documentVersion.create({
         data: {
           documentId: params.documentId,
           versionNumber: nextVersionNumber,
@@ -327,6 +329,8 @@ export class DocumentRepository {
           expiresAt: params.expiresAt,
         },
       });
+      await enqueueDocumentBackup(tx, version);
+      return version;
     });
   }
 
@@ -463,6 +467,7 @@ export class DocumentRepository {
           entityId: params.paymentId,
         },
       });
+      await enqueueDocumentBackup(tx, version);
       return { document, version };
     });
   }

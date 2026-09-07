@@ -4092,3 +4092,57 @@ model AdCampaign {
   @@index([adSlotId, status, startsAt, endsAt])
   @@map("ad_campaigns")
 }
+
+// Recovery evidence deliberately has no foreign key to deletable business rows.
+enum ObjectBackupState {
+  PENDING
+  COPYING
+  VERIFIED
+  FAILED
+  SOURCE_MISSING
+  RETIRED
+}
+
+model ObjectBackupRequest {
+  id            String                   @id @default(uuid())
+  sourceBucket  String
+  sourceKey     String
+  referenceType String
+  referenceId   String
+  expectedSize  BigInt?
+  state         ObjectBackupState        @default(PENDING)
+  attempts      Int                      @default(0)
+  nextAttemptAt DateTime                 @default(now())
+  leaseUntil    DateTime?
+  leaseOwner    String?
+  failureCode   String?
+  finalizedAt   DateTime
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+  generations   ObjectBackupGeneration[]
+
+  @@unique([sourceBucket, referenceType, referenceId])
+  @@index([state, nextAttemptAt, leaseUntil])
+  @@index([sourceBucket, sourceKey])
+  @@map("object_backup_requests")
+}
+
+model ObjectBackupGeneration {
+  id                 String              @id @default(uuid())
+  requestId          String
+  request            ObjectBackupRequest @relation(fields: [requestId], references: [id], onDelete: Restrict)
+  captureId          String              @unique
+  backupBucket       String
+  backupKey          String              @unique
+  manifestKey        String              @unique
+  sourceETag         String?
+  sourceLastModified String?
+  observedSize       BigInt?
+  sha256             String?
+  verifiedAt         DateTime?
+  retiredAt          DateTime?
+  createdAt          DateTime            @default(now())
+
+  @@index([requestId, verifiedAt])
+  @@map("object_backup_generations")
+}

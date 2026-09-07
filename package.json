@@ -29,7 +29,10 @@
     "bootstrap:backoffice": "ts-node scripts/bootstrap-backoffice-admin.ts",
     "docs:export-openapi": "ts-node scripts/export-openapi.ts",
     "storage:verify-roundtrip": "ts-node scripts/verify-storage-roundtrip.ts",
-    "notifications:verify-providers": "ts-node scripts/verify-notification-providers.ts"
+    "notifications:verify-providers": "ts-node scripts/verify-notification-providers.ts",
+    "backup:run": "node dist/src/backup/main.js run",
+    "backup:reconcile": "node dist/src/backup/main.js reconcile",
+    "backup:metrics": "node dist/src/backup/main.js metrics"
   },
   "jest": {
     "moduleFileExtensions": [

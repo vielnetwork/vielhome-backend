@@ -1,3 +1,4 @@
+import { backupMetrics } from '../../../backup/backup.reconciliation';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -85,6 +86,7 @@ export interface SchedulerSection {
 }
 
 export interface MonitoringOverview {
+  objectBackup?: Awaited<ReturnType<typeof backupMetrics>> | { available: false };
   status: HealthStatus;
   checkedAt: string;
   database: DatabaseSection;
@@ -171,9 +173,23 @@ export class MonitoringService {
     const scheduler = this.unwrap(schedulerResult, this.unhealthyScheduler());
 
     const queues = [schedulerQueue, notificationQueue];
+    const bucket = this.config.get('storage.bucket', { infer: true });
+    let objectBackup: MonitoringOverview['objectBackup'];
+    if (bucket) {
+      try {
+        objectBackup = await this.withTimeout(
+          backupMetrics(this.prisma, bucket),
+          MonitoringService.DB_TIMEOUT_MS,
+          'backup metrics',
+        );
+      } catch {
+        objectBackup = { available: false };
+      }
+    }
 
     return {
       status: this.aggregateStatus({ database, redis, storage, queues, scheduler }),
+      ...(objectBackup ? { objectBackup } : {}),
       checkedAt: new Date().toISOString(),
       database,
       redis,
