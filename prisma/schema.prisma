@@ -3324,7 +3324,7 @@ model FraudCaseEvidence {
   fraudCase   FraudCase @relation(fields: [fraudCaseId], references: [id])
   notes       String
   authorId    String?
-  author      Person?   @relation("FraudCaseEvidenceAuthor", fields: [authorId], references: [id])
+  author      Person?   @relation("FraudCaseEvidenceAuthor", fields: [authorId], references: [id], onDelete: Restrict)
   createdAt   DateTime  @default(now())
 
   @@index([fraudCaseId, createdAt, id])
