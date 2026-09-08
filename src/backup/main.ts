@@ -1,49 +1,62 @@
+import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
-import { readBackupConfig } from './backup.config';
+import { readBackupConfig, BackupMode } from './backup.config';
 import { HttpBackupStorage } from './backup.storage';
-import { BackupRepository } from './backup.repository';
-import { BackupRunner } from './backup.runner';
-import { backupMetrics, reconcile } from './backup.reconciliation';
+import { ExecutionControl, installTermination } from './backup.execution';
+import { operate } from './backup.operations';
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
   const mode = args[0] ?? 'run';
-  if (!['run', 'reconcile', 'metrics'].includes(mode)) throw new Error('INVALID_BACKUP_COMMAND');
-  const c = readBackupConfig(process.env);
-  // Explicit datasource; never implicitly use application DATABASE_URL or dotenv.
-  const db = new PrismaClient({ datasources: { db: { url: c.databaseUrl } }, log: [] });
-  try {
-    const storage = new HttpBackupStorage(c.source, c.destination, c.maxBytes);
-    if (mode === 'metrics') {
-      console.log(JSON.stringify(await backupMetrics(db, c.source.bucket)));
-      return;
-    }
-    if (mode === 'reconcile') {
-      console.log(JSON.stringify(await reconcile(db, c.source.bucket, storage)));
-      return;
-    }
-    const runner = new BackupRunner(
-      new BackupRepository(db, c.source.bucket),
-      storage,
-      c.destination.bucket,
-      c.environment,
+  const runId = randomUUID();
+  const started = Date.now();
+  const emit = (event: string, fields: Record<string, unknown> = {}) =>
+    console.log(
+      JSON.stringify({
+        schemaVersion: 1,
+        event,
+        mode: ['run', 'metrics', 'reconcile'].includes(mode) ? mode : 'invalid',
+        runId,
+        timestamp: new Date().toISOString(),
+        ...fields,
+      }),
     );
-    let verified = 0,
-      failed = 0;
-    const deadline = Date.now() + 240000;
-    while (Date.now() < deadline && verified + failed < 100) {
-      const outcome = await runner.runOne();
-      if (outcome === 'idle') break;
-      if (outcome === 'verified') verified++;
-      else failed++;
-    }
-    console.log(JSON.stringify({ verified, failed }));
-    if (failed) process.exitCode = 1;
+  emit('backup.started');
+  const control = new ExecutionControl();
+  const dispose = installTermination(control, () => {
+    emit('backup.terminated', { exitCode: 2 });
+    process.exit(2);
+  });
+  let db: PrismaClient | undefined;
+  let exitCode = 2;
+  let summary: unknown;
+  try {
+    if (!['run', 'metrics', 'reconcile'].includes(mode) || args.length > 1)
+      throw new Error('INVALID_MODE');
+    const c = readBackupConfig(process.env, mode as BackupMode);
+    db = new PrismaClient({ datasources: { db: { url: c.databaseUrl } }, log: [] });
+    const storage =
+      c.mode === 'metrics'
+        ? undefined
+        : new HttpBackupStorage(c.source, c.mode === 'run' ? c.destination : undefined, c.maxBytes);
+    const result = await operate(c, db, control, storage);
+    exitCode = control.stopping ? 2 : result.exitCode;
+    summary = result.summary;
+  } catch {
+    exitCode = 2;
   } finally {
-    await db.$disconnect();
+    try {
+      await db?.$disconnect();
+    } catch {
+      exitCode = 2;
+    }
+    dispose();
+    emit('backup.completed', {
+      outcome: exitCode === 0 ? 'healthy' : 'unhealthy',
+      exitCode,
+      durationMs: Date.now() - started,
+      ...(summary ? { summary } : {}),
+    });
+    process.exitCode = exitCode;
   }
 }
-if (require.main === module)
-  main().catch(() => {
-    console.error('BACKUP_COMMAND_FAILED');
-    process.exitCode = 1;
-  });
+if (require.main === module) void main();

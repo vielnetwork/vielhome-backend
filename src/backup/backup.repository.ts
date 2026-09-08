@@ -6,8 +6,10 @@ export class BackupRepository {
   constructor(
     private readonly db: PrismaClient,
     private readonly sourceBucket: string,
+    private readonly canClaim: () => boolean = () => true,
   ) {}
   async claim(now = new Date()): Promise<ObjectBackupRequest | null> {
+    if (!this.canClaim()) return null;
     const eligible = {
       sourceBucket: this.sourceBucket,
       OR: [
@@ -29,6 +31,7 @@ export class BackupRepository {
       take: 25,
     });
     for (const candidate of candidates) {
+      if (!this.canClaim()) return null;
       const owner = randomUUID();
       // Compare-and-set is one database UPDATE, not a read-then-unconditional-write.
       const won = await this.db.objectBackupRequest.updateMany({
@@ -69,19 +72,26 @@ export class BackupRepository {
       verifiedAt: Date;
     },
   ): Promise<void> {
-    await this.db.$transaction(async (tx) => {
-      const updated = await tx.objectBackupRequest.updateMany({
-        where: {
-          id: request.id,
-          state: 'COPYING',
-          leaseOwner: request.leaseOwner,
-          leaseUntil: { gt: new Date() },
-        },
-        data: { state: 'VERIFIED', leaseOwner: null, leaseUntil: null, failureCode: null },
-      });
-      if (updated.count !== 1) throw new BackupError('LEASE_LOST');
-      await tx.objectBackupGeneration.update({ where: { id: generation.id }, data });
-    });
+    await this.db.$transaction(
+      async (tx) => {
+        const updated = await tx.objectBackupRequest.updateMany({
+          where: {
+            id: request.id,
+            state: 'COPYING',
+            leaseOwner: request.leaseOwner,
+            leaseUntil: { gt: new Date() },
+          },
+          data: { state: 'VERIFIED', leaseOwner: null, leaseUntil: null, failureCode: null },
+        });
+        if (updated.count !== 1) throw new BackupError('LEASE_LOST');
+        const generationUpdated = await tx.objectBackupGeneration.updateMany({
+          where: { id: generation.id, requestId: request.id },
+          data,
+        });
+        if (generationUpdated.count !== 1) throw new BackupError('GENERATION_MISMATCH');
+      },
+      { maxWait: 3000, timeout: 15000 },
+    );
   }
   async fail(request: ObjectBackupRequest, code: string): Promise<void> {
     const seconds = Math.min(300, 30 * 2 ** Math.min(request.attempts - 1, 4));

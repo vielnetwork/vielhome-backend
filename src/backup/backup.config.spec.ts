@@ -61,3 +61,30 @@ describe('runner-only environment', () => {
     }
   });
 });
+
+describe('mode-specific configuration and PostgreSQL bounds', () => {
+  it('metrics needs no R2 credential or endpoint', () => {
+    const c = readBackupConfig(
+      {
+        BACKUP_ENV: 'test',
+        BACKUP_DATABASE_URL: env().BACKUP_DATABASE_URL,
+        BACKUP_SOURCE_BUCKET: 'test-primary',
+      },
+      'metrics',
+    );
+    expect(c.mode).toBe('metrics');
+    expect(c).not.toHaveProperty('source');
+    const params = new URL(c.databaseUrl).searchParams;
+    expect(params.get('options')).toContain('statement_timeout=10000');
+    expect(params.get('options')).toContain('lock_timeout=3000');
+    expect(params.get('connect_timeout')).toBe('5');
+  });
+  it('reconciliation ignores all destination credentials', () => {
+    const e: NodeJS.ProcessEnv = env();
+    for (const k of Object.keys(e)) if (k.startsWith('BACKUP_DESTINATION')) delete e[k];
+    const c = readBackupConfig(e, 'reconcile');
+    expect(c.source.bucket).toBe('test-primary');
+    expect(c).not.toHaveProperty('destination');
+    expect(() => readBackupConfig(e, 'run')).toThrow();
+  });
+});

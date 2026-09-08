@@ -1,3 +1,4 @@
+import { assertImportantUploadsAllowed } from './important-upload-gate';
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import type {
@@ -165,6 +166,7 @@ export class DocumentsService {
    * building.
    */
   async requestUploadUrl(buildingId: string, dto: RequestUploadUrlDto, actorPersonId: string) {
+    assertImportantUploadsAllowed();
     await this.getBuilding(buildingId);
     await this.assertManager(actorPersonId, buildingId);
     this.policy.assertFileTypeSupported(dto.fileType);
@@ -327,6 +329,7 @@ export class DocumentsService {
     actorPersonId: string,
     requestId: string,
   ) {
+    assertImportantUploadsAllowed();
     await this.getBuilding(buildingId);
     await this.assertManager(actorPersonId, buildingId);
 
@@ -420,6 +423,7 @@ export class DocumentsService {
     actorPersonId: string,
     requestId: string,
   ) {
+    assertImportantUploadsAllowed();
     await this.getBuilding(buildingId);
     await this.assertManager(actorPersonId, buildingId);
     const privileged = await this.isPrivileged(actorPersonId, buildingId);
@@ -589,6 +593,7 @@ export class DocumentsService {
     actorPersonId: string,
     requestId: string,
   ) {
+    assertImportantUploadsAllowed();
     const found = await this.getDocumentOrThrow(documentId);
     await this.assertManager(actorPersonId, found.buildingId);
     const privileged = await this.isPrivileged(actorPersonId, found.buildingId);

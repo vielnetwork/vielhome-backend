@@ -35,7 +35,12 @@ export async function backupMetrics(db: PrismaClient, bucket: string, now = new 
 }
 
 /** Read-only reconciliation. Repair is intentionally a separate reviewed action. */
-export async function reconcile(db: PrismaClient, bucket: string, storage: BackupStorage) {
+export async function reconcile(
+  db: PrismaClient,
+  bucket: string,
+  storage: BackupStorage,
+  canContinue: () => boolean = () => true,
+) {
   const report = {
     missingRequests: 0,
     overdueRequests: 0,
@@ -46,6 +51,7 @@ export async function reconcile(db: PrismaClient, bucket: string, storage: Backu
   };
   let cursor: string | undefined;
   while (true) {
+    if (!canContinue()) throw new Error('RECONCILIATION_STOPPED');
     const versions = await db.documentVersion.findMany({
       orderBy: { id: 'asc' },
       take: 100,
@@ -53,6 +59,7 @@ export async function reconcile(db: PrismaClient, bucket: string, storage: Backu
     });
     if (!versions.length) break;
     for (const v of versions) {
+      if (!canContinue()) throw new Error('RECONCILIATION_STOPPED');
       const r = await db.objectBackupRequest.findUnique({
         where: {
           sourceBucket_referenceType_referenceId: {

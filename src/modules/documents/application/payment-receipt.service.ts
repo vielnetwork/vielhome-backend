@@ -1,3 +1,4 @@
+import { assertImportantUploadsAllowed } from './important-upload-gate';
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { DocumentRepository } from '../infrastructure/repositories/document.repository';
@@ -103,6 +104,7 @@ export class PaymentReceiptService {
     dto: RequestPaymentReceiptUploadIntentDto,
     actorPersonId: string,
   ) {
+    assertImportantUploadsAllowed();
     const payment = await this.getBankTransferPaymentForPayer(buildingId, paymentId, actorPersonId);
     await this.assertNoExistingReceipt(payment.id);
     this.policy.assertFileTypeSupported(dto.fileType);
@@ -236,6 +238,7 @@ export class PaymentReceiptService {
     actorPersonId: string,
     requestId: string,
   ) {
+    assertImportantUploadsAllowed();
     const payment = await this.getBankTransferPaymentForPayer(buildingId, paymentId, actorPersonId);
     await this.assertNoExistingReceipt(payment.id);
 

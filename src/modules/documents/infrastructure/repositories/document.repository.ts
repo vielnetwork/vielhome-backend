@@ -1,3 +1,4 @@
+import { assertImportantUploadsAllowed } from '../../application/important-upload-gate';
 import { enqueueDocumentBackup } from '../../../../backup/backup.request';
 import { Injectable } from '@nestjs/common';
 import {
@@ -74,6 +75,7 @@ export class DocumentRepository {
     uploadIntentId?: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
+      assertImportantUploadsAllowed();
       if (params.uploadIntentId) {
         await this.consumeUploadIntent(tx, params.uploadIntentId);
       }
@@ -302,6 +304,7 @@ export class DocumentRepository {
     uploadIntentId?: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
+      assertImportantUploadsAllowed();
       if (params.uploadIntentId) {
         await this.consumeUploadIntent(tx, params.uploadIntentId);
       }
@@ -428,6 +431,7 @@ export class DocumentRepository {
     uploadIntentId: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
+      assertImportantUploadsAllowed();
       await this.consumeUploadIntent(tx, params.uploadIntentId);
 
       const document = await tx.document.create({

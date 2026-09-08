@@ -23,7 +23,7 @@ export interface BackupStorage {
 export class HttpBackupStorage implements BackupStorage {
   constructor(
     private readonly source: StorageConfig,
-    private readonly destination: StorageConfig,
+    private readonly destination: StorageConfig | undefined,
     private readonly maxBytes: number,
     private readonly transport: typeof fetch = fetch,
   ) {}
@@ -105,6 +105,7 @@ export class HttpBackupStorage implements BackupStorage {
     return (await this.request(this.source, key, 'GET', { 'If-Match': etag })).bytes;
   }
   async putNew(key: string, bytes: Buffer): Promise<void> {
+    if (!this.destination) throw new BackupError('DESTINATION_UNAVAILABLE');
     await this.request(
       this.destination,
       key,
@@ -114,6 +115,7 @@ export class HttpBackupStorage implements BackupStorage {
     );
   }
   async readBackup(key: string): Promise<Buffer> {
+    if (!this.destination) throw new BackupError('DESTINATION_UNAVAILABLE');
     return (await this.request(this.destination, key, 'GET')).bytes;
   }
 }

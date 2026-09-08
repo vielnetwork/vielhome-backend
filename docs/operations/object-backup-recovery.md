@@ -1,7 +1,7 @@
 # Object backup foundation — PROD-REL-07I1D
 
-Source/schema only. No runner, secrets, shared migration, R2 traffic, or restore
-has been deployed/executed. Important Production files remain gated until
+Source/schema implementation only; Production runner activation and verified
+real-storage recovery remain separate release gates. Important Production files remain gated until
 isolated integration and synthetic recovery verification succeed.
 
 ## Baseline and scope
@@ -23,19 +23,19 @@ that finalizes stored files; do not deploy this code against an unmigrated DB.
 Only the standalone runner accepts the following variables. It never loads
 `.env`, falls back to `DATABASE_URL`, or bootstraps `AppModule`.
 
-| Variable | Meaning |
-| --- | --- |
-| BACKUP_ENV | `production` or `test` |
-| BACKUP_DATABASE_URL | Dedicated least-privilege database role connection |
-| BACKUP_SOURCE_ENDPOINT | HTTPS S3 endpoint, no path/query/userinfo |
-| BACKUP_SOURCE_BUCKET | `vielhome-production` in Production |
-| BACKUP_SOURCE_ACCESS_KEY_ID | Independent source reader, never API identity |
-| BACKUP_SOURCE_SECRET_ACCESS_KEY | Source reader secret |
-| BACKUP_DESTINATION_ENDPOINT | HTTPS S3 endpoint, no path/query/userinfo |
-| BACKUP_DESTINATION_BUCKET | `vielhome-production-backup` in Production |
-| BACKUP_DESTINATION_ACCESS_KEY_ID | Independent destination writer |
-| BACKUP_DESTINATION_SECRET_ACCESS_KEY | Destination writer secret |
-| BACKUP_MAX_BYTES | Optional byte ceiling; default/max 67108864 (64 MiB) |
+| Variable                             | Meaning                                              |
+| ------------------------------------ | ---------------------------------------------------- |
+| BACKUP_ENV                           | `production` or `test`                               |
+| BACKUP_DATABASE_URL                  | Dedicated least-privilege database role connection   |
+| BACKUP_SOURCE_ENDPOINT               | HTTPS S3 endpoint, no path/query/userinfo            |
+| BACKUP_SOURCE_BUCKET                 | `vielhome-production` in Production                  |
+| BACKUP_SOURCE_ACCESS_KEY_ID          | Independent source reader, never API identity        |
+| BACKUP_SOURCE_SECRET_ACCESS_KEY      | Source reader secret                                 |
+| BACKUP_DESTINATION_ENDPOINT          | HTTPS S3 endpoint, no path/query/userinfo            |
+| BACKUP_DESTINATION_BUCKET            | `vielhome-production-backup` in Production           |
+| BACKUP_DESTINATION_ACCESS_KEY_ID     | Independent destination writer                       |
+| BACKUP_DESTINATION_SECRET_ACCESS_KEY | Destination writer secret                            |
+| BACKUP_MAX_BYTES                     | Optional byte ceiling; default/max 67108864 (64 MiB) |
 
 Production endpoints are restricted to account
 89ba5a789e2a1c732adc790b622e1995.r2.cloudflarestorage.com. Test buckets must start
@@ -52,8 +52,8 @@ is a separately authorized operational check.
 Source adapter exposes HEAD/GET only. Destination exposes GET and conditional
 PUT only, never DELETE. Bucket-scoped source read-only and destination read/write
 credentials must be held by an independent runner, not the normal API. Database
-role requires SELECT on document_versions and SELECT/INSERT/UPDATE on the two
-backup tables; it needs no business-table writes, DELETE, or DDL. Ordinary API
+role requires SELECT on document_versions, SELECT/UPDATE on object_backup_requests,
+and SELECT/INSERT/UPDATE on object_backup_generations; it needs no business-table writes, DELETE, or DDL. Ordinary API
 role needs INSERT on backup requests. Grant changes are out of scope.
 
 ## Commands and scheduling (not deployed)
@@ -129,37 +129,116 @@ Existing aggregate health/public liveness/readiness behavior is unchanged.
 No alert integration is created; future monitoring must explicitly inspect this
 section and fail unavailable signals safely.
 
+## Operational controls — PROD-REL-07I1F-R1
+
+No Production activation, shared migration, secrets, or external monitoring is
+provided by this change. No schema or migration change is needed.
+
+### Mode-specific configuration and exits
+
+All modes require BACKUP_ENV, BACKUP_DATABASE_URL and BACKUP_SOURCE_BUCKET.
+Metrics requires no R2 endpoint or credentials. Reconcile additionally requires
+only BACKUP_SOURCE_ENDPOINT, BACKUP_SOURCE_ACCESS_KEY_ID and
+BACKUP_SOURCE_SECRET_ACCESS_KEY. Run requires both source and destination
+configuration from the table above. Never inject destination credentials into
+metrics/reconcile or backup credentials into the API.
+
+Exit 0 means computed healthy/idle completion. Exit 1 means computed unhealthy
+state (including processing failures or reconciliation discrepancies). Exit 2
+means invalid configuration, unavailable computation, execution/disconnect
+failure, or interruption. No failure automatically repairs or deletes state.
+Run evaluates queue health after processing, so an idle exhausted queue is not
+reported as healthy. Metrics evaluates both queue-wide and document coverage.
+
+Queue-wide aggregates include total, pending, copying, unprotected, FAILED,
+SOURCE_MISSING, exhausted ordinary retries, active/expired/invalid leases,
+valid/invalid VERIFIED, overdue, and oldest unprotected age. They include
+synthetic and non-document requests within the configured source bucket.
+Protection requires complete verified generation metadata and consistent hashes.
+Missing/inconsistent metadata remains unprotected. RETIRED is reserved and is
+not treated as proof of protection. Any failure/missing/exhausted/expired/invalid
+state or age strictly greater than 900 seconds is unhealthy. Active work below
+that threshold alone is not unhealthy. No private identifiers appear in metrics.
+
+### Execution and heartbeat
+
+Every pooled DB connection receives statement_timeout=10000ms,
+lock_timeout=3000ms, idle_in_transaction_session_timeout=15000ms;
+connect/pool timeout=5s and connection_limit=2. Existing URL `options` are
+replaced with these controlled startup parameters. Verification transactions
+also have maxWait=3s and timeout=15s. Deployment must verify role/connection
+compatibility rather than weakening these limits.
+
+Run performs at most 100 sequential claims and stops new claims after four
+minutes. All modes have an eight-minute process deadline. SIGTERM/SIGINT stops
+new claims and reconciliation iteration, allowing at most 30 seconds of grace.
+Forced termination exits 2; leases remain recoverable. An in-flight verification
+still requires an unexpired lease/owner and a generation belonging to its request.
+Only verified storage can be committed VERIFIED; interruption does not manufacture
+success. Existing ten-minute leases and retry limits remain unchanged. A blocked
+runtime can still be killed by the external scheduler; missing completion must
+therefore be detected independently.
+
+JSON events have schemaVersion=1, runId, mode and timestamp. `backup.started`
+precedes work; `backup.completed` includes durationMs, exitCode, outcome
+(healthy/unhealthy), and sanitized aggregate summary after disconnect.
+`backup.terminated` records forced termination. Never parse raw exception text or
+log connection strings, credentials, filenames, object keys, or signed URLs.
+A future wrapper must pair start/completion by runId and require BOTH exit 0 and
+healthy completion. Nonzero, missing completion, missing scheduled start, timeout,
+and crash must not count as healthy heartbeats. Provision independent missed-run
+monitoring in a later phase; stdout alone cannot detect a runner that never starts.
+
+### Important-upload activation gate
+
+API flag `VH_IMPORTANT_UPLOADS_BLOCKED`: unset or exactly `false` preserves
+existing behavior. `true` and every other explicitly supplied value fail closed
+with HTTP 503. The flag guards document upload authorization, initial/bulk/version
+finalization, receipt upload intent/finalization, and repository write boundaries
+inside the existing transactions. Downloads and normal non-upload APIs remain
+available. Existing data is not changed; finalization and backup request creation
+remain atomic when open.
+
+Before accepting important Production files, set the flag to `true` on every API
+instance through a separately authorized rollout; drain old instances/in-flight
+requests. This is a process-environment gate, not a live distributed switch.
+Previously issued presigned URLs cannot be revoked by this flag and might create
+unfinalized objects, but finalization is blocked. Only explicitly reopen after
+runner, permissions, monitoring, synthetic restore and RPO evidence pass. There
+is no automatic health-based flag flip and no environment is changed here.
+
+### RPO and next-phase activation contract
+
+Queue metrics expose measuredProtectionCount, maxProtectionLatencySeconds and
+lateVerifiedCount using first valid verifiedAt minus finalizedAt, plus current
+oldest-unprotected age and overdue count. Historical late completion is retained
+as an informational counter, not a permanent unhealthy status after protection.
+A five-minute schedule does not establish the <=15-minute RPO.
+
+Proposed later schedules: run every five minutes, metrics every minute,
+reconcile daily. Independently monitor missed/failed runs. Use a runner with a
+verified provider network path and isolated least-privilege identities. Measure
+synthetic finalization-to-verification across scheduled cycles, backlog, bounded
+failures and recovery; record latency and alert delivery before opening the gate.
+Capacity tests must cover maximum accepted upload size. The 64MiB ceiling is per
+object, not total process memory; budget for multiple buffers or lower the limit.
+Scheduler resources, DB grants, secrets and alert destinations remain unprovisioned.
+
 ## Verification and release gates
 
-Source tests use synthetic bytes and mock transport only. Transaction test doubles
-explicitly model commit/rollback but do not prove PostgreSQL isolation. Local
-Docker daemon was unavailable during implementation: actual migration/constraint,
-concurrent claims, and role permissions remain next-phase checks. Never run this
-runner with Production variables during source verification.
+Source verification includes the full Jest suite (Finance/Documents/backup),
+mode/exit/heartbeat/gate/termination tests and a disposable PostgreSQL 16 test.
+The isolated test applies existing migration history only and verifies real DB
+timeouts, queue age boundaries, metadata/latency, metrics CLI without R2 secrets,
+verification fencing/transaction rollback, and gated document finalization.
+Storage in these tests is fake in-memory storage. This proves neither real R2
+permissions/retention nor Production throughput, scheduling or restored recovery.
 
-Required next phase: isolated PostgreSQL migration and concurrency checks,
-runner-role verification, local synthetic storage compatibility, failure and
-backlog tests. 07I2/07I2B are not executed by this change. Runtime denied-access,
-R2 lock enforcement and a real synthetic restore need separate authorization.
-
-The backup implementation adds no dependencies. Under 07I1D-R1, approved security
-commit 9014df1911ccd2e87db1858051d2aba3956c2a0e was cherry-picked without conflicts
-as 25a84a7c9c7d4f3bda86519571f1dd43f28c2a03 onto baseline
-354063f4d1cab8e6bbc3d160084be87cd977e59d. Its dependency declarations and lockfile
-are unchanged; backup implementation remains a separate commit.
-
-Runtime npm audit before/after: critical 0/0, high 5/0, moderate 9/9, low 1/1.
-The dependency gate passes. npm ci, Prisma generation/format/validation, build,
-and npm ls pass. Backup/document/receipt/monitoring, storage/signing, bootstrap,
-and mocked health regression coverage totals 269 tests across 17 suites.
-The local HTTP health tests require permission to bind an ephemeral test socket;
-all database/Redis dependencies in that suite are mocked. No migration was applied.
-
-Migration review: additive enum and two tables, seven indexes, and a generation
-to request foreign key with ON DELETE RESTRICT. ON UPDATE CASCADE only maintains
-that new-table relationship; there is no business-row cascade or existing-record
-mutation. SQL is compatible with PostgreSQL 16 by inspection; real PostgreSQL
-migration, constraints, concurrency, and runner-role verification remain pending.
-
-Conditional request compatibility reference (read 2026-09-08):
-https://developers.cloudflare.com/r2/api/s3/api/
+Run the standalone isolated test only with
+BACKUP_OPERATIONAL_TEST_DATABASE_URL pointing to localhost database
+`vielhome_prod_rel_07i1fr1`, after building and applying existing migrations.
+The script rejects other database targets. It creates/removes synthetic fixtures.
+No dependency, Prisma schema or migration change belongs to this operational fix.
+Production activation remains separately gated on safe runner provisioning,
+least-privilege DB grants, real provider permission/lock/restore verification,
+independent alerts, closed-gate rollout and measured protection latency.
