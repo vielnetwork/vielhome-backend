@@ -1,11 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsIn,
-  IsInt,
-  IsOptional,
-  IsPositive,
-  IsString,
-} from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsPositive, IsString } from 'class-validator';
 
 const FUND_TYPES = [
   'CURRENT',

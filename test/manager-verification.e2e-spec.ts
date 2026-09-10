@@ -558,7 +558,9 @@ async function grantManagerVerificationAdminToReviewer(
       where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
     });
     if (!activeGrant) {
-      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+      await prisma.rolePermission.create({
+        data: { roleId: role.id, permissionId: permission.id },
+      });
     }
   }
 
@@ -1124,12 +1126,17 @@ describe('ADR-102 — Manager Verification Permission Migration (PermissionsGuar
     managePermissionId = permissionIds.MANAGER_VERIFICATION_MANAGE;
 
     const testRole = await prisma.role.create({
-      data: { name: `E2E ADR-102 MV Test Role ${Date.now()}`, description: 'Created by manager-verification.e2e-spec.ts (ADR-102 block).' },
+      data: {
+        name: `E2E ADR-102 MV Test Role ${Date.now()}`,
+        description: 'Created by manager-verification.e2e-spec.ts (ADR-102 block).',
+      },
     });
     testRoleId = testRole.id;
 
     const staff = await prisma.platformStaff.findUnique({ where: { personId: admin.personId } });
-    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
     staffRoleGrantId = grant.id;
     // No RolePermission granted yet — admin holds the legacy PLATFORM_ADMIN
     // rank (satisfying every route's legacy requirement) but no RBAC
@@ -1167,7 +1174,9 @@ describe('ADR-102 — Manager Verification Permission Migration (PermissionsGuar
   });
 
   it('granting MANAGER_VERIFICATION_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: viewPermissionId },
+    });
 
     await request(app.getHttpServer())
       .get(`/api/v1/backoffice/manager-verifications/${caseId}`)
@@ -1182,7 +1191,9 @@ describe('ADR-102 — Manager Verification Permission Migration (PermissionsGuar
   });
 
   it('granting MANAGER_VERIFICATION_MANAGE additionally takes effect immediately — the manage-tier route opens', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: managePermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: managePermissionId },
+    });
 
     const decideRes = await request(app.getHttpServer())
       .post(`/api/v1/backoffice/manager-verifications/${caseId}/decide`)
@@ -1196,7 +1207,10 @@ describe('ADR-102 — Manager Verification Permission Migration (PermissionsGuar
     const activeGrant = await prisma.rolePermission.findFirst({
       where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
     });
-    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
 
     await request(app.getHttpServer())
       .post(`/api/v1/backoffice/manager-verifications/${caseId}/restore`)

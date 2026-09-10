@@ -588,10 +588,7 @@ async function leaderboardRank(
   return prisma.buildingScore.count({
     where: {
       ...(tier ? { leagueTier: tier } : {}),
-      OR: [
-        { score: { gt: target.score } },
-        { score: target.score, id: { lt: target.id } },
-      ],
+      OR: [{ score: { gt: target.score } }, { score: target.score, id: { lt: target.id } }],
     },
   });
 }
@@ -1303,12 +1300,17 @@ describe('ADR-102 — Gamification Analytics Permission Migration (PermissionsGu
     viewPermissionId = permission.id;
 
     const testRole = await prisma.role.create({
-      data: { name: `E2E ADR-102 Gamification Test Role ${Date.now()}`, description: 'Created by gamification.e2e-spec.ts (ADR-102 block).' },
+      data: {
+        name: `E2E ADR-102 Gamification Test Role ${Date.now()}`,
+        description: 'Created by gamification.e2e-spec.ts (ADR-102 block).',
+      },
     });
     testRoleId = testRole.id;
 
     const staff = await prisma.platformStaff.findUnique({ where: { personId: admin.personId } });
-    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
     staffRoleGrantId = grant.id;
     // No RolePermission granted yet — admin holds the legacy rank
     // (PLATFORM_ADMIN, satisfying the required SENIOR_REVIEWER+ rank) but
@@ -1347,7 +1349,9 @@ describe('ADR-102 — Gamification Analytics Permission Migration (PermissionsGu
   });
 
   it('granting GAMIFICATION_ANALYTICS_VIEW takes effect immediately — the route opens', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: viewPermissionId },
+    });
 
     const res = await request(app.getHttpServer())
       .get('/api/v1/gamification/analytics')
@@ -1361,7 +1365,10 @@ describe('ADR-102 — Gamification Analytics Permission Migration (PermissionsGu
     const activeGrant = await prisma.rolePermission.findFirst({
       where: { roleId: testRoleId, permissionId: viewPermissionId, revokedAt: null },
     });
-    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
 
     await request(app.getHttpServer())
       .get('/api/v1/gamification/analytics')

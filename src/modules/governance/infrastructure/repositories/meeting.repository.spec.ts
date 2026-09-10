@@ -61,7 +61,9 @@ describe('MeetingRepository', () => {
         skip: 1,
         take: 1,
       });
-      expect(prisma.meetingAttendance.count).toHaveBeenCalledWith({ where: { meetingId: 'meeting-1' } });
+      expect(prisma.meetingAttendance.count).toHaveBeenCalledWith({
+        where: { meetingId: 'meeting-1' },
+      });
       expect(result).toEqual({ items: [{ meetingId: 'meeting-1', personId: 'p1' }], total: 1 });
     });
   });
@@ -77,7 +79,9 @@ describe('MeetingRepository', () => {
         ],
         skipDuplicates: true,
       });
-      expect(prisma.meetingAttendance.findMany).toHaveBeenCalledWith({ where: { meetingId: 'meeting-1' } });
+      expect(prisma.meetingAttendance.findMany).toHaveBeenCalledWith({
+        where: { meetingId: 'meeting-1' },
+      });
       expect(result).toEqual([{ meetingId: 'meeting-1', personId: 'p1' }]);
     });
   });

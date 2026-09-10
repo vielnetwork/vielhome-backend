@@ -39,10 +39,7 @@ export class SubscriptionFeatureResolverService {
     private readonly policy: SubscriptionPolicy,
   ) {}
 
-  async isFeatureEnabled(
-    buildingId: string,
-    featureKey: SubscriptionFeatureKey,
-  ): Promise<boolean> {
+  async isFeatureEnabled(buildingId: string, featureKey: SubscriptionFeatureKey): Promise<boolean> {
     const subscription = await this.prisma.subscription.findUnique({
       where: { buildingId },
       include: { featureGrants: true },

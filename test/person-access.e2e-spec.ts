@@ -393,7 +393,9 @@ async function grantPersonAccessAdminToStaff(
       where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
     });
     if (!activeGrant) {
-      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+      await prisma.rolePermission.create({
+        data: { roleId: role.id, permissionId: permission.id },
+      });
     }
   }
 
@@ -663,12 +665,19 @@ describe('ADR-102 — Person Access Permission Migration (PermissionsGuard/@Requ
     managePermissionId = permissionIds.PERSON_ACCESS_MANAGE;
 
     const testRole = await prisma.role.create({
-      data: { name: `E2E ADR-102 PersonAccess Test Role ${Date.now()}`, description: 'Created by person-access.e2e-spec.ts (ADR-102 block).' },
+      data: {
+        name: `E2E ADR-102 PersonAccess Test Role ${Date.now()}`,
+        description: 'Created by person-access.e2e-spec.ts (ADR-102 block).',
+      },
     });
     testRoleId = testRole.id;
 
-    const staff = await prisma.platformStaff.findUnique({ where: { personId: seniorStaff.personId } });
-    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    const staff = await prisma.platformStaff.findUnique({
+      where: { personId: seniorStaff.personId },
+    });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
     staffRoleGrantId = grant.id;
     // No RolePermission granted yet — seniorStaff holds the legacy rank
     // (SENIOR_REVIEWER, satisfying both GET's REVIEWER and POST's
@@ -710,7 +719,9 @@ describe('ADR-102 — Person Access Permission Migration (PermissionsGuard/@Requ
   });
 
   it('granting PERSON_ACCESS_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: viewPermissionId },
+    });
 
     await request(app.getHttpServer())
       .get(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
@@ -725,7 +736,9 @@ describe('ADR-102 — Person Access Permission Migration (PermissionsGuard/@Requ
   });
 
   it('granting PERSON_ACCESS_MANAGE additionally takes effect immediately — the manage-tier route opens', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: managePermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: managePermissionId },
+    });
 
     const res = await request(app.getHttpServer())
       .post(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)
@@ -739,7 +752,10 @@ describe('ADR-102 — Person Access Permission Migration (PermissionsGuard/@Requ
     const activeGrant = await prisma.rolePermission.findFirst({
       where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
     });
-    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
 
     await request(app.getHttpServer())
       .post(`/api/v1/backoffice/persons/${target.personId}/backoffice-approval`)

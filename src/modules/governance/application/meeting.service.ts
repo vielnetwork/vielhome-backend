@@ -71,7 +71,10 @@ export class MeetingService {
       requestId,
     });
 
-    this.events.emit('MeetingCreated', new MeetingCreatedEvent(meeting.id, buildingId, actorPersonId));
+    this.events.emit(
+      'MeetingCreated',
+      new MeetingCreatedEvent(meeting.id, buildingId, actorPersonId),
+    );
 
     return meeting;
   }
@@ -136,7 +139,10 @@ export class MeetingService {
       requestId,
     });
 
-    this.events.emit('MeetingArchived', new MeetingArchivedEvent(meetingId, buildingId, actorPersonId));
+    this.events.emit(
+      'MeetingArchived',
+      new MeetingArchivedEvent(meetingId, buildingId, actorPersonId),
+    );
 
     return updated;
   }

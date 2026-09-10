@@ -9,7 +9,10 @@ describe('PermissionResolverService', () => {
     const result = await service.resolve('person-1');
 
     expect(result).toEqual(new Set());
-    expect((rbac as { getEffectivePermissionKeysForStaff: jest.Mock }).getEffectivePermissionKeysForStaff).not.toHaveBeenCalled();
+    expect(
+      (rbac as { getEffectivePermissionKeysForStaff: jest.Mock })
+        .getEffectivePermissionKeysForStaff,
+    ).not.toHaveBeenCalled();
   });
 
   it('resolves the union of permission keys across every current role a staff member holds', async () => {
@@ -27,7 +30,8 @@ describe('PermissionResolverService', () => {
 
     expect(result).toEqual(new Set(['MARKETPLACE_REVIEW', 'MARKETPLACE_APPROVE', 'USER_VIEW']));
     expect(
-      (rbac as { getEffectivePermissionKeysForStaff: jest.Mock }).getEffectivePermissionKeysForStaff,
+      (rbac as { getEffectivePermissionKeysForStaff: jest.Mock })
+        .getEffectivePermissionKeysForStaff,
     ).toHaveBeenCalledWith('staff-1');
   });
 

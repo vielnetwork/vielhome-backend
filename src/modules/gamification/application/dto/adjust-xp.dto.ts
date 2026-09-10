@@ -15,7 +15,9 @@ import { IsInt, IsOptional, IsString, MinLength, NotEquals } from 'class-validat
  * `ToggleProviderSettingDto.reason`'s own `@MinLength(3)`).
  */
 export class AdjustXpDto {
-  @ApiProperty({ description: 'Signed XP delta. Positive adds, negative subtracts. Cannot be zero.' })
+  @ApiProperty({
+    description: 'Signed XP delta. Positive adds, negative subtracts. Cannot be zero.',
+  })
   @IsInt()
   @NotEquals(0)
   amount!: number;

@@ -189,8 +189,7 @@ export class BuildingVerificationService {
     >,
   ): Promise<EligibleBuildingVerificationAssigneeDto | null> {
     const staff =
-      candidate ??
-      (await this.backOffice.findBuildingVerificationAssigneeCandidate(personId));
+      candidate ?? (await this.backOffice.findBuildingVerificationAssigneeCandidate(personId));
     if (
       !staff ||
       !staff.isActive ||

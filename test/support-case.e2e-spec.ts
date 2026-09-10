@@ -365,10 +365,7 @@ async function waitFor<T>(
   return undefined;
 }
 
-async function grantSupportAdminToStaff(
-  prisma: PrismaService,
-  personId: string,
-): Promise<string> {
+async function grantSupportAdminToStaff(prisma: PrismaService, personId: string): Promise<string> {
   const staff = await prisma.platformStaff.findUnique({ where: { personId } });
   if (!staff) throw new Error('Seeded staff has no PlatformStaff row.');
 
@@ -386,7 +383,9 @@ async function grantSupportAdminToStaff(
       where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
     });
     if (!activeGrant) {
-      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+      await prisma.rolePermission.create({
+        data: { roleId: role.id, permissionId: permission.id },
+      });
     }
   }
 
@@ -531,7 +530,10 @@ describe('Support & Operations Center (e2e) — Member Lifecycle & Ownership Gat
       .set('Authorization', `Bearer ${reporter.accessToken}`)
       .expect(200);
 
-    const ownerMessages = ownerRes.body.data.messages as Array<{ body: string; isInternal: boolean }>;
+    const ownerMessages = ownerRes.body.data.messages as Array<{
+      body: string;
+      isInternal: boolean;
+    }>;
     expect(ownerMessages.some((m) => m.body.startsWith('INTERNAL ONLY'))).toBe(false);
     expect(ownerMessages.some((m) => m.body === 'Can you tell us your app version?')).toBe(true);
 
@@ -914,12 +916,17 @@ describe('ADR-102 — Support Case Permission Migration (PermissionsGuard/@Requi
     managePermissionId = permissionIds.SUPPORT_MANAGE;
 
     const testRole = await prisma.role.create({
-      data: { name: `E2E ADR-102 Support Test Role ${Date.now()}`, description: 'Created by support-case.e2e-spec.ts (ADR-102 block).' },
+      data: {
+        name: `E2E ADR-102 Support Test Role ${Date.now()}`,
+        description: 'Created by support-case.e2e-spec.ts (ADR-102 block).',
+      },
     });
     testRoleId = testRole.id;
 
     const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewer.personId } });
-    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
     staffRoleGrantId = grant.id;
     // No RolePermission granted yet — reviewer holds the legacy REVIEWER
     // rank (satisfying both `list`'s and `open`'s legacy requirement) but
@@ -959,7 +966,9 @@ describe('ADR-102 — Support Case Permission Migration (PermissionsGuard/@Requi
   });
 
   it('granting SUPPORT_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: viewPermissionId },
+    });
 
     await request(app.getHttpServer())
       .get('/api/v1/backoffice/support-cases')
@@ -978,7 +987,9 @@ describe('ADR-102 — Support Case Permission Migration (PermissionsGuard/@Requi
   });
 
   it('granting SUPPORT_MANAGE additionally takes effect immediately — the manage-tier route opens', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: managePermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: managePermissionId },
+    });
 
     const res = await request(app.getHttpServer())
       .post('/api/v1/backoffice/support-cases')
@@ -996,7 +1007,10 @@ describe('ADR-102 — Support Case Permission Migration (PermissionsGuard/@Requi
     const activeGrant = await prisma.rolePermission.findFirst({
       where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
     });
-    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
 
     await request(app.getHttpServer())
       .post('/api/v1/backoffice/support-cases')

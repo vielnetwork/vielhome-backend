@@ -6,7 +6,9 @@ function makeService(overrides: Record<string, jest.Mock> = {}) {
     getRoleById: jest.fn().mockResolvedValue({ id: 'role-1', name: 'Marketplace Admin' }),
     getActiveStaffRole: jest.fn().mockResolvedValue(null),
     createStaffRole: jest.fn().mockResolvedValue({ id: 'sr-1' }),
-    getStaffRoleById: jest.fn().mockResolvedValue({ id: 'sr-1', staffId: 's1', roleId: 'role-1', revokedAt: null }),
+    getStaffRoleById: jest
+      .fn()
+      .mockResolvedValue({ id: 'sr-1', staffId: 's1', roleId: 'role-1', revokedAt: null }),
     revokeStaffRole: jest.fn().mockResolvedValue({ id: 'sr-1', revokedAt: new Date() }),
     getPermissionByKey: jest.fn().mockResolvedValue({ id: 'perm-1', key: 'MARKETPLACE_APPROVE' }),
     getActiveRolePermission: jest.fn().mockResolvedValue(null),
@@ -32,7 +34,11 @@ describe('RbacManagementService', () => {
 
       expect(result).toEqual({ id: 'sr-1' });
       expect((audit as { record: jest.Mock }).record).toHaveBeenCalledWith(
-        expect.objectContaining({ actorId: 'actor-1', action: 'StaffRoleAssigned', entityType: 'StaffRole' }),
+        expect.objectContaining({
+          actorId: 'actor-1',
+          action: 'StaffRoleAssigned',
+          entityType: 'StaffRole',
+        }),
       );
     });
 
@@ -65,9 +71,12 @@ describe('RbacManagementService', () => {
 
     it('throws NotFoundAppError when the grant is already revoked', async () => {
       const { service } = makeService({
-        getStaffRoleById: jest
-          .fn()
-          .mockResolvedValue({ id: 'sr-1', staffId: 's1', roleId: 'role-1', revokedAt: new Date() }),
+        getStaffRoleById: jest.fn().mockResolvedValue({
+          id: 'sr-1',
+          staffId: 's1',
+          roleId: 'role-1',
+          revokedAt: new Date(),
+        }),
       });
       await expect(service.revokeRole('sr-1', 'actor-1')).rejects.toBeInstanceOf(NotFoundAppError);
     });
@@ -76,7 +85,12 @@ describe('RbacManagementService', () => {
   describe('grantPermission', () => {
     it('creates a RolePermission grant and writes an AuditLog entry', async () => {
       const { service, audit } = makeService();
-      const result = await service.grantPermission('role-1', 'MARKETPLACE_APPROVE', 'actor-1', 'req-1');
+      const result = await service.grantPermission(
+        'role-1',
+        'MARKETPLACE_APPROVE',
+        'actor-1',
+        'req-1',
+      );
       expect(result).toEqual({ id: 'rp-1' });
       expect((audit as { record: jest.Mock }).record).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'RolePermissionGranted', entityType: 'RolePermission' }),
@@ -105,11 +119,16 @@ describe('RbacManagementService', () => {
 
     it('throws NotFoundAppError when the grant is already revoked', async () => {
       const { service } = makeService({
-        getRolePermissionById: jest
-          .fn()
-          .mockResolvedValue({ id: 'rp-1', roleId: 'role-1', permissionId: 'perm-1', revokedAt: new Date() }),
+        getRolePermissionById: jest.fn().mockResolvedValue({
+          id: 'rp-1',
+          roleId: 'role-1',
+          permissionId: 'perm-1',
+          revokedAt: new Date(),
+        }),
       });
-      await expect(service.revokePermission('rp-1', 'actor-1')).rejects.toBeInstanceOf(NotFoundAppError);
+      await expect(service.revokePermission('rp-1', 'actor-1')).rejects.toBeInstanceOf(
+        NotFoundAppError,
+      );
     });
   });
 });

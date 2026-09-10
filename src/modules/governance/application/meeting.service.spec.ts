@@ -76,7 +76,12 @@ describe('MeetingService', () => {
       buildings.findById.mockResolvedValue(null);
 
       await expect(
-        service.createMeeting('missing-b', { title: 'x', scheduledAt: new Date().toISOString() }, 'p1', 'req-1'),
+        service.createMeeting(
+          'missing-b',
+          { title: 'x', scheduledAt: new Date().toISOString() },
+          'p1',
+          'req-1',
+        ),
       ).rejects.toBeInstanceOf(NotFoundAppError);
     });
   });
@@ -120,7 +125,9 @@ describe('MeetingService', () => {
       );
 
       expect(result.minutes).toBe('updated');
-      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'MeetingUpdated' }));
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'MeetingUpdated' }),
+      );
     });
 
     it('rejects updating an archived meeting', async () => {
@@ -138,7 +145,9 @@ describe('MeetingService', () => {
       const result = await service.archiveMeeting('b1', 'meeting-1', 'person-1', 'req-1');
 
       expect(result.archivedAt).not.toBeNull();
-      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'MeetingArchived' }));
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'MeetingArchived' }),
+      );
       expect(events.emit).toHaveBeenCalledWith('MeetingArchived', expect.anything());
     });
 

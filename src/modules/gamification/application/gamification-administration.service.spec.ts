@@ -25,7 +25,10 @@ describe('GamificationAdministrationService', () => {
       personExists: jest.fn().mockResolvedValue(true),
       buildingExists: jest.fn().mockResolvedValue(true),
     };
-    service = new GamificationAdministrationService(gamificationService as never, repository as never);
+    service = new GamificationAdministrationService(
+      gamificationService as never,
+      repository as never,
+    );
   });
 
   describe('adjustXp', () => {
@@ -57,7 +60,11 @@ describe('GamificationAdministrationService', () => {
     it('throws NotFoundAppError for an unknown buildingId without calling GamificationService', async () => {
       repository.buildingExists.mockResolvedValue(false);
       await expect(
-        service.adjustXp('p1', { amount: 10, reason: 'test', buildingId: 'missing' } as never, 'staff-1'),
+        service.adjustXp(
+          'p1',
+          { amount: 10, reason: 'test', buildingId: 'missing' } as never,
+          'staff-1',
+        ),
       ).rejects.toBeInstanceOf(NotFoundAppError);
       expect(gamificationService.adjustXp).not.toHaveBeenCalled();
     });
@@ -106,7 +113,11 @@ describe('GamificationAdministrationService', () => {
     it('throws NotFoundAppError for an unknown personId', async () => {
       repository.personExists.mockResolvedValue(false);
       await expect(
-        service.grantAchievement('missing', { code: 'FIRST_STEPS', reason: 'test' } as never, 'staff-1'),
+        service.grantAchievement(
+          'missing',
+          { code: 'FIRST_STEPS', reason: 'test' } as never,
+          'staff-1',
+        ),
       ).rejects.toBeInstanceOf(NotFoundAppError);
       expect(gamificationService.grantAchievement).not.toHaveBeenCalled();
     });
@@ -130,7 +141,11 @@ describe('GamificationAdministrationService', () => {
     it('throws NotFoundAppError for an unknown personId', async () => {
       repository.personExists.mockResolvedValue(false);
       await expect(
-        service.revokeAchievement('missing', { code: 'FIRST_STEPS', reason: 'test' } as never, 'staff-1'),
+        service.revokeAchievement(
+          'missing',
+          { code: 'FIRST_STEPS', reason: 'test' } as never,
+          'staff-1',
+        ),
       ).rejects.toBeInstanceOf(NotFoundAppError);
       expect(gamificationService.revokeAchievement).not.toHaveBeenCalled();
     });

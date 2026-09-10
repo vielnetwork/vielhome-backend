@@ -376,7 +376,10 @@ async function grantMarketplaceAdminToReviewer(
   const role =
     (await prisma.role.findUnique({ where: { name: 'Marketplace Admin' } })) ??
     (await prisma.role.create({
-      data: { name: 'Marketplace Admin', description: 'e2e fixture (created only if ADR-099 seed had not already run).' },
+      data: {
+        name: 'Marketplace Admin',
+        description: 'e2e fixture (created only if ADR-099 seed had not already run).',
+      },
     }));
 
   for (const key of ['MARKETPLACE_REVIEW', 'MARKETPLACE_APPROVE'] as const) {
@@ -387,7 +390,9 @@ async function grantMarketplaceAdminToReviewer(
       where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
     });
     if (!activeGrant) {
-      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+      await prisma.rolePermission.create({
+        data: { roleId: role.id, permissionId: permission.id },
+      });
     }
   }
 
@@ -1347,7 +1352,10 @@ describe('ADR-100 — Marketplace Permission Migration (PermissionsGuard/@Requir
     approvePermissionId = permissionIds.MARKETPLACE_APPROVE;
 
     const testRole = await prisma.role.create({
-      data: { name: `E2E ADR-100 Test Role ${Date.now()}`, description: 'Created by marketplace.e2e-spec.ts (ADR-100 block).' },
+      data: {
+        name: `E2E ADR-100 Test Role ${Date.now()}`,
+        description: 'Created by marketplace.e2e-spec.ts (ADR-100 block).',
+      },
     });
     testRoleId = testRole.id;
 

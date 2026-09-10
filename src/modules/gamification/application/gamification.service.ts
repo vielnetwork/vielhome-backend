@@ -495,11 +495,7 @@ export class GamificationService implements OnModuleInit {
     if (filter.toDate && Number.isNaN(filter.toDate.getTime())) {
       throw new ValidationError('Invalid toDate.');
     }
-    if (
-      filter.fromDate &&
-      filter.toDate &&
-      filter.fromDate.getTime() > filter.toDate.getTime()
-    ) {
+    if (filter.fromDate && filter.toDate && filter.fromDate.getTime() > filter.toDate.getTime()) {
       throw new ValidationError('fromDate must not be after toDate.');
     }
 

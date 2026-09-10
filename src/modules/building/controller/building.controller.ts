@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { BuildingSetupService } from '../application/building-setup.service';
 import { BuildingService } from '../application/building.service';
@@ -106,7 +116,11 @@ export class BuildingController {
   // Every other unit-scoped route below keeps `MembershipGuard` unchanged.
   @Get(':id/units/:unitId')
   @UseGuards(UnitDetailAccessGuard)
-  getUnit(@Param('id') id: string, @Param('unitId') unitId: string, @CurrentUser() user: JwtPayload) {
+  getUnit(
+    @Param('id') id: string,
+    @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
     return this.buildings.getUnitForPerson(id, unitId, user.sub);
   }
 

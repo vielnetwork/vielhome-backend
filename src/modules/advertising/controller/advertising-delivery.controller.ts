@@ -26,10 +26,7 @@ export class AdvertisingDeliveryController {
 
   @Get(':id/advertising/placements/:placement')
   @UseGuards(MembershipGuard)
-  getPlacementInventory(
-    @Param('id') buildingId: string,
-    @Param('placement') placement: string,
-  ) {
+  getPlacementInventory(@Param('id') buildingId: string, @Param('placement') placement: string) {
     return this.campaigns.getPlacementInventory(buildingId, placement, new Date());
   }
 }

@@ -1,6 +1,11 @@
 import { GamificationService } from './gamification.service';
 import { GamificationPolicy } from '../domain/policies/gamification.policy';
-import { DuplicateError, NotFoundAppError, UnexpectedAppError, ValidationError } from '../../../common/errors/app-error';
+import {
+  DuplicateError,
+  NotFoundAppError,
+  UnexpectedAppError,
+  ValidationError,
+} from '../../../common/errors/app-error';
 import { XP_CATALOG } from '../domain/xp-catalog';
 import { DEFAULT_PAGE_LIMIT } from '../../../common/pagination/pagination.util';
 
@@ -49,32 +54,53 @@ describe('GamificationService', () => {
 
   describe('awardXp', () => {
     it('awards the exact XP_CATALOG amount for the reason and records/emits XpAwarded', async () => {
-      gamification.awardXp.mockResolvedValue({ awarded: true, newBalance: 10, isFirstOccurrence: false });
+      gamification.awardXp.mockResolvedValue({
+        awarded: true,
+        newBalance: 10,
+        isFirstOccurrence: false,
+      });
 
       await service.awardXp({ personId: 'p1', reason: 'PROFILE_CREATED' });
 
       expect(gamification.awardXp).toHaveBeenCalledWith(
-        expect.objectContaining({ personId: 'p1', reason: 'PROFILE_CREATED', amount: XP_CATALOG.PROFILE_CREATED.amount }),
+        expect.objectContaining({
+          personId: 'p1',
+          reason: 'PROFILE_CREATED',
+          amount: XP_CATALOG.PROFILE_CREATED.amount,
+        }),
       );
       expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'XpAwarded', metadata: expect.objectContaining({ amount: 10 }) }),
+        expect.objectContaining({
+          action: 'XpAwarded',
+          metadata: expect.objectContaining({ amount: 10 }),
+        }),
       );
       expect(events.emit).toHaveBeenCalledWith('XpAwarded', expect.anything());
     });
 
     it('unlocks the mapped achievement on first occurrence and emits AchievementUnlocked', async () => {
-      gamification.awardXp.mockResolvedValue({ awarded: true, newBalance: 85, isFirstOccurrence: true });
+      gamification.awardXp.mockResolvedValue({
+        awarded: true,
+        newBalance: 85,
+        isFirstOccurrence: true,
+      });
       gamification.unlockAchievement.mockResolvedValue({ title: 'یاور جامعه' });
 
       await service.awardXp({ personId: 'p1', buildingId: 'b1', reason: 'CASE_RESOLVED' });
 
       expect(gamification.unlockAchievement).toHaveBeenCalledWith('p1', 'COMMUNITY_HELPER', 'b1');
       expect(events.emit).toHaveBeenCalledWith('AchievementUnlocked', expect.anything());
-      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'AchievementUnlocked' }));
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'AchievementUnlocked' }),
+      );
     });
 
     it('does NOT attempt to unlock an achievement when isFirstOccurrence is false (repeat award, permanent-achievement semantics)', async () => {
-      gamification.awardXp.mockResolvedValue({ awarded: true, newBalance: 45, isFirstOccurrence: false });
+      gamification.awardXp.mockResolvedValue({
+        awarded: true,
+        newBalance: 45,
+        isFirstOccurrence: false,
+      });
 
       await service.awardXp({ personId: 'p1', buildingId: 'b1', reason: 'CASE_RESOLVED' });
 
@@ -82,18 +108,31 @@ describe('GamificationService', () => {
     });
 
     it('applies the reason’s Building Score delta only when a buildingId is present and the delta is non-zero', async () => {
-      gamification.awardXp.mockResolvedValue({ awarded: true, newBalance: 10, isFirstOccurrence: false });
+      gamification.awardXp.mockResolvedValue({
+        awarded: true,
+        newBalance: 10,
+        isFirstOccurrence: false,
+      });
 
       await service.awardXp({ personId: 'p1', reason: 'PROFILE_CREATED' }); // no buildingId, delta 0 anyway
       expect(gamification.applyBuildingScoreDelta).not.toHaveBeenCalled();
 
       gamification.applyBuildingScoreDelta.mockResolvedValue(null);
       await service.awardXp({ personId: 'p1', buildingId: 'b1', reason: 'CASE_RESOLVED' });
-      expect(gamification.applyBuildingScoreDelta).toHaveBeenCalledWith('b1', XP_CATALOG.CASE_RESOLVED.buildingScoreDelta, 'CASE_RESOLVED', undefined);
+      expect(gamification.applyBuildingScoreDelta).toHaveBeenCalledWith(
+        'b1',
+        XP_CATALOG.CASE_RESOLVED.buildingScoreDelta,
+        'CASE_RESOLVED',
+        undefined,
+      );
     });
 
     it('emits LeagueTierChanged only when applyBuildingScoreDelta reports a real tier change (league promotion)', async () => {
-      gamification.awardXp.mockResolvedValue({ awarded: true, newBalance: 10, isFirstOccurrence: false });
+      gamification.awardXp.mockResolvedValue({
+        awarded: true,
+        newBalance: 10,
+        isFirstOccurrence: false,
+      });
       gamification.applyBuildingScoreDelta.mockResolvedValue({
         score: 100,
         previousTier: 'BRONZE',
@@ -105,13 +144,24 @@ describe('GamificationService', () => {
 
       expect(events.emit).toHaveBeenCalledWith(
         'LeagueTierChanged',
-        expect.objectContaining({ buildingId: 'b1', previousTier: 'BRONZE', newTier: 'SILVER', promoted: true }),
+        expect.objectContaining({
+          buildingId: 'b1',
+          previousTier: 'BRONZE',
+          newTier: 'SILVER',
+          promoted: true,
+        }),
       );
-      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'LeagueTierChanged' }));
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'LeagueTierChanged' }),
+      );
     });
 
     it('does not emit LeagueTierChanged when the tier did not change', async () => {
-      gamification.awardXp.mockResolvedValue({ awarded: true, newBalance: 10, isFirstOccurrence: false });
+      gamification.awardXp.mockResolvedValue({
+        awarded: true,
+        newBalance: 10,
+        isFirstOccurrence: false,
+      });
       gamification.applyBuildingScoreDelta.mockResolvedValue({
         score: 95,
         previousTier: 'BRONZE',
@@ -165,7 +215,11 @@ describe('GamificationService', () => {
       gamification.findXpTransactionByReference
         .mockResolvedValueOnce({ personId: 'p1', buildingId: 'b1' })
         .mockResolvedValueOnce(null);
-      gamification.awardXp.mockResolvedValue({ awarded: true, newBalance: 0, isFirstOccurrence: false });
+      gamification.awardXp.mockResolvedValue({
+        awarded: true,
+        newBalance: 0,
+        isFirstOccurrence: false,
+      });
 
       await service.clawbackChargePaidXp({ paymentId: 'pay-1', sourceEvent: 'PaymentReversed' });
 
@@ -202,7 +256,10 @@ describe('GamificationService', () => {
     it('passes a valid tier and translated skip/take straight through, returning items + pagination meta', async () => {
       gamification.listLeaderboard.mockResolvedValue({ items: [{ id: 'b1' }], total: 1 });
       const result = await service.getLeaderboard('GOLD', pagination);
-      expect(gamification.listLeaderboard).toHaveBeenCalledWith('GOLD', { skip: 0, take: DEFAULT_PAGE_LIMIT });
+      expect(gamification.listLeaderboard).toHaveBeenCalledWith('GOLD', {
+        skip: 0,
+        take: DEFAULT_PAGE_LIMIT,
+      });
       expect(result).toEqual({
         items: [{ id: 'b1' }],
         meta: expect.objectContaining({ page: 1, limit: DEFAULT_PAGE_LIMIT, total: 1 }),
@@ -212,7 +269,10 @@ describe('GamificationService', () => {
     it('passes undefined straight through when no tier is given', async () => {
       gamification.listLeaderboard.mockResolvedValue({ items: [], total: 0 });
       await service.getLeaderboard(undefined, pagination);
-      expect(gamification.listLeaderboard).toHaveBeenCalledWith(undefined, { skip: 0, take: DEFAULT_PAGE_LIMIT });
+      expect(gamification.listLeaderboard).toHaveBeenCalledWith(undefined, {
+        skip: 0,
+        take: DEFAULT_PAGE_LIMIT,
+      });
     });
 
     it('ADR-123: throws ValidationError for an invalid tier instead of silently querying (which would just return an empty 200)', () => {
@@ -233,7 +293,11 @@ describe('GamificationService', () => {
     it('paginates and returns items + pagination meta for the caller’s own personId only', async () => {
       gamification.listXpHistory.mockResolvedValue({ items: [{ id: 'tx-1' }], total: 1 });
       const result = await service.getMyXpHistory('p1', {}, pagination);
-      expect(gamification.listXpHistory).toHaveBeenCalledWith('p1', {}, { skip: 0, take: DEFAULT_PAGE_LIMIT });
+      expect(gamification.listXpHistory).toHaveBeenCalledWith(
+        'p1',
+        {},
+        { skip: 0, take: DEFAULT_PAGE_LIMIT },
+      );
       expect(result).toEqual({
         items: [{ id: 'tx-1' }],
         meta: expect.objectContaining({ page: 1, total: 1 }),
@@ -285,7 +349,12 @@ describe('GamificationService', () => {
       });
 
       expect(gamification.awardXp).toHaveBeenCalledWith(
-        expect.objectContaining({ personId: 'p1', buildingId: 'b1', reason: 'ADMIN_CORRECTION', amount: -30 }),
+        expect.objectContaining({
+          personId: 'p1',
+          buildingId: 'b1',
+          reason: 'ADMIN_CORRECTION',
+          amount: -30,
+        }),
       );
       expect(audit.record).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -338,11 +407,18 @@ describe('GamificationService', () => {
           metadata: { delta: 20 },
         }),
       );
-      expect(gamification.applyBuildingScoreDelta).toHaveBeenCalledWith('b1', 20, 'ADMIN_CORRECTION', expect.any(String));
+      expect(gamification.applyBuildingScoreDelta).toHaveBeenCalledWith(
+        'b1',
+        20,
+        'ADMIN_CORRECTION',
+        expect.any(String),
+      );
       // A genuine tier change from a correction gets the same event + audit as a gameplay-driven one.
       expect(events.emit).toHaveBeenCalledWith('BuildingScoreChanged', expect.anything());
       expect(events.emit).toHaveBeenCalledWith('LeagueTierChanged', expect.anything());
-      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'LeagueTierChanged' }));
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'LeagueTierChanged' }),
+      );
     });
   });
 
@@ -426,7 +502,11 @@ describe('GamificationService', () => {
     it('resolves the three metrics for a valid (or absent) date range', async () => {
       const result = await service.getAnalytics();
       expect(result).toEqual(
-        expect.objectContaining({ xpByReason: [], leagueDistribution: [], weeklyActiveParticipants: 0 }),
+        expect.objectContaining({
+          xpByReason: [],
+          leagueDistribution: [],
+          weeklyActiveParticipants: 0,
+        }),
       );
     });
 
@@ -461,7 +541,10 @@ describe('GamificationService', () => {
   describe('onModuleInit (achievement seed integrity)', () => {
     it('logs no error when every AchievementCode is seeded', async () => {
       gamification.findMissingAchievementCodes.mockResolvedValue([]);
-      const errorSpy = jest.spyOn((service as unknown as { logger: { error: (...a: unknown[]) => void } }).logger, 'error');
+      const errorSpy = jest.spyOn(
+        (service as unknown as { logger: { error: (...a: unknown[]) => void } }).logger,
+        'error',
+      );
 
       await service.onModuleInit();
 
@@ -470,7 +553,10 @@ describe('GamificationService', () => {
 
     it('ADR-123: logs a structured error naming every missing AchievementCode, without throwing (must not block boot)', async () => {
       gamification.findMissingAchievementCodes.mockResolvedValue(['COMMUNITY_HELPER']);
-      const errorSpy = jest.spyOn((service as unknown as { logger: { error: (...a: unknown[]) => void } }).logger, 'error');
+      const errorSpy = jest.spyOn(
+        (service as unknown as { logger: { error: (...a: unknown[]) => void } }).logger,
+        'error',
+      );
 
       await expect(service.onModuleInit()).resolves.toBeUndefined();
 

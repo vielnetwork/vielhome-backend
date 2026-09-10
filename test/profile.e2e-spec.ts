@@ -159,7 +159,7 @@ describe('Profile (e2e) — Self-Edit firstName/lastName (Phase 3B)', () => {
     await app.close();
   });
 
-  it('returns the caller\'s own profile (phone + firstName + lastName) on GET /profile/me', async () => {
+  it("returns the caller's own profile (phone + firstName + lastName) on GET /profile/me", async () => {
     const res = await request(app.getHttpServer())
       .get('/api/v1/profile/me')
       .set('Authorization', `Bearer ${personA.accessToken}`)
@@ -175,7 +175,7 @@ describe('Profile (e2e) — Self-Edit firstName/lastName (Phase 3B)', () => {
     await request(app.getHttpServer()).get('/api/v1/profile/me').expect(401);
   });
 
-  it('updates the caller\'s own firstName/lastName via PATCH /profile/me', async () => {
+  it("updates the caller's own firstName/lastName via PATCH /profile/me", async () => {
     const res = await request(app.getHttpServer())
       .patch('/api/v1/profile/me')
       .set('Authorization', `Bearer ${personA.accessToken}`)

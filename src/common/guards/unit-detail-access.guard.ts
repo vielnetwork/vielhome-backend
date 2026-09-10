@@ -55,11 +55,7 @@ export class UnitDetailAccessGuard implements CanActivate {
     const isMember = await this.buildings.hasMembership(user.sub, buildingId);
     if (isMember) return true;
 
-    const isInvitedOwner = await this.buildings.isInvitedOwnerForUnit(
-      buildingId,
-      unitId,
-      user.sub,
-    );
+    const isInvitedOwner = await this.buildings.isInvitedOwnerForUnit(buildingId, unitId, user.sub);
     if (isInvitedOwner) return true;
 
     throw new AuthorizationError('You do not have access to this unit.');

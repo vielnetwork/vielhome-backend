@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { AuthorizationError, BusinessRuleViolationError } from '../../../../common/errors/app-error';
+import {
+  AuthorizationError,
+  BusinessRuleViolationError,
+} from '../../../../common/errors/app-error';
 
 /**
  * Owner Self-Claim (Building Setup Refinement Phase 3). Pure business

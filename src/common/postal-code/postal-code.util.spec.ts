@@ -1,4 +1,8 @@
-import { isValidPostalCode, normalizePostalCode, normalizePostalCodeDigitsOnly } from './postal-code.util';
+import {
+  isValidPostalCode,
+  normalizePostalCode,
+  normalizePostalCodeDigitsOnly,
+} from './postal-code.util';
 
 describe('postal-code.util', () => {
   describe('normalizePostalCode — Iran (IR)', () => {

@@ -37,11 +37,13 @@ describe('BuildingService paginated unit metadata', () => {
           ['u-102', { personId: 'owner-2', firstName: 'C', lastName: 'D', phone: '+989121234568' }],
         ]),
       ),
-      findCurrentTenantSummariesForUnits: jest.fn().mockResolvedValue(
-        new Map([
-          ['u-102', { personId: 'p1', firstName: 'A', lastName: 'B', phone: '+989121234567' }],
-        ]),
-      ),
+      findCurrentTenantSummariesForUnits: jest
+        .fn()
+        .mockResolvedValue(
+          new Map([
+            ['u-102', { personId: 'p1', firstName: 'A', lastName: 'B', phone: '+989121234567' }],
+          ]),
+        ),
     };
     const service = new BuildingService(
       buildings as never,

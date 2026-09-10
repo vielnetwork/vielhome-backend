@@ -12,7 +12,7 @@ import { IsInt, IsOptional, IsString } from 'class-validator';
 export class CorrectOpeningBalanceDto {
   @ApiProperty({
     description:
-      'The unit\'s new effective opening balance. Positive = debt owed, negative = credit, zero = settled.',
+      "The unit's new effective opening balance. Positive = debt owed, negative = credit, zero = settled.",
   })
   @IsInt()
   targetBalance!: number;

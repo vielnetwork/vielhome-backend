@@ -1152,11 +1152,12 @@ describe('Governance (e2e) — Standing Proxy Voting: Vote Proxy Lookup Hardenin
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
-    ({ founder, owner: ownerA, buildingId, unitIds } = await establishVerifiedManagerBuilding(
-      app,
-      prisma,
-      2,
-    ));
+    ({
+      founder,
+      owner: ownerA,
+      buildingId,
+      unitIds,
+    } = await establishVerifiedManagerBuilding(app, prisma, 2));
     createdPhones.push(founder.phone, ownerA.phone);
     createdBuildingIds.push(buildingId);
 
@@ -1399,9 +1400,7 @@ describe('Governance (e2e) — Tenant Voting Eligibility (21_ADRs > ADR-089, all
       .send(votePayload({ scopeType: 'SELECTED_UNITS', scopeUnitIds: [unitIds[0]] }))
       .expect(201);
     voteId = createRes.body.data.id;
-    yesOptionId = createRes.body.data.options.find(
-      (o: { value: string }) => o.value === 'YES',
-    ).id;
+    yesOptionId = createRes.body.data.options.find((o: { value: string }) => o.value === 'YES').id;
 
     await request(app.getHttpServer())
       .patch(`/api/v1/buildings/${buildingId}/votes/${voteId}/publish`)
@@ -1471,11 +1470,12 @@ describe('Governance (e2e) — Standing Proxy Voting: Ballot Casting & Revocatio
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
-    ({ founder, owner: ownerA, buildingId, unitIds } = await establishVerifiedManagerBuilding(
-      app,
-      prisma,
-      2,
-    ));
+    ({
+      founder,
+      owner: ownerA,
+      buildingId,
+      unitIds,
+    } = await establishVerifiedManagerBuilding(app, prisma, 2));
     createdPhones.push(founder.phone, ownerA.phone);
     createdBuildingIds.push(buildingId);
 
@@ -1755,11 +1755,12 @@ describe('Governance (e2e) — Vote Result Edge Cases: Tie & Explicit Quorum-Met
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
-    ({ founder, owner: owner1, buildingId, unitIds } = await establishVerifiedManagerBuilding(
-      app,
-      prisma,
-      2,
-    ));
+    ({
+      founder,
+      owner: owner1,
+      buildingId,
+      unitIds,
+    } = await establishVerifiedManagerBuilding(app, prisma, 2));
     createdPhones.push(founder.phone, owner1.phone);
     createdBuildingIds.push(buildingId);
 

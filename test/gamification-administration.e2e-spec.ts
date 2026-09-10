@@ -401,7 +401,9 @@ describe('Gamification Administration (e2e) — Backoffice Corrections (ADR-124)
     });
     roleId = role.id;
 
-    const adminStaff = await prisma.platformStaff.findUnique({ where: { personId: admin.personId } });
+    const adminStaff = await prisma.platformStaff.findUnique({
+      where: { personId: admin.personId },
+    });
     const grant = await prisma.staffRole.create({ data: { staffId: adminStaff!.id, roleId } });
     staffRoleGrantId = grant.id;
     // `admin` holds the legacy PLATFORM_ADMIN rank (satisfying the
@@ -573,7 +575,11 @@ describe('Gamification Administration (e2e) — Backoffice Corrections (ADR-124)
       expect(after!.score).toBe(before!.score + 5);
 
       const auditEntry = await prisma.auditLog.findFirst({
-        where: { entityType: 'Building', entityId: buildingId, action: 'BuildingScoreAdjustedByAdmin' },
+        where: {
+          entityType: 'Building',
+          entityId: buildingId,
+          action: 'BuildingScoreAdjustedByAdmin',
+        },
         orderBy: { createdAt: 'desc' },
       });
       expect(auditEntry?.reason).toBe('ADR-124 e2e — community event bonus.');
@@ -617,7 +623,11 @@ describe('Gamification Administration (e2e) — Backoffice Corrections (ADR-124)
       expect(res.body.data.title).toBeTruthy();
 
       const row = await prisma.personAchievement.findFirst({
-        where: { personId: targetPerson.personId, definition: { code: 'FIRST_VOTE' }, revokedAt: null },
+        where: {
+          personId: targetPerson.personId,
+          definition: { code: 'FIRST_VOTE' },
+          revokedAt: null,
+        },
       });
       expect(row).toBeTruthy();
 
@@ -643,7 +653,9 @@ describe('Gamification Administration (e2e) — Backoffice Corrections (ADR-124)
 
     it('revokes the achievement — the row is closed out (revokedAt/revokedById set), never deleted — and records an audited AchievementRevokedByAdmin entry', async () => {
       await request(app.getHttpServer())
-        .post(`/api/v1/backoffice/gamification/persons/${targetPerson.personId}/achievements/revoke`)
+        .post(
+          `/api/v1/backoffice/gamification/persons/${targetPerson.personId}/achievements/revoke`,
+        )
         .set('Authorization', `Bearer ${admin.accessToken}`)
         .send({ code: 'FIRST_VOTE', reason: 'ADR-124 e2e — granted in error.' })
         .expect(201);
@@ -657,7 +669,11 @@ describe('Gamification Administration (e2e) — Backoffice Corrections (ADR-124)
       expect(row!.revokedById).toBe(admin.personId);
 
       const activeRow = await prisma.personAchievement.findFirst({
-        where: { personId: targetPerson.personId, definition: { code: 'FIRST_VOTE' }, revokedAt: null },
+        where: {
+          personId: targetPerson.personId,
+          definition: { code: 'FIRST_VOTE' },
+          revokedAt: null,
+        },
       });
       expect(activeRow).toBeNull();
 
@@ -673,7 +689,9 @@ describe('Gamification Administration (e2e) — Backoffice Corrections (ADR-124)
 
     it('rejects revoking again — the person no longer actively holds it (404)', async () => {
       const res = await request(app.getHttpServer())
-        .post(`/api/v1/backoffice/gamification/persons/${targetPerson.personId}/achievements/revoke`)
+        .post(
+          `/api/v1/backoffice/gamification/persons/${targetPerson.personId}/achievements/revoke`,
+        )
         .set('Authorization', `Bearer ${admin.accessToken}`)
         .send({ code: 'FIRST_VOTE', reason: 'second attempt' })
         .expect(404);
@@ -691,7 +709,11 @@ describe('Gamification Administration (e2e) — Backoffice Corrections (ADR-124)
       expect(res.body.data.title).toBeTruthy();
 
       const activeRow = await prisma.personAchievement.findFirst({
-        where: { personId: targetPerson.personId, definition: { code: 'FIRST_VOTE' }, revokedAt: null },
+        where: {
+          personId: targetPerson.personId,
+          definition: { code: 'FIRST_VOTE' },
+          revokedAt: null,
+        },
       });
       expect(activeRow).toBeTruthy();
 

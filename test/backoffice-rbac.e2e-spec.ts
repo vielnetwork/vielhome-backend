@@ -141,7 +141,10 @@ async function requestOtpAndCaptureCode(app: INestApplication, phone: string): P
   return match[1];
 }
 
-async function requestOtpAndCaptureCodeDirect(app: INestApplication, phone: string): Promise<string> {
+async function requestOtpAndCaptureCodeDirect(
+  app: INestApplication,
+  phone: string,
+): Promise<string> {
   const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
   await app.get(AuthService).requestOtp({ phone, purpose: 'LOGIN' }, 'test-direct-otp-request');
 
@@ -223,7 +226,9 @@ describe('Backoffice RBAC Foundation (ADR-099)', () => {
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
 
-    const adminStaff = await prisma.platformStaff.findUnique({ where: { personId: admin.personId } });
+    const adminStaff = await prisma.platformStaff.findUnique({
+      where: { personId: admin.personId },
+    });
     adminStaffId = adminStaff!.id;
 
     // Idempotent, find-or-create — does not assume `npm run db:seed:rbac`
@@ -240,7 +245,10 @@ describe('Backoffice RBAC Foundation (ADR-099)', () => {
     testPermissionId = permission.id;
 
     const role = await prisma.role.create({
-      data: { name: `E2E Test Role ${RUN_ID}`, description: 'Created by backoffice-rbac.e2e-spec.ts' },
+      data: {
+        name: `E2E Test Role ${RUN_ID}`,
+        description: 'Created by backoffice-rbac.e2e-spec.ts',
+      },
     });
     testRoleId = role.id;
     createdRoleIds.push(role.id);
@@ -287,10 +295,7 @@ describe('Backoffice RBAC Foundation (ADR-099)', () => {
       );
 
       expect(permissionKeys).toEqual(
-        expect.arrayContaining([
-          'SUBSCRIPTION_VIEW',
-          'SUBSCRIPTION_MANAGE',
-        ]),
+        expect.arrayContaining(['SUBSCRIPTION_VIEW', 'SUBSCRIPTION_MANAGE']),
       );
     });
 
@@ -385,9 +390,7 @@ describe('Backoffice RBAC Foundation (ADR-099)', () => {
 
   describe('PermissionResolutionController — GET /backoffice/rbac/me/permissions', () => {
     it('rejects an unauthenticated caller (401)', async () => {
-      await request(app.getHttpServer())
-        .get('/api/v1/backoffice/rbac/me/permissions')
-        .expect(401);
+      await request(app.getHttpServer()).get('/api/v1/backoffice/rbac/me/permissions').expect(401);
     });
 
     it('returns an empty array for a plain, non-staff authenticated caller', async () => {

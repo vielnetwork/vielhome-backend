@@ -38,9 +38,12 @@ describe('VoteProxyService', () => {
       findUnitById: jest.fn().mockResolvedValue(UNIT),
       getBuildingSettings: jest.fn().mockResolvedValue({ allowTenantVoting: false }),
       findLiveEligibleVoterForUnit: jest.fn().mockResolvedValue({ personId: 'granter-1' }),
-      findMemberByPhone: jest
-        .fn()
-        .mockResolvedValue({ personId: 'candidate-1', firstName: 'Ali', lastName: 'Rezaei', fullName: null }),
+      findMemberByPhone: jest.fn().mockResolvedValue({
+        personId: 'candidate-1',
+        firstName: 'Ali',
+        lastName: 'Rezaei',
+        fullName: null,
+      }),
       getRoles: jest.fn().mockResolvedValue(['OWNER']),
     };
     audit = { record: jest.fn() };
@@ -67,7 +70,12 @@ describe('VoteProxyService', () => {
 
   describe('lookupCandidateByPhone', () => {
     it("resolves a candidate's display name for the unit's live eligible voter", async () => {
-      const result = await service.lookupCandidateByPhone('b1', 'unit-1', '+989120000000', 'granter-1');
+      const result = await service.lookupCandidateByPhone(
+        'b1',
+        'unit-1',
+        '+989120000000',
+        'granter-1',
+      );
       expect(result).toEqual({ personId: 'candidate-1', displayName: 'Ali Rezaei' });
     });
 
@@ -79,11 +87,16 @@ describe('VoteProxyService', () => {
 
     it('returns null when no member matches the looked-up phone', async () => {
       buildings.findMemberByPhone.mockResolvedValue(null);
-      const result = await service.lookupCandidateByPhone('b1', 'unit-1', '+989120000000', 'granter-1');
+      const result = await service.lookupCandidateByPhone(
+        'b1',
+        'unit-1',
+        '+989120000000',
+        'granter-1',
+      );
       expect(result).toBeNull();
     });
 
-    it('rejects resolving the caller\'s own phone back to themselves', async () => {
+    it("rejects resolving the caller's own phone back to themselves", async () => {
       buildings.findMemberByPhone.mockResolvedValue({
         personId: 'granter-1',
         firstName: null,
@@ -98,7 +111,13 @@ describe('VoteProxyService', () => {
 
   describe('grant', () => {
     it('grants a proxy on behalf of the current live eligible voter, and audits it', async () => {
-      const result = await service.grant('b1', 'unit-1', { proxyPersonId: 'candidate-1' }, 'granter-1', 'req-1');
+      const result = await service.grant(
+        'b1',
+        'unit-1',
+        { proxyPersonId: 'candidate-1' },
+        'granter-1',
+        'req-1',
+      );
 
       expect(result).toEqual({ id: 'proxy-2' });
       expect(proxies.grant).toHaveBeenCalledWith({
@@ -107,7 +126,9 @@ describe('VoteProxyService', () => {
         granterPersonId: 'granter-1',
         proxyPersonId: 'candidate-1',
       });
-      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'VoteProxyGranted' }));
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'VoteProxyGranted' }),
+      );
     });
 
     it('rejects a caller who is not the current live eligible voter', async () => {
@@ -139,7 +160,9 @@ describe('VoteProxyService', () => {
 
       expect(result).toEqual({ id: 'proxy-1', isCurrent: false });
       expect(proxies.revoke).toHaveBeenCalledWith('proxy-1');
-      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'VoteProxyRevoked' }));
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'VoteProxyRevoked' }),
+      );
     });
 
     it('rejects revocation when there is no current proxy', async () => {
@@ -150,9 +173,9 @@ describe('VoteProxyService', () => {
     });
 
     it('rejects revocation by anyone other than the original granter (e.g. the proxy holder themselves)', async () => {
-      await expect(service.revoke('b1', 'unit-1', 'not-the-granter', 'req-1')).rejects.toBeInstanceOf(
-        AuthorizationError,
-      );
+      await expect(
+        service.revoke('b1', 'unit-1', 'not-the-granter', 'req-1'),
+      ).rejects.toBeInstanceOf(AuthorizationError);
       expect(proxies.revoke).not.toHaveBeenCalled();
     });
   });

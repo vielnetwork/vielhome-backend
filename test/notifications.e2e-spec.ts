@@ -1295,7 +1295,9 @@ async function grantNotificationTemplateAdminToStaff(
   if (!staff) throw new Error('Seeded staff has no PlatformStaff row.');
 
   const role =
-    (await prisma.role.findUnique({ where: { name: `Notification Template Admin (e2e, ${personId})` } })) ??
+    (await prisma.role.findUnique({
+      where: { name: `Notification Template Admin (e2e, ${personId})` },
+    })) ??
     (await prisma.role.create({
       data: {
         name: `Notification Template Admin (e2e, ${personId})`,
@@ -1311,7 +1313,9 @@ async function grantNotificationTemplateAdminToStaff(
       where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
     });
     if (!activeGrant) {
-      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+      await prisma.rolePermission.create({
+        data: { roleId: role.id, permissionId: permission.id },
+      });
     }
   }
 
@@ -1555,12 +1559,17 @@ describe('ADR-102 — Notification Template Permission Migration (PermissionsGua
     managePermissionId = permissionIds.NOTIFICATION_TEMPLATE_MANAGE;
 
     const testRole = await prisma.role.create({
-      data: { name: `E2E ADR-102 NotificationTemplate Test Role ${Date.now()}`, description: 'Created by notifications.e2e-spec.ts (ADR-102 block).' },
+      data: {
+        name: `E2E ADR-102 NotificationTemplate Test Role ${Date.now()}`,
+        description: 'Created by notifications.e2e-spec.ts (ADR-102 block).',
+      },
     });
     testRoleId = testRole.id;
 
     const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewer.personId } });
-    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
     staffRoleGrantId = grant.id;
     // No RolePermission granted yet — reviewer holds the legacy REVIEWER
     // rank (satisfying `list`'s legacy requirement — the manage-tier
@@ -1602,7 +1611,9 @@ describe('ADR-102 — Notification Template Permission Migration (PermissionsGua
   });
 
   it('granting NOTIFICATION_TEMPLATE_VIEW takes effect immediately — the read-tier route opens', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: viewPermissionId },
+    });
 
     await request(app.getHttpServer())
       .get('/api/v1/backoffice/notification-templates')
@@ -1622,7 +1633,10 @@ describe('ADR-102 — Notification Template Permission Migration (PermissionsGua
     const activeGrant = await prisma.rolePermission.findFirst({
       where: { roleId: testRoleId, permissionId: viewPermissionId, revokedAt: null },
     });
-    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
 
     await request(app.getHttpServer())
       .get('/api/v1/backoffice/notification-templates')

@@ -357,7 +357,9 @@ describe('Scheduler (e2e) — Manual Job Trigger (ADR-036)', () => {
 
     expect(res.body.data.jobName).toBe('governance-auto-publish-votes');
     expect(res.body.data.status).toBe('queued');
-    expect(res.body.data.jobId).toEqual(expect.stringContaining('manual:governance-auto-publish-votes:'));
+    expect(res.body.data.jobId).toEqual(
+      expect.stringContaining('manual:governance-auto-publish-votes:'),
+    );
   });
 });
 
@@ -389,16 +391,23 @@ describe('ADR-102 — Scheduler Permission Migration (PermissionsGuard/@Requires
 
     const permission =
       (await prisma.permission.findUnique({ where: { key: 'SCHEDULER_TRIGGER' } })) ??
-      (await prisma.permission.create({ data: { key: 'SCHEDULER_TRIGGER', label: 'SCHEDULER_TRIGGER' } }));
+      (await prisma.permission.create({
+        data: { key: 'SCHEDULER_TRIGGER', label: 'SCHEDULER_TRIGGER' },
+      }));
     triggerPermissionId = permission.id;
 
     const testRole = await prisma.role.create({
-      data: { name: `E2E ADR-102 Scheduler Test Role ${Date.now()}`, description: 'Created by scheduler.e2e-spec.ts (ADR-102 block).' },
+      data: {
+        name: `E2E ADR-102 Scheduler Test Role ${Date.now()}`,
+        description: 'Created by scheduler.e2e-spec.ts (ADR-102 block).',
+      },
     });
     testRoleId = testRole.id;
 
     const staff = await prisma.platformStaff.findUnique({ where: { personId: admin.personId } });
-    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
     staffRoleGrantId = grant.id;
     // No RolePermission granted yet — admin holds the legacy PLATFORM_ADMIN
     // rank (satisfying the route's legacy requirement) but no RBAC
@@ -442,7 +451,9 @@ describe('ADR-102 — Scheduler Permission Migration (PermissionsGuard/@Requires
   });
 
   it('granting SCHEDULER_TRIGGER takes effect immediately — the route opens', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: triggerPermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: triggerPermissionId },
+    });
 
     const res = await request(app.getHttpServer())
       .post('/api/v1/backoffice/scheduler/trigger')
@@ -457,7 +468,10 @@ describe('ADR-102 — Scheduler Permission Migration (PermissionsGuard/@Requires
     const activeGrant = await prisma.rolePermission.findFirst({
       where: { roleId: testRoleId, permissionId: triggerPermissionId, revokedAt: null },
     });
-    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
 
     await request(app.getHttpServer())
       .post('/api/v1/backoffice/scheduler/trigger')

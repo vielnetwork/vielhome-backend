@@ -22,8 +22,18 @@ describe('UnitVisibilityPolicy', () => {
     ownerInviteSentAt: new Date('2026-01-01'),
   };
 
-  const owner = { personId: 'owner-1', firstName: 'Sara', lastName: 'Ahmadi', phone: '+989120000002' };
-  const tenant = { personId: 'tenant-1', firstName: 'Reza', lastName: 'Karimi', phone: '+989120000003' };
+  const owner = {
+    personId: 'owner-1',
+    firstName: 'Sara',
+    lastName: 'Ahmadi',
+    phone: '+989120000002',
+  };
+  const tenant = {
+    personId: 'tenant-1',
+    firstName: 'Reza',
+    lastName: 'Karimi',
+    phone: '+989120000003',
+  };
 
   const ctx = (overrides: Partial<UnitPrivacyContext> = {}): UnitPrivacyContext => ({
     isManager: false,
@@ -35,18 +45,33 @@ describe('UnitVisibilityPolicy', () => {
 
   describe('shapeUnit — pending owner-invite fields', () => {
     it('keeps pending owner fields for MANAGER', () => {
-      const shaped: Record<string, unknown> = policy.shapeUnit(baseUnit, ctx({ isManager: true }), null, null);
+      const shaped: Record<string, unknown> = policy.shapeUnit(
+        baseUnit,
+        ctx({ isManager: true }),
+        null,
+        null,
+      );
       expect(shaped.ownerFullName).toBe('Pending Owner');
       expect(shaped.ownerPhone).toBe('+989120000001');
     });
 
     it('keeps pending owner fields for the unit’s own current Owner', () => {
-      const shaped: Record<string, unknown> = policy.shapeUnit(baseUnit, ctx({ isCurrentOwnerOfUnit: true }), owner, null);
+      const shaped: Record<string, unknown> = policy.shapeUnit(
+        baseUnit,
+        ctx({ isCurrentOwnerOfUnit: true }),
+        owner,
+        null,
+      );
       expect(shaped.ownerFullName).toBe('Pending Owner');
     });
 
     it('keeps pending owner fields for the exact invited-unclaimed candidate', () => {
-      const shaped: Record<string, unknown> = policy.shapeUnit(baseUnit, ctx({ isInvitedOwnerCandidate: true }), null, null);
+      const shaped: Record<string, unknown> = policy.shapeUnit(
+        baseUnit,
+        ctx({ isInvitedOwnerCandidate: true }),
+        null,
+        null,
+      );
       expect(shaped.ownerPhone).toBe('+989120000001');
     });
 
@@ -94,7 +119,12 @@ describe('UnitVisibilityPolicy', () => {
     });
 
     it('the unit’s own current Tenant sees the current owner’s identity (Phase 4 decision) and their own', () => {
-      const shaped = policy.shapeUnit(baseUnit, ctx({ isCurrentTenantOfUnit: true }), owner, tenant);
+      const shaped = policy.shapeUnit(
+        baseUnit,
+        ctx({ isCurrentTenantOfUnit: true }),
+        owner,
+        tenant,
+      );
       expect(shaped.currentOwner).toEqual(owner);
       expect(shaped.currentTenant).toEqual(tenant);
     });
@@ -106,7 +136,12 @@ describe('UnitVisibilityPolicy', () => {
     });
 
     it('an invited-unclaimed candidate (not yet a member) sees neither summary', () => {
-      const shaped = policy.shapeUnit(baseUnit, ctx({ isInvitedOwnerCandidate: true }), owner, tenant);
+      const shaped = policy.shapeUnit(
+        baseUnit,
+        ctx({ isInvitedOwnerCandidate: true }),
+        owner,
+        tenant,
+      );
       expect(shaped.currentOwner).toBeNull();
       expect(shaped.currentTenant).toBeNull();
     });
@@ -118,11 +153,15 @@ describe('UnitVisibilityPolicy', () => {
     });
 
     it('allows the unit’s own current Owner', () => {
-      expect(() => policy.assertCanAccessUnitHistory(ctx({ isCurrentOwnerOfUnit: true }))).not.toThrow();
+      expect(() =>
+        policy.assertCanAccessUnitHistory(ctx({ isCurrentOwnerOfUnit: true })),
+      ).not.toThrow();
     });
 
     it('allows the unit’s own current Tenant', () => {
-      expect(() => policy.assertCanAccessUnitHistory(ctx({ isCurrentTenantOfUnit: true }))).not.toThrow();
+      expect(() =>
+        policy.assertCanAccessUnitHistory(ctx({ isCurrentTenantOfUnit: true })),
+      ).not.toThrow();
     });
 
     it('denies an unrelated building member (BOARD_MEMBER/ACCOUNTANT/other-unit OWNER or TENANT)', () => {
@@ -130,9 +169,9 @@ describe('UnitVisibilityPolicy', () => {
     });
 
     it('denies an invited-unclaimed candidate — eligibility to claim is not eligibility to read history', () => {
-      expect(() => policy.assertCanAccessUnitHistory(ctx({ isInvitedOwnerCandidate: true }))).toThrow(
-        AuthorizationError,
-      );
+      expect(() =>
+        policy.assertCanAccessUnitHistory(ctx({ isInvitedOwnerCandidate: true })),
+      ).toThrow(AuthorizationError);
     });
   });
 
@@ -154,13 +193,21 @@ describe('UnitVisibilityPolicy', () => {
     });
 
     it('the caller sees full identity on their OWN row', () => {
-      const shaped = policy.shapeHistoryEntry(entry, ctx({ isCurrentOwnerOfUnit: true }), 'previous-owner-1');
+      const shaped = policy.shapeHistoryEntry(
+        entry,
+        ctx({ isCurrentOwnerOfUnit: true }),
+        'previous-owner-1',
+      );
       expect(shaped.personId).toBe('previous-owner-1');
       expect(shaped.person).toEqual(entry.person);
     });
 
     it('a non-manager caller viewing SOMEONE ELSE’S row gets identity redacted but keeps dates/status', () => {
-      const shaped = policy.shapeHistoryEntry(entry, ctx({ isCurrentOwnerOfUnit: true }), 'current-owner-1');
+      const shaped = policy.shapeHistoryEntry(
+        entry,
+        ctx({ isCurrentOwnerOfUnit: true }),
+        'current-owner-1',
+      );
       expect(shaped.personId).toBeNull();
       expect(shaped.person).toBeNull();
       expect(shaped.startDate).toEqual(entry.startDate);

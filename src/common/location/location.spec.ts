@@ -1,10 +1,6 @@
 import { SUPPORTED_COUNTRIES, countryHasAddressDataset, isSupportedCountryCode } from './countries';
 import { IRAN_PROVINCES, isValidIranProvinceCode } from './iran-provinces';
-import {
-  citiesForProvince,
-  isValidIranCityCode,
-  isValidIranCityForProvince,
-} from './iran-cities';
+import { citiesForProvince, isValidIranCityCode, isValidIranCityForProvince } from './iran-cities';
 
 describe('common/location', () => {
   describe('countries', () => {
@@ -65,10 +61,7 @@ describe('common/location', () => {
 
   describe('iran-cities', () => {
     it('covers more than just provincial capitals (well over 31 cities total)', () => {
-      const total = IRAN_PROVINCES.reduce(
-        (sum, p) => sum + citiesForProvince(p.code).length,
-        0,
-      );
+      const total = IRAN_PROVINCES.reduce((sum, p) => sum + citiesForProvince(p.code).length, 0);
       expect(total).toBeGreaterThan(100);
     });
 

@@ -1,5 +1,9 @@
 import { BuildingSetupPolicy } from './building-setup.policy';
-import { BusinessRuleViolationError, DuplicateError, ValidationError } from '../../../../common/errors/app-error';
+import {
+  BusinessRuleViolationError,
+  DuplicateError,
+  ValidationError,
+} from '../../../../common/errors/app-error';
 
 describe('BuildingSetupPolicy', () => {
   const policy = new BuildingSetupPolicy();
@@ -85,9 +89,9 @@ describe('BuildingSetupPolicy', () => {
     });
 
     it('rejects Iran (IR) with a missing province', () => {
-      expect(() =>
-        policy.assertValidAddressHierarchy('IR', undefined, 'IR-TEHRAN-TEHRAN'),
-      ).toThrow(ValidationError);
+      expect(() => policy.assertValidAddressHierarchy('IR', undefined, 'IR-TEHRAN-TEHRAN')).toThrow(
+        ValidationError,
+      );
     });
 
     it('rejects Iran (IR) with a missing city', () => {

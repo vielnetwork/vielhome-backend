@@ -230,7 +230,10 @@ export class GamificationRepository {
    * for an unknown id — clean, but this check gives a more specific,
    * earlier failure before any transaction is opened). */
   async personExists(personId: string): Promise<boolean> {
-    const found = await this.prisma.person.findUnique({ where: { id: personId }, select: { id: true } });
+    const found = await this.prisma.person.findUnique({
+      where: { id: personId },
+      select: { id: true },
+    });
     return found !== null;
   }
 

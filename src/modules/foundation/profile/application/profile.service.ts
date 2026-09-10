@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { ProfileRepository, ProfileRecord } from '../infrastructure/repositories/profile.repository';
+import {
+  ProfileRepository,
+  ProfileRecord,
+} from '../infrastructure/repositories/profile.repository';
 import { NotFoundAppError } from '../../../../common/errors/app-error';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 

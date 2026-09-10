@@ -770,7 +770,9 @@ export class BackOfficeRepository {
         let previousTargetState: string | undefined;
         let effectApplied = false;
         if (params.type === 'ACCOUNT_SUSPENSION' && params.targetPersonId) {
-          const target = await tx.person.findUniqueOrThrow({ where: { id: params.targetPersonId } });
+          const target = await tx.person.findUniqueOrThrow({
+            where: { id: params.targetPersonId },
+          });
           previousTargetState = JSON.stringify({ isSuspended: target.isSuspended });
           await tx.person.update({ where: { id: target.id }, data: { isSuspended: true } });
           effectApplied = true;
@@ -779,7 +781,9 @@ export class BackOfficeRepository {
           params.targetType === 'BUILDING' &&
           params.targetBuildingId
         ) {
-          const target = await tx.building.findUniqueOrThrow({ where: { id: params.targetBuildingId } });
+          const target = await tx.building.findUniqueOrThrow({
+            where: { id: params.targetBuildingId },
+          });
           previousTargetState = JSON.stringify({ status: target.status });
           await tx.building.update({ where: { id: target.id }, data: { status: 'REJECTED' } });
           effectApplied = true;
@@ -855,7 +859,8 @@ export class BackOfficeRepository {
       where: { id, appealStatus: 'NONE' },
       data: { appealStatus: 'PENDING', appealReason, appealedAt: new Date() },
     });
-    if (result.count !== 1) throw new ConflictError('Enforcement appeal status changed; reload and retry.');
+    if (result.count !== 1)
+      throw new ConflictError('Enforcement appeal status changed; reload and retry.');
     return this.prisma.enforcementAction.findUniqueOrThrow({ where: { id } });
   }
 
@@ -1619,7 +1624,8 @@ export class BackOfficeRepository {
       where: { id, status: expectedStatus },
       data: { assignedToId, status: 'IN_PROGRESS' },
     });
-    if (result.count !== 1) throw new ConflictError('Support case status changed; reload and retry.');
+    if (result.count !== 1)
+      throw new ConflictError('Support case status changed; reload and retry.');
     return this.prisma.supportCase.findUniqueOrThrow({ where: { id } });
   }
 
@@ -1649,7 +1655,8 @@ export class BackOfficeRepository {
         resolvedAt: new Date(),
       },
     });
-    if (result.count !== 1) throw new ConflictError('Support case status changed; reload and retry.');
+    if (result.count !== 1)
+      throw new ConflictError('Support case status changed; reload and retry.');
     return this.prisma.supportCase.findUniqueOrThrow({ where: { id: params.id } });
   }
 
@@ -1658,7 +1665,8 @@ export class BackOfficeRepository {
       where: { id, status: expectedStatus },
       data: { status: 'OPEN', resolvedAt: null, closedAt: null },
     });
-    if (result.count !== 1) throw new ConflictError('Support case status changed; reload and retry.');
+    if (result.count !== 1)
+      throw new ConflictError('Support case status changed; reload and retry.');
     return this.prisma.supportCase.findUniqueOrThrow({ where: { id } });
   }
 

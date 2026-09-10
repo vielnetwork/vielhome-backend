@@ -18,7 +18,9 @@ export class SupportCasePolicy {
   /** Only a non-terminal ticket may be worked. RESOLVED/CLOSED require an explicit reopen. */
   assertActionable(status: CaseStatus): void {
     if (CLOSED_STATUSES.includes(status)) {
-      throw new BusinessRuleViolationError('This support case is resolved or closed. Reopen it first.');
+      throw new BusinessRuleViolationError(
+        'This support case is resolved or closed. Reopen it first.',
+      );
     }
   }
 

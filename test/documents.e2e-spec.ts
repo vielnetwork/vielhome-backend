@@ -410,9 +410,7 @@ describe('Documents (e2e) — Creation & Category Gating (06.08 Rule 011/012)', 
     buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER' });
     createdBuildingIds.push(buildingId);
     await joinBuildingAsApprovedMember(app, buildingId, member.accessToken, manager.accessToken);
-    createdBuildingIds.push(
-      await createBuilding(app, nonMember.accessToken, { role: 'MANAGER' }),
-    );
+    createdBuildingIds.push(await createBuilding(app, nonMember.accessToken, { role: 'MANAGER' }));
   });
 
   afterAll(async () => {
@@ -421,29 +419,27 @@ describe('Documents (e2e) — Creation & Category Gating (06.08 Rule 011/012)', 
     await app.close();
   });
 
-  it.each([
-    'OWNER',
-    'TENANT',
-    'BOARD_MEMBER',
-    'ACCOUNTANT',
-  ])('rejects %s requesting a direct upload intent', async (role) => {
-    await prisma.membership.updateMany({
-      where: { buildingId, personId: member.personId },
-      data: { role: role as never },
-    });
-    const res = await request(app.getHttpServer())
-      .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
-      .set('Authorization', `Bearer ${member.accessToken}`)
-      .send({
-        fileName: 'blocked.pdf',
-        fileType: 'PDF',
-        fileSize: 128,
-        purpose: 'CREATE_DOCUMENT',
-      })
-      .expect(403);
+  it.each(['OWNER', 'TENANT', 'BOARD_MEMBER', 'ACCOUNTANT'])(
+    'rejects %s requesting a direct upload intent',
+    async (role) => {
+      await prisma.membership.updateMany({
+        where: { buildingId, personId: member.personId },
+        data: { role: role as never },
+      });
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/buildings/${buildingId}/documents/upload-url`)
+        .set('Authorization', `Bearer ${member.accessToken}`)
+        .send({
+          fileName: 'blocked.pdf',
+          fileType: 'PDF',
+          fileSize: 128,
+          purpose: 'CREATE_DOCUMENT',
+        })
+        .expect(403);
 
-    expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
-  });
+      expect(res.body.errors[0].code).toBe('AUTHORIZATION_ERROR');
+    },
+  );
 
   it.each(['CROSS_BUILDING_MANAGER', 'NON_MEMBER'])(
     'rejects %s requesting a direct upload intent',

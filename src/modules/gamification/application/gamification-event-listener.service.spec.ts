@@ -35,7 +35,11 @@ describe('GamificationEventListener', () => {
   it('BuildingCreated -> awards BUILDING_SETUP_COMPLETED to the founder for that building', async () => {
     await listener.onBuildingCreated(new BuildingCreatedEvent('b1', 'p1', 'MANAGER'));
     expect(gamification.awardXp).toHaveBeenCalledWith(
-      expect.objectContaining({ personId: 'p1', buildingId: 'b1', reason: 'BUILDING_SETUP_COMPLETED' }),
+      expect.objectContaining({
+        personId: 'p1',
+        buildingId: 'b1',
+        reason: 'BUILDING_SETUP_COMPLETED',
+      }),
     );
   });
 
@@ -67,7 +71,9 @@ describe('GamificationEventListener', () => {
   });
 
   it('PaymentReversed -> always claws back CHARGE_PAID XP for that payment (a reversal always fully undoes the approval)', async () => {
-    await listener.onPaymentReversed(new PaymentReversedEvent('pay-1', 'b1', 'u1', 300_000, 'staff-1'));
+    await listener.onPaymentReversed(
+      new PaymentReversedEvent('pay-1', 'b1', 'u1', 300_000, 'staff-1'),
+    );
     expect(gamification.clawbackChargePaidXp).toHaveBeenCalledWith(
       expect.objectContaining({ paymentId: 'pay-1' }),
     );
@@ -92,7 +98,11 @@ describe('GamificationEventListener', () => {
   it('BallotCast -> awards VOTE_PARTICIPATED to the voter (not the vote/building)', async () => {
     await listener.onBallotCast(new BallotCastEvent('vote-1', 'b1', 'u1', 'voter-1'));
     expect(gamification.awardXp).toHaveBeenCalledWith(
-      expect.objectContaining({ personId: 'voter-1', buildingId: 'b1', reason: 'VOTE_PARTICIPATED' }),
+      expect.objectContaining({
+        personId: 'voter-1',
+        buildingId: 'b1',
+        reason: 'VOTE_PARTICIPATED',
+      }),
     );
   });
 
@@ -112,8 +122,20 @@ describe('GamificationEventListener', () => {
   });
 
   it('ADR-123: a SECOND CaseStatusChanged(RESOLVED) for the SAME case (resolve -> reopen -> resolve) still calls awardXp with the identical (CASE, case-1) reference every time — the listener does not try to guess or suppress duplicates itself; the DB-level uniqueness guarantee (proved in GamificationRepository.spec.ts) is what actually blocks the second award', async () => {
-    const firstResolve = new CaseStatusChangedEvent('case-1', 'b1', 'OPEN', 'RESOLVED', 'manager-1');
-    const secondResolve = new CaseStatusChangedEvent('case-1', 'b1', 'OPEN', 'RESOLVED', 'manager-1');
+    const firstResolve = new CaseStatusChangedEvent(
+      'case-1',
+      'b1',
+      'OPEN',
+      'RESOLVED',
+      'manager-1',
+    );
+    const secondResolve = new CaseStatusChangedEvent(
+      'case-1',
+      'b1',
+      'OPEN',
+      'RESOLVED',
+      'manager-1',
+    );
 
     await listener.onCaseStatusChanged(firstResolve);
     await listener.onCaseStatusChanged(secondResolve);
@@ -121,7 +143,11 @@ describe('GamificationEventListener', () => {
     expect(gamification.awardXp).toHaveBeenCalledTimes(2);
     for (const call of gamification.awardXp.mock.calls) {
       expect(call[0]).toEqual(
-        expect.objectContaining({ reason: 'CASE_RESOLVED', referenceType: 'CASE', referenceId: 'case-1' }),
+        expect.objectContaining({
+          reason: 'CASE_RESOLVED',
+          referenceType: 'CASE',
+          referenceId: 'case-1',
+        }),
       );
     }
   });

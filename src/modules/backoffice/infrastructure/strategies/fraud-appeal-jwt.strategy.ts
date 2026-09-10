@@ -16,7 +16,10 @@ import type { JwtPayload } from '../../../foundation/auth/infrastructure/strateg
  */
 @Injectable()
 export class FraudAppealJwtStrategy extends PassportStrategy(Strategy, 'fraud-appeal-jwt') {
-  constructor(config: ConfigService<AppConfig, true>, private readonly prisma: PrismaService) {
+  constructor(
+    config: ConfigService<AppConfig, true>,
+    private readonly prisma: PrismaService,
+  ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,

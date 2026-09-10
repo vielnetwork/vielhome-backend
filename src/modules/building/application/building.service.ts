@@ -262,11 +262,7 @@ export class BuildingService {
     return this.shapeUnitsForCaller(units, buildingId, personId, roles);
   }
 
-  async listUnitMetadataPage(
-    buildingId: string,
-    personId: string,
-    pagination: PaginationParams,
-  ) {
+  async listUnitMetadataPage(buildingId: string, personId: string, pagination: PaginationParams) {
     const [{ items, total }, roles] = await Promise.all([
       this.buildings.listUnitMetadataPage(buildingId, toSkipTake(pagination)),
       this.buildings.getRoles(personId, buildingId),
@@ -303,16 +299,23 @@ export class BuildingService {
    */
   async getUnitForPerson(buildingId: string, unitId: string, personId: string) {
     const unit = await this.getOwnUnit(buildingId, unitId);
-    const [isCurrentOwner, currentTenancy, hasCurrentOwnership, caller, roles, currentOwnerSummary, currentTenantSummary] =
-      await Promise.all([
-        this.buildings.isCurrentOwnerOfUnit(unitId, personId),
-        this.buildings.findCurrentTenancyForUnit(unitId),
-        this.buildings.hasCurrentOwnership(unitId),
-        this.buildings.findPersonById(personId),
-        this.buildings.getRoles(personId, buildingId),
-        this.buildings.findCurrentOwnerSummaryForUnit(unitId),
-        this.buildings.findCurrentTenantSummaryForUnit(unitId),
-      ]);
+    const [
+      isCurrentOwner,
+      currentTenancy,
+      hasCurrentOwnership,
+      caller,
+      roles,
+      currentOwnerSummary,
+      currentTenantSummary,
+    ] = await Promise.all([
+      this.buildings.isCurrentOwnerOfUnit(unitId, personId),
+      this.buildings.findCurrentTenancyForUnit(unitId),
+      this.buildings.hasCurrentOwnership(unitId),
+      this.buildings.findPersonById(personId),
+      this.buildings.getRoles(personId, buildingId),
+      this.buildings.findCurrentOwnerSummaryForUnit(unitId),
+      this.buildings.findCurrentTenantSummaryForUnit(unitId),
+    ]);
 
     const isCurrentTenant = currentTenancy?.personId === personId;
     const canClaimOwnership =
@@ -335,7 +338,12 @@ export class BuildingService {
       isInvitedOwnerCandidate: canClaimOwnership,
     };
 
-    const shaped = this.unitVisibility.shapeUnit(unit, ctx, currentOwnerSummary, currentTenantSummary);
+    const shaped = this.unitVisibility.shapeUnit(
+      unit,
+      ctx,
+      currentOwnerSummary,
+      currentTenantSummary,
+    );
     return { ...shaped, isCurrentOwner, isCurrentTenant, canClaimOwnership };
   }
 
@@ -913,7 +921,11 @@ export class BuildingService {
         lastName: dto.tenantLastName,
       });
     } else {
-      await this.buildings.fillMissingPersonName(person.id, dto.tenantFirstName, dto.tenantLastName);
+      await this.buildings.fillMissingPersonName(
+        person.id,
+        dto.tenantFirstName,
+        dto.tenantLastName,
+      );
     }
 
     return this.createTenancy(buildingId, unitId, person.id, actorPersonId, requestId);

@@ -34,7 +34,9 @@ export class CaseRepository {
 
   async listCases(
     buildingId: string,
-    filter: { type?: CaseType; status?: CaseStatus; priority?: CasePriority; assigneeId?: string } | undefined,
+    filter:
+      | { type?: CaseType; status?: CaseStatus; priority?: CasePriority; assigneeId?: string }
+      | undefined,
     access: { actorPersonId: string; privileged: boolean },
     pagination: { skip: number; take: number },
   ) {
@@ -191,7 +193,8 @@ export class CaseRepository {
 
   async resolveCase(id: string, expectedStatus: CaseStatus, resolutionCode: CaseResolutionCode) {
     const result = await this.prisma.case.updateMany({
-      where: { id, status: expectedStatus }, data: { status: 'RESOLVED', resolutionCode },
+      where: { id, status: expectedStatus },
+      data: { status: 'RESOLVED', resolutionCode },
     });
     if (result.count !== 1) throw new ConflictError('Case status changed; reload and retry.');
     return this.prisma.case.findUniqueOrThrow({ where: { id } });
@@ -199,7 +202,8 @@ export class CaseRepository {
 
   async closeCase(id: string) {
     const result = await this.prisma.case.updateMany({
-      where: { id, status: 'RESOLVED' }, data: { status: 'CLOSED', closedAt: new Date() },
+      where: { id, status: 'RESOLVED' },
+      data: { status: 'CLOSED', closedAt: new Date() },
     });
     if (result.count !== 1) throw new ConflictError('Case is no longer resolved.');
     return this.prisma.case.findUniqueOrThrow({ where: { id } });

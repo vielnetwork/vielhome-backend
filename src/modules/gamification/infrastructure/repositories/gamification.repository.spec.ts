@@ -69,7 +69,11 @@ describe('GamificationRepository', () => {
     it('reports isFirstOccurrence: false when a prior XpTransaction of this reason already exists for this person', async () => {
       setup();
       tx.xpTransaction.count.mockResolvedValue(1);
-      const result = await repository.awardXp({ personId: 'p1', reason: 'CASE_RESOLVED', amount: 25 });
+      const result = await repository.awardXp({
+        personId: 'p1',
+        reason: 'CASE_RESOLVED',
+        amount: 25,
+      });
       expect(result).toEqual(expect.objectContaining({ isFirstOccurrence: false }));
     });
 
@@ -402,13 +406,15 @@ describe('GamificationRepository', () => {
     it('returns an empty array when every AchievementCode is seeded', async () => {
       const prisma = {
         achievementDefinition: {
-          findMany: jest.fn().mockResolvedValue([
-            { code: 'FIRST_STEPS' },
-            { code: 'BUILDING_FOUNDER' },
-            { code: 'FIRST_PAYMENT' },
-            { code: 'FIRST_VOTE' },
-            { code: 'COMMUNITY_HELPER' },
-          ]),
+          findMany: jest
+            .fn()
+            .mockResolvedValue([
+              { code: 'FIRST_STEPS' },
+              { code: 'BUILDING_FOUNDER' },
+              { code: 'FIRST_PAYMENT' },
+              { code: 'FIRST_VOTE' },
+              { code: 'COMMUNITY_HELPER' },
+            ]),
         },
       };
       const repository = new GamificationRepository(prisma as unknown as PrismaService, policy);

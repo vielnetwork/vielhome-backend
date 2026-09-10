@@ -592,7 +592,9 @@ async function grantBuildingVerificationAdminToReviewer(
       where: { roleId: role.id, permissionId: permission.id, revokedAt: null },
     });
     if (!activeGrant) {
-      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+      await prisma.rolePermission.create({
+        data: { roleId: role.id, permissionId: permission.id },
+      });
     }
   }
 
@@ -1103,12 +1105,17 @@ describe('ADR-102 — Building Verification Permission Migration (PermissionsGua
     managePermissionId = permissionIds.BUILDING_VERIFICATION_MANAGE;
 
     const testRole = await prisma.role.create({
-      data: { name: `E2E ADR-102 BV Test Role ${Date.now()}`, description: 'Created by building-verification.e2e-spec.ts (ADR-102 block).' },
+      data: {
+        name: `E2E ADR-102 BV Test Role ${Date.now()}`,
+        description: 'Created by building-verification.e2e-spec.ts (ADR-102 block).',
+      },
     });
     testRoleId = testRole.id;
 
     const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewer.personId } });
-    const grant = await prisma.staffRole.create({ data: { staffId: staff!.id, roleId: testRoleId } });
+    const grant = await prisma.staffRole.create({
+      data: { staffId: staff!.id, roleId: testRoleId },
+    });
     staffRoleGrantId = grant.id;
     // No RolePermission granted yet — reviewer holds the legacy rank but
     // no RBAC permission at all, deliberately.
@@ -1149,7 +1156,9 @@ describe('ADR-102 — Building Verification Permission Migration (PermissionsGua
   });
 
   it('granting BUILDING_VERIFICATION_VIEW takes effect immediately — the read-tier route opens, the manage-tier route stays closed', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: viewPermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: viewPermissionId },
+    });
 
     await request(app.getHttpServer())
       .get(`/api/v1/backoffice/building-verifications/${caseId}`)
@@ -1164,7 +1173,9 @@ describe('ADR-102 — Building Verification Permission Migration (PermissionsGua
   });
 
   it('granting BUILDING_VERIFICATION_MANAGE additionally takes effect immediately — the manage-tier route opens', async () => {
-    await prisma.rolePermission.create({ data: { roleId: testRoleId, permissionId: managePermissionId } });
+    await prisma.rolePermission.create({
+      data: { roleId: testRoleId, permissionId: managePermissionId },
+    });
 
     const decideRes = await request(app.getHttpServer())
       .post(`/api/v1/backoffice/building-verifications/${caseId}/decide`)
@@ -1178,7 +1189,10 @@ describe('ADR-102 — Building Verification Permission Migration (PermissionsGua
     const activeGrant = await prisma.rolePermission.findFirst({
       where: { roleId: testRoleId, permissionId: managePermissionId, revokedAt: null },
     });
-    await prisma.rolePermission.update({ where: { id: activeGrant!.id }, data: { revokedAt: new Date() } });
+    await prisma.rolePermission.update({
+      where: { id: activeGrant!.id },
+      data: { revokedAt: new Date() },
+    });
 
     await request(app.getHttpServer())
       .post(`/api/v1/backoffice/building-verifications/${caseId}/assign`)

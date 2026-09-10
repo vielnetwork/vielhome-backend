@@ -824,7 +824,6 @@ describe('Building (e2e) — Phone Number Input & Normalization (Invite Owner / 
     const unitAfter = await prisma.unit.findUnique({ where: { id: unitId } });
     expect(unitAfter?.ownerPhone).toBe(canonical);
   });
-
 });
 
 describe('Building (e2e) — Tenancy (21_ADRs > ADR-035)', () => {
@@ -1034,7 +1033,13 @@ describe('Building (e2e) — Unit Authorization Hardening (Building Setup Refine
 
     owner = await registerPerson(app);
     createdPhones.push(owner.phone);
-    await joinBuildingAsApprovedMember(app, buildingId, owner.accessToken, manager.accessToken, 'OWNER');
+    await joinBuildingAsApprovedMember(
+      app,
+      buildingId,
+      owner.accessToken,
+      manager.accessToken,
+      'OWNER',
+    );
 
     // Building Setup Refinement Phase 3 (Product Rule 2) —
     // `TenancyPolicy.assertUnitHasOwner` now requires a current Ownership
@@ -1569,11 +1574,7 @@ describe('Building (e2e) — Address Hierarchy & Postal Code (Building Setup Ref
     });
 
     it('rejects country IR with a missing province (VALIDATION_ERROR)', async () => {
-      const res = await draftAndSubmit(
-        app,
-        accessToken,
-        reviewPayload({ province: undefined }),
-      );
+      const res = await draftAndSubmit(app, accessToken, reviewPayload({ province: undefined }));
       expect(res.status).toBe(400);
       expect(res.body.errors[0].code).toBe('VALIDATION_ERROR');
     });
@@ -1800,7 +1801,10 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
       ({ app, prisma } = await bootstrapTestApp());
       manager = await registerPerson(app);
       createdPhones.push(manager.phone);
-      buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 2 });
+      buildingId = await createBuilding(app, manager.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 2,
+      });
       createdBuildingIds.push(buildingId);
 
       const unitsRes = await request(app.getHttpServer())
@@ -1862,7 +1866,10 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
       const claimRes = await request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId}/units/${unitId}/claim-ownership`)
         .set('Authorization', `Bearer ${invitedOwner.accessToken}`)
-        .send({ ownerPhone: '+989120009999', ownerFullName: 'Someone Else' } as Record<string, unknown>)
+        .send({ ownerPhone: '+989120009999', ownerFullName: 'Someone Else' } as Record<
+          string,
+          unknown
+        >)
         .expect(201);
 
       const ownership = await prisma.ownership.findFirst({
@@ -1884,7 +1891,12 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
     it('rejects a different member trying to claim an already-owned unit (422)', async () => {
       const outsider = await registerPerson(app);
       createdPhones.push(outsider.phone);
-      await joinBuildingAsApprovedMember(app, buildingId, outsider.accessToken, manager.accessToken);
+      await joinBuildingAsApprovedMember(
+        app,
+        buildingId,
+        outsider.accessToken,
+        manager.accessToken,
+      );
 
       const res = await request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId}/units/${unitId}/claim-ownership`)
@@ -1935,7 +1947,12 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
       expect(tenantMembership).not.toBeNull(); // untouched, still current
 
       const ownerMembership = await prisma.membership.findFirst({
-        where: { unitId: secondUnitId, personId: tenantOwner.personId, role: 'OWNER', isCurrent: true },
+        where: {
+          unitId: secondUnitId,
+          personId: tenantOwner.personId,
+          role: 'OWNER',
+          isCurrent: true,
+        },
       });
       expect(ownerMembership).not.toBeNull(); // additional, simultaneous role
     });
@@ -1956,7 +1973,10 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
       ({ app, prisma } = await bootstrapTestApp());
       manager = await registerPerson(app);
       createdPhones.push(manager.phone);
-      buildingId = await createBuilding(app, manager.accessToken, { role: 'MANAGER', totalUnits: 1 });
+      buildingId = await createBuilding(app, manager.accessToken, {
+        role: 'MANAGER',
+        totalUnits: 1,
+      });
       createdBuildingIds.push(buildingId);
 
       const unitsRes = await request(app.getHttpServer())
@@ -2058,7 +2078,11 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
       await request(app.getHttpServer())
         .post(`/api/v1/buildings/${buildingId2}/units/${otherUnitId}/tenancy/register`)
         .set('Authorization', `Bearer ${manager.accessToken}`)
-        .send({ tenantFirstName: 'Overwrite', tenantLastName: 'Attempt', tenantPhone: existing.phone })
+        .send({
+          tenantFirstName: 'Overwrite',
+          tenantLastName: 'Attempt',
+          tenantPhone: existing.phone,
+        })
         .expect(201);
 
       const untouched = await prisma.person.findUnique({ where: { id: existing.personId } });
@@ -2111,7 +2135,9 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
         orderBy: { unitNumber: 'asc' },
       });
       const unitId = unit.id;
-      await prisma.ownership.create({ data: { unitId, personId: manager.personId, isCurrent: true } });
+      await prisma.ownership.create({
+        data: { unitId, personId: manager.personId, isCurrent: true },
+      });
 
       const pureTenant = await registerPerson(app);
       createdPhones.push(pureTenant.phone);
@@ -2147,7 +2173,9 @@ describe('Building (e2e) — Owner/Tenant/Self-Claim/Read-Only Ownership Flow (B
         .set('Authorization', `Bearer ${manager.accessToken}`)
         .expect(200);
       const unitId = unitsRes.body.data[0].id;
-      await prisma.ownership.create({ data: { unitId, personId: manager.personId, isCurrent: true } });
+      await prisma.ownership.create({
+        data: { unitId, personId: manager.personId, isCurrent: true },
+      });
 
       const dualRole = await registerPerson(app);
       createdPhones.push(dualRole.phone);
@@ -2484,8 +2512,16 @@ describe('Building (e2e) — Phase 4 Privacy: Unit List & Detail Visibility', ()
 
     ownerA = await registerPerson(app);
     createdPhones.push(ownerA.phone);
-    await joinBuildingAsApprovedMember(app, buildingId, ownerA.accessToken, manager.accessToken, 'OWNER');
-    await prisma.ownership.create({ data: { unitId: unit1Id, personId: ownerA.personId, isCurrent: true } });
+    await joinBuildingAsApprovedMember(
+      app,
+      buildingId,
+      ownerA.accessToken,
+      manager.accessToken,
+      'OWNER',
+    );
+    await prisma.ownership.create({
+      data: { unitId: unit1Id, personId: ownerA.personId, isCurrent: true },
+    });
     await prisma.person.update({
       where: { id: ownerA.personId },
       data: { firstName: 'Ada', lastName: 'OwnerA', fullName: 'Ada OwnerA' },
@@ -2493,8 +2529,16 @@ describe('Building (e2e) — Phase 4 Privacy: Unit List & Detail Visibility', ()
 
     ownerB = await registerPerson(app);
     createdPhones.push(ownerB.phone);
-    await joinBuildingAsApprovedMember(app, buildingId, ownerB.accessToken, manager.accessToken, 'OWNER');
-    await prisma.ownership.create({ data: { unitId: unit2Id, personId: ownerB.personId, isCurrent: true } });
+    await joinBuildingAsApprovedMember(
+      app,
+      buildingId,
+      ownerB.accessToken,
+      manager.accessToken,
+      'OWNER',
+    );
+    await prisma.ownership.create({
+      data: { unitId: unit2Id, personId: ownerB.personId, isCurrent: true },
+    });
     await prisma.person.update({
       where: { id: ownerB.personId },
       data: { firstName: 'Bob', lastName: 'OwnerB', fullName: 'Bob OwnerB' },
@@ -2617,7 +2661,12 @@ describe('Building (e2e) — Phase 4 Privacy: Unit List & Detail Visibility', ()
 
     // Decision item 2: TENANT sees the CURRENT OWNER of their own occupied
     // unit's firstName/lastName/phone.
-    const unit1Owner = unit1.currentOwner as { personId: string; firstName: string; lastName: string; phone: string };
+    const unit1Owner = unit1.currentOwner as {
+      personId: string;
+      firstName: string;
+      lastName: string;
+      phone: string;
+    };
     expect(unit1Owner.personId).toBe(ownerA.personId);
     expect(unit1Owner.firstName).toBe('Ada');
     expect(unit1Owner.lastName).toBe('OwnerA');
@@ -2732,7 +2781,10 @@ describe('Building (e2e) — Phase 4 Privacy: Ownership/Tenancy History Redactio
 
     manager2 = await registerPerson(app);
     createdPhones.push(manager2.phone);
-    buildingId = await createBuilding(app, manager2.accessToken, { role: 'MANAGER', totalUnits: 1 });
+    buildingId = await createBuilding(app, manager2.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 1,
+    });
     createdBuildingIds.push(buildingId);
 
     const unitsRes = await request(app.getHttpServer())
@@ -2817,7 +2869,13 @@ describe('Building (e2e) — Phase 4 Privacy: Ownership/Tenancy History Redactio
       },
     });
     await prisma.membership.create({
-      data: { personId: ownerA2.personId, buildingId, unitId: unitXId, role: 'OWNER', isCurrent: true },
+      data: {
+        personId: ownerA2.personId,
+        buildingId,
+        unitId: unitXId,
+        role: 'OWNER',
+        isCurrent: true,
+      },
     });
     await prisma.membership.create({
       data: {
@@ -2830,7 +2888,13 @@ describe('Building (e2e) — Phase 4 Privacy: Ownership/Tenancy History Redactio
       },
     });
     await prisma.membership.create({
-      data: { personId: tenantNew.personId, buildingId, unitId: unitXId, role: 'TENANT', isCurrent: true },
+      data: {
+        personId: tenantNew.personId,
+        buildingId,
+        unitId: unitXId,
+        role: 'TENANT',
+        isCurrent: true,
+      },
     });
   });
 
@@ -2846,7 +2910,10 @@ describe('Building (e2e) — Phase 4 Privacy: Ownership/Tenancy History Redactio
       .set('Authorization', `Bearer ${manager2.accessToken}`)
       .expect(200);
 
-    const rows = res.body.data as Array<{ personId: string | null; person: { fullName: string } | null }>;
+    const rows = res.body.data as Array<{
+      personId: string | null;
+      person: { fullName: string } | null;
+    }>;
     expect(rows).toHaveLength(2);
     const prevRow = rows.find((r) => r.personId === ownerA1.personId);
     const currRow = rows.find((r) => r.personId === ownerA2.personId);
@@ -2992,7 +3059,10 @@ describe('Building (e2e) — Phase 4 Privacy: ACCOUNTANT Least Privilege & Invit
 
     manager3 = await registerPerson(app);
     createdPhones.push(manager3.phone);
-    buildingId = await createBuilding(app, manager3.accessToken, { role: 'MANAGER', totalUnits: 2 });
+    buildingId = await createBuilding(app, manager3.accessToken, {
+      role: 'MANAGER',
+      totalUnits: 2,
+    });
     createdBuildingIds.push(buildingId);
 
     const unitsRes = await request(app.getHttpServer())
@@ -3005,7 +3075,9 @@ describe('Building (e2e) — Phase 4 Privacy: ACCOUNTANT Least Privilege & Invit
     // Reuses manager3's own personId as unitY's owner — this describe
     // doesn't test WHO the owner is, only that ACCOUNTANT can't see it
     // (same precedent the Tenancy describe above established).
-    await prisma.ownership.create({ data: { unitId: unitYId, personId: manager3.personId, isCurrent: true } });
+    await prisma.ownership.create({
+      data: { unitId: unitYId, personId: manager3.personId, isCurrent: true },
+    });
 
     // Register the future owner FIRST, invite their exact phone
     // afterward, never verify OTP again — the identical ordering the
