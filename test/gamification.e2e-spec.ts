@@ -25,14 +25,13 @@ import { DEFAULT_PAGE_LIMIT } from '../src/common/pagination/pagination.util';
 // named Gamification "the strongest, cheapest next candidate — its three
 // member-facing read routes (`me`, `me/xp-history`, `leaderboard`) need no
 // new fixture work at all, and its `analytics` route is now known-reachable
-// via the same seeded-PLATFORM_ADMIN pattern ADR-078 established." Both
-// claims are re-verified directly here, not assumed: `GamificationController`
-// (`me`/`me/xp-history`/`leaderboard`/`analytics`) and
-// `BuildingGamificationController` (`:id/gamification/score`) both confirmed
-// by direct read to need zero new fixture machinery — `analytics` is gated
-// `@PlatformRoles('SENIOR_REVIEWER')`, identically to
-// `NotificationTemplateController`'s create/update routes (ADR-078), so the
-// seeded PLATFORM_ADMIN phone (`+989120000000`, rank 3) already satisfies it.
+// via the same PLATFORM_ADMIN authorization pattern ADR-078 established."
+// Both claims are re-verified directly here, not assumed:
+// `GamificationController` (`me`/`me/xp-history`/`leaderboard`/`analytics`)
+// and `BuildingGamificationController` (`:id/gamification/score`) both
+// confirmed by direct read to need zero new domain fixture machinery.
+// Staff actors are suite-local PlatformStaff fixtures so parallel suites do
+// not share authentication state.
 //
 // What this file adds that `cases.e2e-spec.ts`/`finance.e2e-spec.ts` don't:
 // both of those files already assert on real `XpTransaction`/`BuildingScore`/
@@ -66,16 +65,11 @@ import { DEFAULT_PAGE_LIMIT } from '../src/common/pagination/pagination.util';
 // `PlatformRolesGuard` hierarchy (confirmed by `ADR-078`'s own direct read
 // of `src/common/guards/platform-roles.guard.ts`, re-applied here rather
 // than re-derived): `REVIEWER:1 < SENIOR_REVIEWER:2 < PLATFORM_ADMIN:3`,
-// hierarchical, not a flat OR — the seeded PLATFORM_ADMIN account
-// (`+989120000000`) satisfies `@PlatformRoles('SENIOR_REVIEWER')` with zero
-// new fixture work; REVIEWER (`+989120000001`, rank 1) is correctly refused.
-// `loginAsSeededStaff`/`cleanupStaffLoginArtifacts` below are copied
-// verbatim from `ADR-078`'s own pattern — authenticate an EXISTING seeded
-// phone via the real OTP flow, clean up only that run's own login artifacts
-// (`RefreshToken`/`Device`/`OtpRequest`), never the seeded `Person`/
-// `PlatformStaff` rows themselves (persistent shared dev fixtures per
-// `prisma/seed.ts`'s own doc comment — no self-service admin UI exists, no
-// other way to bootstrap the first admin).
+// hierarchical, not a flat OR — a suite-local PLATFORM_ADMIN (rank 3)
+// satisfies `@PlatformRoles('SENIOR_REVIEWER')`, while a suite-local REVIEWER
+// (rank 1) is correctly refused. Local staff fixtures are created and removed
+// inside each describe so no fixed phone, Person, PlatformStaff, Device, or
+// OTP state is shared with another e2e worker.
 //
 // Role strategy: no API path anywhere in this codebase grants a Membership
 // row `BOARD_MEMBER`/`ACCOUNTANT` (`CreateMembershipRequestDto.role` only
@@ -304,112 +298,6 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
 }
 
-const PLATFORM_ADMIN_PHONE = '+989120000000';
-const PLATFORM_REVIEWER_PHONE = '+989120000001';
-
-/**
- * Authenticates as an EXISTING seeded `PlatformStaff` phone via the real
- * OTP request/verify flow — deliberately distinct from `registerPerson`
- * (which always mints a brand-new phone via `nextPhone()` and would
- * register a new Person with no staff row instead). Copied verbatim from
- * `ADR-078`'s own pattern — see this file's top-of-document comment.
- */
-/**
- * Round-1 finding (surfaced first by `ADR-083`'s own real toolchain run,
- * once this became the 5th e2e file sharing these same two FIXED seeded
- * phone numbers): under Jest's default parallel-worker execution, two
- * DIFFERENT e2e files running concurrently in separate worker processes
- * can both call `POST /auth/otp/request` for the SAME seeded phone close
- * together — whichever request's `OtpRequest` row lands last in the real,
- * shared Postgres database is the only one whose code still verifies,
- * so the other file's captured code 422s as stale/invalid. This is a
- * real, disclosed test-infrastructure race (never a production concern —
- * real users don't share a phone number), the exact same category this
- * whole Testing-phase series has repeatedly named ("growing the e2e suite
- * count is itself a category of risk"), now concretely hitting the
- * seeded-staff-login pattern for the first time. Fixed with the same
- * disclosed retry-on-transient-failure spirit as every prior `waitFor`
- * fix in this series — restarts the WHOLE request+verify sequence (a
- * fresh code request naturally wins whatever race just invalidated the
- * previous one) rather than retrying `verify` alone with a stale code.
- */
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCode(app, phone);
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return {
-        phone,
-        personId: res.body.data.personId,
-        accessToken: res.body.data.accessToken,
-        deviceToken: `e2e-${phone}-${code}`,
-      };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
-/**
- * Cleanup for the seeded-staff describe is deliberately narrower than
- * `cleanupPhones` — deletes only this run's own `RefreshToken`/`Device`/
- * `OtpRequest` rows for the two seeded phones, never the `Person`/
- * `PlatformStaff` rows themselves (persistent shared dev fixtures).
- * Originally copied verbatim from `ADR-078`; as of `ADR-085` round 1, wrapped
- * in the same retry-on-P2003 pattern every sibling cleanup helper below
- * already uses. At 15 concurrent e2e suites sharing these two fixed seeded
- * phones, this file's own `RefreshToken`/`Device` deletes can lose a race
- * against another suite's concurrent `loginAsSeededStaff` call inserting a
- * fresh `RefreshToken` (referencing a `Device`) for the same phone in the gap
- * between the two deletes, causing a `refresh_tokens_deviceId_fkey`
- * violation on the `Device` deleteMany. Same risk category as the
- * `loginAsSeededStaff` OTP-race `ADR-083` round 1 already fixed — a
- * different mechanism (cleanup-time, not login-time), first exposed once
- * suite count grew to 15.
- */
-async function deleteStaffLoginArtifactsOnceBatch(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
-  });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
-}
-
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
-      return;
-    } catch (error) {
-      const isForeignKeyError =
-        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
-      if (!isForeignKeyError || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-    }
-  }
-}
-
 function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     role: 'OWNER',
@@ -592,6 +480,62 @@ async function leaderboardRank(
       OR: [{ score: { gt: target.score } }, { score: target.score, id: { lt: target.id } }],
     },
   });
+}
+
+/**
+ * Request a fixture at its current limit=1 leaderboard page.
+ *
+ * A parallel e2e worker may mutate a DIFFERENT BuildingScore after our DB
+ * rank count but before the HTTP GET. A retry is allowed only when a second
+ * rank calculation proves that the target's rank actually changed during
+ * that interval. If the rank is unchanged but the API returns the wrong row
+ * (or no row), fail immediately: that would be a real pagination/ordering
+ * defect rather than ordinary concurrent offset drift.
+ */
+async function getLeaderboardFixtureAtLiveRank(params: {
+  app: INestApplication;
+  prisma: PrismaService;
+  accessToken: string;
+  buildingId: string;
+  tier: 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM' | 'DIAMOND';
+  attempts?: number;
+}): Promise<{ rank: number; response: request.Response }> {
+  const attempts = params.attempts ?? 8;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const rankBefore = await leaderboardRank(params.prisma, params.buildingId, params.tier);
+
+    const response = await request(params.app.getHttpServer())
+      .get('/api/v1/gamification/leaderboard')
+      .query({ tier: params.tier, page: rankBefore + 1, limit: 1 })
+      .set('Authorization', `Bearer ${params.accessToken}`)
+      .expect(200);
+
+    const returnedBuildingId = response.body.data?.[0]?.buildingId;
+
+    if (response.body.data?.length === 1 && returnedBuildingId === params.buildingId) {
+      return { rank: rankBefore, response };
+    }
+
+    const rankAfter = await leaderboardRank(params.prisma, params.buildingId, params.tier);
+
+    if (rankAfter === rankBefore) {
+      throw new Error(
+        `Leaderboard mismatch without rank drift for ${params.buildingId}: ` +
+          `rank=${rankBefore}, returned=${returnedBuildingId ?? '<empty>'}`,
+      );
+    }
+
+    if (attempt === attempts) {
+      throw new Error(
+        `Leaderboard rank for ${params.buildingId} kept drifting after ${attempts} attempts`,
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  throw new Error('Unreachable leaderboard live-rank retry state');
 }
 
 describe('Gamification (e2e) — My Progress & XP History (own-scoped, ADR-028)', () => {
@@ -791,33 +735,48 @@ describe('Gamification (e2e) — Building Score & Cross-Building Leaderboard (AD
    * this proves BOTH real pagination math (skip/take) AND the deterministic
    * tie-breaker at once, regardless of how many stale BRONZE rows this
    * shared dev database already has. */
-  it('paginates the leaderboard: limit=1 places each same-score fixture on its own exact deterministic rank/page', async () => {
-    const rank1 = await leaderboardRank(prisma, buildingId, 'BRONZE');
-    const rank2 = await leaderboardRank(prisma, buildingId2, 'BRONZE');
-    // A real, distinct rank for each — the concrete proof the `id asc`
-    // tie-breaker is actually being applied to these two equal-score rows
-    // (if it weren't, Postgres would give no deterministic order between
-    // them and this count-based rank could tie or flap between runs).
-    expect(rank1).not.toBe(rank2);
+  it('paginates the leaderboard: limit=1 places each same-score fixture on its own exact deterministic live rank/page', async () => {
+    // Both fixture rows have the same score/tier, so production's `id asc`
+    // tie-breaker must give them distinct deterministic ranks.
+    const initialRank1 = await leaderboardRank(prisma, buildingId, 'BRONZE');
+    const initialRank2 = await leaderboardRank(prisma, buildingId2, 'BRONZE');
+    expect(initialRank1).not.toBe(initialRank2);
 
-    const res1 = await request(app.getHttpServer())
-      .get('/api/v1/gamification/leaderboard')
-      .query({ tier: 'BRONZE', page: rank1 + 1, limit: 1 })
-      .set('Authorization', `Bearer ${outsider.accessToken}`)
-      .expect(200);
-    expect(res1.body.data).toHaveLength(1);
-    expect(res1.body.data[0].buildingId).toBe(buildingId);
-    expect(res1.body.metadata.pagination).toEqual(
-      expect.objectContaining({ page: rank1 + 1, limit: 1, total: expect.any(Number) }),
+    const first = await getLeaderboardFixtureAtLiveRank({
+      app,
+      prisma,
+      accessToken: outsider.accessToken,
+      buildingId,
+      tier: 'BRONZE',
+    });
+
+    expect(first.response.body.data).toHaveLength(1);
+    expect(first.response.body.data[0].buildingId).toBe(buildingId);
+    expect(first.response.body.metadata.pagination).toEqual(
+      expect.objectContaining({
+        page: first.rank + 1,
+        limit: 1,
+        total: expect.any(Number),
+      }),
     );
 
-    const res2 = await request(app.getHttpServer())
-      .get('/api/v1/gamification/leaderboard')
-      .query({ tier: 'BRONZE', page: rank2 + 1, limit: 1 })
-      .set('Authorization', `Bearer ${outsider.accessToken}`)
-      .expect(200);
-    expect(res2.body.data).toHaveLength(1);
-    expect(res2.body.data[0].buildingId).toBe(buildingId2);
+    const second = await getLeaderboardFixtureAtLiveRank({
+      app,
+      prisma,
+      accessToken: outsider.accessToken,
+      buildingId: buildingId2,
+      tier: 'BRONZE',
+    });
+
+    expect(second.response.body.data).toHaveLength(1);
+    expect(second.response.body.data[0].buildingId).toBe(buildingId2);
+    expect(second.response.body.metadata.pagination).toEqual(
+      expect.objectContaining({
+        page: second.rank + 1,
+        limit: 1,
+        total: expect.any(Number),
+      }),
+    );
   });
 
   /** 21_ADRs > ADR-124 — the `id asc` tie-breaker makes repeated identical
@@ -836,9 +795,20 @@ describe('Gamification (e2e) — Building Score & Cross-Building Leaderboard (AD
       .set('Authorization', `Bearer ${outsider.accessToken}`)
       .expect(200);
 
-    expect(first.body.data.map((row: { buildingId: string }) => row.buildingId)).toEqual(
-      second.body.data.map((row: { buildingId: string }) => row.buildingId),
-    );
+    const firstIds = first.body.data.map((row: { buildingId: string }) => row.buildingId);
+    const secondIds = second.body.data.map((row: { buildingId: string }) => row.buildingId);
+
+    // The leaderboard is global and live. Other E2E workers may legitimately
+    // create/remove BuildingScore rows between these two requests. What must
+    // remain deterministic is the relative ordering of rows present in both
+    // snapshots, not equality of the entire global snapshot.
+    const firstSet = new Set<string>(firstIds);
+    const secondSet = new Set<string>(secondIds);
+
+    const firstCommonIds = firstIds.filter((id: string) => secondSet.has(id));
+    const secondCommonIds = secondIds.filter((id: string) => firstSet.has(id));
+
+    expect(firstCommonIds).toEqual(secondCommonIds);
   });
 });
 
@@ -1158,12 +1128,10 @@ async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string):
 }
 
 describe('Gamification (e2e) — Analytics Staff Access (ADR-047, PlatformRolesGuard)', () => {
-  // Budget: 3 calls to POST /auth/otp/request (PLATFORM_ADMIN login,
-  // REVIEWER login, regularMember registration).
+  // Budget: 3 calls to POST /auth/otp/request (suite-local PLATFORM_ADMIN,
+  // suite-local REVIEWER, regularMember registration).
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
 
   let admin: RegisteredPerson;
@@ -1173,13 +1141,27 @@ describe('Gamification (e2e) — Analytics Staff Access (ADR-047, PlatformRolesG
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    admin = await registerPerson(app);
+    createdPhones.push(admin.phone);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
+
+    await prisma.platformStaff.create({
+      data: {
+        personId: admin.personId,
+        role: 'PLATFORM_ADMIN',
+      },
+    });
+
+    await prisma.platformStaff.create({
+      data: {
+        personId: reviewer.personId,
+        role: 'REVIEWER',
+      },
+    });
+
     adminGrantId = await grantGamificationAnalyticsAdminToStaff(prisma, admin.personId);
+
     regularMember = await registerPerson(app);
     createdPhones.push(regularMember.phone);
     await waitForRegistrationXp(prisma, regularMember.personId);
@@ -1187,7 +1169,21 @@ describe('Gamification (e2e) — Analytics Staff Access (ADR-047, PlatformRolesG
 
   afterAll(async () => {
     await revokeStaffRoleGrant(prisma, adminGrantId);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+
+    // The grant belongs exclusively to this describe. Hard-delete it after
+    // exercising the revoke path so it cannot retain an FK to local staff.
+    await prisma.staffRole.deleteMany({
+      where: { id: adminGrantId },
+    });
+
+    await prisma.platformStaff.deleteMany({
+      where: {
+        personId: {
+          in: [admin.personId, reviewer.personId],
+        },
+      },
+    });
+
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -1270,13 +1266,10 @@ describe('Gamification (e2e) — Analytics Staff Access (ADR-047, PlatformRolesG
 });
 
 describe('ADR-102 — Gamification Analytics Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
-  // Budget: 1 call to POST /auth/otp/request (regularMember registration)
-  // — admin login uses requestOtpAndCaptureCodeDirect via
-  // loginAsSeededStaff, which never touches this budget.
+  // Budget: 2 calls to POST /auth/otp/request (suite-local PLATFORM_ADMIN
+  // and regularMember registration).
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
 
   let admin: RegisteredPerson;
@@ -1288,9 +1281,16 @@ describe('ADR-102 — Gamification Analytics Permission Migration (PermissionsGu
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
+    admin = await registerPerson(app);
+    createdPhones.push(admin.phone);
+
+    await prisma.platformStaff.create({
+      data: {
+        personId: admin.personId,
+        role: 'PLATFORM_ADMIN',
+      },
+    });
+
     regularMember = await registerPerson(app);
     createdPhones.push(regularMember.phone);
 
@@ -1326,7 +1326,11 @@ describe('ADR-102 — Gamification Analytics Permission Migration (PermissionsGu
     await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
     await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
     await prisma.role.delete({ where: { id: testRoleId } });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+
+    await prisma.platformStaff.deleteMany({
+      where: { personId: admin.personId },
+    });
+
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
