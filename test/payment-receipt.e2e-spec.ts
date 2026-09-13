@@ -739,7 +739,7 @@ describe('Payment Receipt Upload/Finalize/Download (e2e, FIN-REC-01B)', () => {
 
         const listRes = await request(app.getHttpServer())
           .get(`/api/v1/buildings/${buildingId}/payments`)
-          .set('Authorization', `Bearer ${payer.accessToken}`)
+          .set('Authorization', `Bearer ${manager.accessToken}`)
           .expect(200);
         const listed = listRes.body.data.find((p: { id: string }) => p.id === paymentId);
         expect(listed.hasReceipt).toBe(false);
