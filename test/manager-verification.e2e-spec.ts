@@ -43,7 +43,7 @@ import { createIsolatedTestingModule } from './helpers/create-isolated-testing-m
 // building whose founder registers with `role: 'MANAGER'` — the exact
 // fixture shape `cases.e2e-spec.ts`/`finance.e2e-spec.ts`/
 // `gamification.e2e-spec.ts` already use throughout. Admin Review reuses
-// the same seeded-`PLATFORM_ADMIN`/`REVIEWER` `loginAsSeededStaff` pattern
+// the same PLATFORM_ADMIN/REVIEWER authentication pattern
 // `ADR-078`/`ADR-079` both already established.
 //
 // Neither `ManagerVerificationOwnerController` nor
@@ -329,9 +329,6 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
 }
 
-const PLATFORM_ADMIN_PHONE = '+989120000000';
-const PLATFORM_REVIEWER_PHONE = '+989120000001';
-
 /**
  * Authenticates as an EXISTING seeded `PlatformStaff` phone via the real
  * OTP request/verify flow — deliberately distinct from `registerPerson`
@@ -359,31 +356,6 @@ const PLATFORM_REVIEWER_PHONE = '+989120000001';
  * fresh code request naturally wins whatever race just invalidated the
  * previous one) rather than retrying `verify` alone with a stale code.
  */
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCodeDirect(app, phone);
-    const deviceToken = `e2e-${phone}-${code}`;
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return {
-        phone,
-        personId: res.body.data.personId,
-        accessToken: res.body.data.accessToken,
-        deviceToken,
-      };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
 /**
  * Cleanup for the seeded-staff describe is deliberately narrower than
  * `cleanupPhones` — deletes only this run's own `RefreshToken`/`Device`/
@@ -393,50 +365,14 @@ async function loginAsSeededStaff(app: INestApplication, phone: string): Promise
  * in the same retry-on-P2003 pattern every sibling cleanup helper below
  * already uses. At 15 concurrent e2e suites sharing these two fixed seeded
  * phones, this file's own `RefreshToken`/`Device` deletes can lose a race
- * against another suite's concurrent `loginAsSeededStaff` call inserting a
+ * against another suite's concurrent `registerLocalStaff` call inserting a
  * fresh `RefreshToken` (referencing a `Device`) for the same phone in the gap
  * between the two deletes, causing a `refresh_tokens_deviceId_fkey`
  * violation on the `Device` deleteMany. Same risk category as the
- * `loginAsSeededStaff` OTP-race `ADR-083` round 1 already fixed — a
+ * `registerLocalStaff` OTP-race `ADR-083` round 1 already fixed — a
  * different mechanism (cleanup-time, not login-time), first exposed once
  * suite count grew to 15.
  */
-async function deleteStaffLoginArtifactsOnceBatch(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
-  });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
-}
-
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
-      return;
-    } catch (error) {
-      const isForeignKeyError =
-        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
-      if (!isForeignKeyError || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-    }
-  }
-}
-
 function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     role: 'OWNER',
@@ -538,12 +474,40 @@ function waitForInitialCase(prisma: PrismaService, buildingId: string, candidate
  * the pre-existing `PlatformRolesGuard` floor. TEST-FIXTURE-ONLY, mirrors
  * `marketplace.e2e-spec.ts`'s own `grantMarketplaceAdminToReviewer` helper.
  */
+async function registerLocalStaff(
+  app: INestApplication,
+  prisma: PrismaService,
+  role: 'PLATFORM_ADMIN' | 'REVIEWER',
+): Promise<RegisteredPerson> {
+  const phone = nextPhone();
+  const code = await requestOtpAndCaptureCodeDirect(app, phone);
+  const deviceToken = `e2e-local-${role.toLowerCase()}-${phone}-${code}`;
+
+  const res = await verifyOtp(app, { phone, code }).expect(200);
+
+  const person: RegisteredPerson = {
+    phone,
+    personId: res.body.data.personId,
+    accessToken: res.body.data.accessToken,
+    deviceToken,
+  };
+
+  await prisma.platformStaff.create({
+    data: {
+      personId: person.personId,
+      role,
+    },
+  });
+
+  return person;
+}
+
 async function grantManagerVerificationAdminToReviewer(
   prisma: PrismaService,
   reviewerPersonId: string,
 ): Promise<string> {
   const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewerPersonId } });
-  if (!staff) throw new Error('Seeded staff has no PlatformStaff row.');
+  if (!staff) throw new Error('Local staff has no PlatformStaff row.');
 
   const role =
     (await prisma.role.findUnique({ where: { name: 'Manager Verification Admin (e2e)' } })) ??
@@ -572,10 +536,6 @@ async function grantManagerVerificationAdminToReviewer(
 
   const created = await prisma.staffRole.create({ data: { staffId: staff.id, roleId: role.id } });
   return created.id;
-}
-
-async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
-  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
 }
 
 describe('Manager Verification (e2e) — Owner Approval: blocks & threshold (06.03)', () => {
@@ -725,8 +685,8 @@ describe('Manager Verification (e2e) — Owner Approval: blocks & threshold (06.
 
 describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, ADR-040)', () => {
   // Budget: 3 calls to POST /auth/otp/request on `app` (founder1 + founder2
-  // + founder3 registration) — PLATFORM_ADMIN/REVIEWER login no longer
-  // count against this budget at all (ADR-085 round 7): `loginAsSeededStaff`
+  // + founder3 registration) — local PLATFORM_ADMIN/REVIEWER authentication does not
+  // count against this budget at all (ADR-085 round 7): `registerLocalStaff`
   // now requests its OTP codes via a direct `AuthService.requestOtp` DI
   // call (`requestOtpAndCaptureCodeDirect`), bypassing `ThrottlerGuard`
   // entirely rather than competing with founder registration for the same
@@ -736,8 +696,6 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
   // of when it's closed.
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
   const createdBuildingIds: string[] = [];
 
@@ -758,12 +716,11 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    admin = await registerLocalStaff(app, prisma, 'PLATFORM_ADMIN');
+    createdPhones.push(admin.phone);
+
+    reviewer = await registerLocalStaff(app, prisma, 'REVIEWER');
+    createdPhones.push(reviewer.phone);
     reviewerGrantId = await grantManagerVerificationAdminToReviewer(prisma, reviewer.personId);
     adminGrantId = await grantManagerVerificationAdminToReviewer(prisma, admin.personId);
 
@@ -797,7 +754,7 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
     // afterward, proving a second app is unsafe regardless of when it
     // closes). Round 7's real fix needs no second app at all: see
     // `requestOtpAndCaptureCodeDirect`'s own comment above —
-    // `loginAsSeededStaff` now requests OTP codes via a direct
+    // `registerLocalStaff` now requests OTP codes via a direct
     // `AuthService.requestOtp` DI call, which never passes through
     // `ThrottlerGuard`, so it can't compete with founder registration's
     // budget on the one single `app` this describe now uses throughout.
@@ -810,11 +767,25 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
   }, 20000);
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, reviewerGrantId);
-    await revokeStaffRoleGrant(prisma, adminGrantId);
+    await prisma.staffRole.deleteMany({
+      where: {
+        id: {
+          in: [reviewerGrantId, adminGrantId],
+        },
+      },
+    });
+
     await cleanupBuildings(prisma, createdBuildingIds);
+
+    await prisma.platformStaff.deleteMany({
+      where: {
+        personId: {
+          in: [reviewer.personId, admin.personId],
+        },
+      },
+    });
+
     await cleanupPhones(prisma, createdPhones);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await app.close();
   });
 
@@ -1071,7 +1042,7 @@ describe('Manager Verification (e2e) — Admin Review, Appeal, Restore (07.02, A
 describe('ADR-102 — Manager Verification Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
   // Budget: 2 calls to POST /auth/otp/request (founder, plainPerson) —
   // admin login uses requestOtpAndCaptureCodeDirect via
-  // loginAsSeededStaff, which never touches this budget.
+  // registerLocalStaff, which never touches this budget.
   //
   // Uses PLATFORM_ADMIN (rank 3) throughout, not REVIEWER (rank 1) —
   // `decide`/`restore` both require `@PlatformRoles('SENIOR_REVIEWER')`
@@ -1083,8 +1054,6 @@ describe('ADR-102 — Manager Verification Permission Migration (PermissionsGuar
   // every 403 below is unambiguously `PermissionsGuard`'s own doing.
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
   const createdBuildingIds: string[] = [];
 
@@ -1106,9 +1075,8 @@ describe('ADR-102 — Manager Verification Permission Migration (PermissionsGuar
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
+    admin = await registerLocalStaff(app, prisma, 'PLATFORM_ADMIN');
+    createdPhones.push(admin.phone);
 
     buildingId = await createBuilding(app, founder.accessToken, { role: 'MANAGER' });
     createdBuildingIds.push(buildingId);
@@ -1148,8 +1116,13 @@ describe('ADR-102 — Manager Verification Permission Migration (PermissionsGuar
     await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
     await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
     await prisma.role.delete({ where: { id: testRoleId } });
+
     await cleanupBuildings(prisma, createdBuildingIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+
+    await prisma.platformStaff.deleteMany({
+      where: { personId: admin.personId },
+    });
+
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });

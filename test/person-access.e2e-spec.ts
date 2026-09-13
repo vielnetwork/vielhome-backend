@@ -23,11 +23,10 @@ import { createIsolatedTestingModule } from './helpers/create-isolated-testing-m
 //
 // Requires DATABASE_URL / REDIS_HOST to point at a running dev stack
 // (docker-compose up -d) — see README for local setup. Follows the same
-// conventions `fraud-case.e2e-spec.ts` established: seeded REVIEWER/
-// PLATFORM_ADMIN login via `requestOtpAndCaptureCodeDirect` (never
-// competes with the shared `POST /auth/otp/request` throttle budget), a
-// disclosed test-only `prisma.platformStaff.create(...)` elevation for
-// SENIOR_REVIEWER (no seeded rank-2 account exists).
+// Uses suite-local PlatformStaff fixtures for REVIEWER, SENIOR_REVIEWER,
+// and PLATFORM_ADMIN so this suite never authenticates or mutates shared
+// seeded staff accounts. PlatformRolesGuard resolves PlatformStaff fresh
+// per request, so the local elevation applies to each registered token.
 const RUN_ID = createE2eRunId(E2E_SUITE_ID.PERSON_ACCESS);
 let phoneCounter = 0;
 let postalCodeCounter = 0;
@@ -273,70 +272,6 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
 }
 
-const PLATFORM_ADMIN_PHONE = '+989120000000';
-const PLATFORM_REVIEWER_PHONE = '+989120000001';
-
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCodeDirect(app, phone);
-    const deviceToken = `e2e-${phone}-${code}`;
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return {
-        phone,
-        personId: res.body.data.personId,
-        accessToken: res.body.data.accessToken,
-        deviceToken,
-      };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
-async function deleteStaffLoginArtifactsOnceBatch(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
-  });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
-}
-
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
-      return;
-    } catch (error) {
-      const isForeignKeyError =
-        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
-      if (!isForeignKeyError || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-    }
-  }
-}
-
 function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     role: 'OWNER',
@@ -352,9 +287,6 @@ function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, 
   };
 }
 
-/** Shortest path from a fresh access token to a real, persisted building
- * with the caller as MANAGER — same helper shape as `manager-verification.
- * e2e-spec.ts`'s own `createBuilding`. */
 async function createBuildingAsManager(
   app: INestApplication,
   accessToken: string,
@@ -417,8 +349,6 @@ describe('Person Backoffice-Approval Grant/Revoke (e2e) — Marketplace Access-G
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   let buildingId: string | undefined;
 
   let target: RegisteredPerson;
@@ -436,25 +366,28 @@ describe('Person Backoffice-Approval Grant/Revoke (e2e) — Marketplace Access-G
     target = await registerPerson(app);
     createdPhones.push(target.phone);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER', isActive: true },
+    });
     reviewerGrantId = await grantPersonAccessAdminToStaff(prisma, reviewer.personId);
 
     seniorReviewer = await registerPerson(app);
     createdPhones.push(seniorReviewer.phone);
-    // Disclosed test-only elevation — no seeded SENIOR_REVIEWER fixture
-    // exists (same precedent `fraud-case.e2e-spec.ts` established).
-    // `PlatformRolesGuard` resolves `PlatformStaff` fresh per request, so
-    // this takes effect on `seniorReviewer`'s existing token immediately.
+    // Suite-local SENIOR_REVIEWER elevation. PlatformRolesGuard resolves
+    // PlatformStaff fresh per request, so this takes effect on the existing
+    // token immediately.
     await prisma.platformStaff.create({
       data: { personId: seniorReviewer.personId, role: 'SENIOR_REVIEWER', isActive: true },
     });
     seniorReviewerGrantId = await grantPersonAccessAdminToStaff(prisma, seniorReviewer.personId);
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
+    admin = await registerPerson(app);
+    createdPhones.push(admin.phone);
+    await prisma.platformStaff.create({
+      data: { personId: admin.personId, role: 'PLATFORM_ADMIN', isActive: true },
+    });
     adminGrantId = await grantPersonAccessAdminToStaff(prisma, admin.personId);
 
     manager = await registerPerson(app);
@@ -463,18 +396,19 @@ describe('Person Backoffice-Approval Grant/Revoke (e2e) — Marketplace Access-G
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, reviewerGrantId);
-    await revokeStaffRoleGrant(prisma, adminGrantId);
-    // seniorReviewer's own PlatformStaff row is deleted below (it's an
-    // ad-hoc test-only elevation, not a seeded fixture) — its StaffRole
-    // grant must be HARD-deleted first, not just revoked, or the
-    // still-live FK to that PlatformStaff row (via Staff.id) blocks the
-    // delete below with `staff_roles_staffId_fkey`. Same ADR-100 teardown
-    // fix this file's own ADR-102 block already uses, applied here too.
-    await prisma.staffRole.delete({ where: { id: seniorReviewerGrantId } });
+    // All three staff identities are suite-local. Hard-delete their grants
+    // before deleting PlatformStaff rows so no StaffRole FK survives.
+    await prisma.staffRole.deleteMany({
+      where: { id: { in: [reviewerGrantId, seniorReviewerGrantId, adminGrantId] } },
+    });
     await cleanupBuilding(prisma, buildingId);
-    await prisma.platformStaff.deleteMany({ where: { personId: seniorReviewer.personId } });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await prisma.platformStaff.deleteMany({
+      where: {
+        personId: {
+          in: [reviewer.personId, seniorReviewer.personId, admin.personId],
+        },
+      },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -619,10 +553,8 @@ describe('Person Backoffice-Approval Grant/Revoke (e2e) — Marketplace Access-G
 });
 
 describe('ADR-102 — Person Access Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
-  // Budget: 2 calls to POST /auth/otp/request (target, plainPerson) — the
-  // elevated staff member below is a third `registerPerson` call on the
-  // same shared throttle budget as this file's own main describe block
-  // above; `loginAsSeededStaff` is not used in this block at all.
+  // Budget: 3 calls to POST /auth/otp/request
+  // (target, plainPerson, seniorStaff).
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];

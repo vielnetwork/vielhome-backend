@@ -74,10 +74,9 @@ import { createIsolatedTestingModule } from './helpers/create-isolated-testing-m
 // Role strategy: `assign`/`escalate`/`merge`/`getMetrics` are
 // `SENIOR_REVIEWER`-gated in `SupportCaseController` — unlike ADR-083's
 // `enforce` route, nothing here needs a rank-2-specifically caller (no
-// route distinguishes SENIOR_REVIEWER from PLATFORM_ADMIN), so the seeded
-// PLATFORM_ADMIN account (rank 3, hierarchically satisfies any
-// SENIOR_REVIEWER+ gate) is used directly — no ad-hoc `platformStaff.create`
-// elevation is needed anywhere in this file, unlike ADR-083.
+// route distinguishes SENIOR_REVIEWER from PLATFORM_ADMIN), so a local
+// PLATFORM_ADMIN fixture (rank 3, hierarchically satisfies any
+// SENIOR_REVIEWER+ gate) is used directly.
 //
 // Neither `SupportCaseController` nor `SupportReportController` has any
 // `@HttpCode` override anywhere (confirmed by direct grep before writing
@@ -257,95 +256,6 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
 }
 
-const PLATFORM_ADMIN_PHONE = '+989120000000';
-const PLATFORM_REVIEWER_PHONE = '+989120000001';
-
-/**
- * Authenticates as an EXISTING seeded `PlatformStaff` phone via the real
- * OTP request/verify flow. Retry-safe version — `ADR-083`'s own round-1
- * finding (a real, disclosed race under Jest's default parallel-worker
- * execution, where two DIFFERENT e2e files concurrently requesting an OTP
- * for the SAME fixed seeded phone can invalidate each other's captured
- * code) applies equally here as the 6th file sharing this exact pattern.
- * Copied verbatim (post-fix) from `fraud-case.e2e-spec.ts`.
- */
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCode(app, phone);
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return {
-        phone,
-        personId: res.body.data.personId,
-        accessToken: res.body.data.accessToken,
-        deviceToken: `e2e-${phone}-${code}`,
-      };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
-/**
- * Cleanup for the seeded-staff describe is deliberately narrower than
- * `cleanupPhones` — deletes only this run's own `RefreshToken`/`Device`/
- * `OtpRequest` rows for the two seeded phones, never the `Person`/
- * `PlatformStaff` rows themselves (persistent shared dev fixtures).
- * Originally copied verbatim from `ADR-078`; as of `ADR-085` round 1, wrapped
- * in the same retry-on-P2003 pattern every sibling cleanup helper below
- * already uses. At 15 concurrent e2e suites sharing these two fixed seeded
- * phones, this file's own `RefreshToken`/`Device` deletes can lose a race
- * against another suite's concurrent `loginAsSeededStaff` call inserting a
- * fresh `RefreshToken` (referencing a `Device`) for the same phone in the gap
- * between the two deletes, causing a `refresh_tokens_deviceId_fkey`
- * violation on the `Device` deleteMany. Same risk category as the
- * `loginAsSeededStaff` OTP-race `ADR-083` round 1 already fixed — a
- * different mechanism (cleanup-time, not login-time), first exposed once
- * suite count grew to 15.
- */
-async function deleteStaffLoginArtifactsOnceBatch(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
-  });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
-}
-
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
-      return;
-    } catch (error) {
-      const isForeignKeyError =
-        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
-      if (!isForeignKeyError || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-    }
-  }
-}
-
 /**
  * Same un-awaited-event-chain pattern every prior e2e file's own `waitFor`
  * uses. Load-bearing exactly once in this file — see the top-of-document
@@ -368,7 +278,7 @@ async function waitFor<T>(
 
 async function grantSupportAdminToStaff(prisma: PrismaService, personId: string): Promise<string> {
   const staff = await prisma.platformStaff.findUnique({ where: { personId } });
-  if (!staff) throw new Error('Seeded staff has no PlatformStaff row.');
+  if (!staff) throw new Error('Local staff has no PlatformStaff row.');
 
   const role =
     (await prisma.role.findUnique({ where: { name: 'Support Admin (e2e)' } })) ??
@@ -399,18 +309,12 @@ async function grantSupportAdminToStaff(prisma: PrismaService, personId: string)
   return created.id;
 }
 
-async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
-  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
-}
-
 describe('Support & Operations Center (e2e) — Member Lifecycle & Ownership Gate (07.05)', () => {
   // Budget: 3 calls to POST /auth/otp/request (reporter, otherPerson,
   // REVIEWER login).
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPersonIds: string[] = [];
 
   let reporter: RegisteredPerson;
@@ -430,16 +334,22 @@ describe('Support & Operations Center (e2e) — Member Lifecycle & Ownership Gat
     createdPhones.push(otherPerson.phone);
     createdPersonIds.push(otherPerson.personId);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER' },
+    });
     reviewerGrantId = await grantSupportAdminToStaff(prisma, reviewer.personId);
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, reviewerGrantId);
+    await prisma.staffRole.deleteMany({
+      where: { id: reviewerGrantId },
+    });
     await cleanupSupportArtifacts(prisma, createdPersonIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -644,11 +554,9 @@ describe('Support & Operations Center (e2e) — Staff Queue, Escalation & Merge 
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   // Includes `reviewer.personId` (not just registered Persons) — ticket A
   // below is staff-initiated, so its own `createdById` is the REVIEWER's
-  // personId, not a registered Person's. Safe to include a seeded staff
+  // personId. Safe to include the local staff fixture
   // personId here (unlike `cleanupFraudArtifacts`'s own caution about this)
   // because `cleanupSupportArtifacts` only ever deletes `SupportCase`/
   // `SupportCaseMessage` rows, never `Person`/`PlatformStaff` rows.
@@ -669,23 +577,30 @@ describe('Support & Operations Center (e2e) — Staff Queue, Escalation & Merge 
     createdPhones.push(reporterB.phone);
     createdPersonIds.push(reporterB.personId);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
     createdPersonIds.push(reviewer.personId);
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER' },
+    });
     reviewerGrantId = await grantSupportAdminToStaff(prisma, reviewer.personId);
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
+    admin = await registerPerson(app);
+    createdPhones.push(admin.phone);
+    await prisma.platformStaff.create({
+      data: { personId: admin.personId, role: 'PLATFORM_ADMIN' },
+    });
     adminGrantId = await grantSupportAdminToStaff(prisma, admin.personId);
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, reviewerGrantId);
-    await revokeStaffRoleGrant(prisma, adminGrantId);
+    await prisma.staffRole.deleteMany({
+      where: { id: { in: [reviewerGrantId, adminGrantId] } },
+    });
     await cleanupSupportArtifacts(prisma, createdPersonIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: { in: [reviewer.personId, admin.personId] } },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -877,13 +792,10 @@ describe('Support & Operations Center (e2e) — Staff Queue, Escalation & Merge 
 });
 
 describe('ADR-102 — Support Case Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
-  // Budget: 1 call to POST /auth/otp/request (plainPerson registration) —
-  // reviewer login uses requestOtpAndCaptureCodeDirect via
-  // loginAsSeededStaff, which never touches this budget.
+  // Budget: 2 calls to POST /auth/otp/request
+  // (local REVIEWER and plainPerson registrations).
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
   const createdPersonIds: string[] = [];
 
@@ -897,10 +809,12 @@ describe('ADR-102 — Support Case Permission Migration (PermissionsGuard/@Requi
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
     createdPersonIds.push(reviewer.personId);
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER' },
+    });
 
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
@@ -943,7 +857,9 @@ describe('ADR-102 — Support Case Permission Migration (PermissionsGuard/@Requi
     await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
     await prisma.role.delete({ where: { id: testRoleId } });
     await cleanupSupportArtifacts(prisma, createdPersonIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });

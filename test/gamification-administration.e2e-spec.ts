@@ -70,6 +70,13 @@ async function deleteOncePerPhoneBatch(prisma: PrismaService, phones: string[]):
   });
   await prisma.personAchievement.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.xpTransaction.deleteMany({ where: { person: { phone: { in: phones } } } });
+
+  // admin/reviewer are suite-local PlatformStaff fixtures. The suite's
+  // StaffRole grant is deleted in afterAll before cleanupPhones runs.
+  await prisma.platformStaff.deleteMany({
+    where: { person: { phone: { in: phones } } },
+  });
+
   await prisma.buildingSetupDraft.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
@@ -211,72 +218,9 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
 }
 
-const PLATFORM_ADMIN_PHONE = '+989120000000';
-const PLATFORM_REVIEWER_PHONE = '+989120000001';
-
 /** Copied verbatim from `gamification.e2e-spec.ts`'s own pattern — see
  * that file's top-of-document comment for the full round-1 race
  * rationale this retry loop defends against. */
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCode(app, phone);
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return {
-        phone,
-        personId: res.body.data.personId,
-        accessToken: res.body.data.accessToken,
-        deviceToken: `e2e-${phone}-${code}`,
-      };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
-async function deleteStaffLoginArtifactsOnceBatch(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
-  });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
-}
-
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
-      return;
-    } catch (error) {
-      const isForeignKeyError =
-        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
-      if (!isForeignKeyError || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-    }
-  }
-}
-
 function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     role: 'OWNER',
@@ -349,8 +293,6 @@ function waitForBuildingScore(prisma: PrismaService, buildingId: string) {
 describe('Gamification Administration (e2e) — Backoffice Corrections (ADR-124)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
   const createdBuildingIds: string[] = [];
 
@@ -367,19 +309,19 @@ describe('Gamification Administration (e2e) — Backoffice Corrections (ADR-124)
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
-
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
-
+    admin = await registerPerson(app);
+    reviewer = await registerPerson(app);
     plainPerson = await registerPerson(app);
-    createdPhones.push(plainPerson.phone);
-
     targetPerson = await registerPerson(app);
-    createdPhones.push(targetPerson.phone);
+
+    createdPhones.push(admin.phone, reviewer.phone, plainPerson.phone, targetPerson.phone);
+
+    await prisma.platformStaff.create({
+      data: { personId: admin.personId, role: 'PLATFORM_ADMIN', isActive: true },
+    });
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER', isActive: true },
+    });
     await waitForRegistrationXp(prisma, targetPerson.personId);
 
     buildingId = await createBuilding(app, targetPerson.accessToken);
@@ -421,7 +363,6 @@ describe('Gamification Administration (e2e) — Backoffice Corrections (ADR-124)
       await prisma.rolePermission.deleteMany({ where: { roleId } });
       await prisma.role.delete({ where: { id: roleId } });
     }
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await cleanupBuildings(prisma, createdBuildingIds);
     await cleanupPhones(prisma, createdPhones);
     await app.close();

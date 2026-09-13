@@ -171,73 +171,10 @@ interface RegisteredPerson {
 
 async function registerPerson(app: INestApplication): Promise<RegisteredPerson> {
   const phone = nextPhone();
-  const code = await requestOtpAndCaptureCode(app, phone);
+  // Fixture setup must not consume the public HTTP OTP throttle budget.
+  const code = await requestOtpAndCaptureCodeDirect(app, phone);
   const res = await verifyOtp(app, { phone, code }).expect(200);
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
-}
-
-const PLATFORM_ADMIN_PHONE = '+989120000000';
-const PLATFORM_REVIEWER_PHONE = '+989120000001';
-
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCodeDirect(app, phone);
-    const deviceToken = `e2e-${phone}-${code}`;
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return {
-        phone,
-        personId: res.body.data.personId,
-        accessToken: res.body.data.accessToken,
-        deviceToken,
-      };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
-async function deleteStaffLoginArtifactsOnceBatch(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
-  });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
-}
-
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
-      return;
-    } catch (error) {
-      const isForeignKeyError =
-        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
-      if (!isForeignKeyError || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-    }
-  }
 }
 
 async function grantSchedulerAdminToStaff(
@@ -245,7 +182,7 @@ async function grantSchedulerAdminToStaff(
   personId: string,
 ): Promise<string> {
   const staff = await prisma.platformStaff.findUnique({ where: { personId } });
-  if (!staff) throw new Error('Seeded staff has no PlatformStaff row.');
+  if (!staff) throw new Error('Scheduler admin fixture has no PlatformStaff row.');
 
   const role =
     (await prisma.role.findUnique({ where: { name: 'Scheduler Admin (e2e)' } })) ??
@@ -279,12 +216,9 @@ async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string):
 
 describe('Scheduler (e2e) — Manual Job Trigger (ADR-036)', () => {
   // Budget: 1 call to POST /auth/otp/request (plainPerson registration) —
-  // admin/reviewer logins use requestOtpAndCaptureCodeDirect via
-  // loginAsSeededStaff, which never touches this budget.
+  // Actor fixture registration uses direct AuthService OTP and does not consume the HTTP throttle budget.
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
 
   let admin: RegisteredPerson;
@@ -295,22 +229,52 @@ describe('Scheduler (e2e) — Manual Job Trigger (ADR-036)', () => {
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
-    adminGrantId = await grantSchedulerAdminToStaff(prisma, admin.personId);
+    admin = await registerPerson(app);
+    createdPhones.push(admin.phone);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
 
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
+
+    await prisma.platformStaff.create({
+      data: {
+        personId: admin.personId,
+        role: 'PLATFORM_ADMIN',
+        isActive: true,
+      },
+    });
+
+    await prisma.platformStaff.create({
+      data: {
+        personId: reviewer.personId,
+        role: 'REVIEWER',
+        isActive: true,
+      },
+    });
+
+    adminGrantId = await grantSchedulerAdminToStaff(prisma, admin.personId);
   });
 
   afterAll(async () => {
     await revokeStaffRoleGrant(prisma, adminGrantId);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+
+    // This StaffRole belongs only to this disposable fixture. Revocation
+    // preserves the behavior under test; hard-delete then releases its FK
+    // before the local PlatformStaff row is removed.
+    await prisma.staffRole.deleteMany({
+      where: { id: adminGrantId },
+    });
+
+    await prisma.platformStaff.deleteMany({
+      where: {
+        personId: {
+          in: [admin.personId, reviewer.personId],
+        },
+      },
+    });
+
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -365,29 +329,33 @@ describe('Scheduler (e2e) — Manual Job Trigger (ADR-036)', () => {
 
 describe('ADR-102 — Scheduler Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
   // Budget: 1 call to POST /auth/otp/request (plainPerson registration) —
-  // admin login uses requestOtpAndCaptureCodeDirect via
-  // loginAsSeededStaff, which never touches this budget.
+  // Actor fixture registration uses direct AuthService OTP and does not consume the HTTP throttle budget.
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
 
   let admin: RegisteredPerson;
   let plainPerson: RegisteredPerson;
-  let testRoleId: string;
+  let testRoleId: string | undefined;
   let triggerPermissionId: string;
-  let staffRoleGrantId: string;
+  let staffRoleGrantId: string | undefined;
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
+    admin = await registerPerson(app);
+    createdPhones.push(admin.phone);
 
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
+
+    await prisma.platformStaff.create({
+      data: {
+        personId: admin.personId,
+        role: 'PLATFORM_ADMIN',
+        isActive: true,
+      },
+    });
 
     const permission =
       (await prisma.permission.findUnique({ where: { key: 'SCHEDULER_TRIGGER' } })) ??
@@ -415,16 +383,36 @@ describe('ADR-102 — Scheduler Permission Migration (PermissionsGuard/@Requires
   });
 
   afterAll(async () => {
-    // Hard-delete the fixture's own StaffRole row (disposable test
-    // fixture) rather than just revoking it — same ADR-100 teardown fix
-    // reused verbatim (revoking alone leaves a live FK to the Role being
-    // deleted next).
-    await prisma.staffRole.delete({ where: { id: staffRoleGrantId } });
-    await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
-    await prisma.role.delete({ where: { id: testRoleId } });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
-    await cleanupPhones(prisma, createdPhones);
-    await app.close();
+    try {
+      // beforeAll can fail part-way through fixture creation. Only tear
+      // down rows whose IDs were actually captured.
+      if (staffRoleGrantId) {
+        await prisma.staffRole.deleteMany({
+          where: { id: staffRoleGrantId },
+        });
+      }
+
+      if (testRoleId) {
+        await prisma.rolePermission.deleteMany({
+          where: { roleId: testRoleId },
+        });
+        await prisma.role.deleteMany({
+          where: { id: testRoleId },
+        });
+      }
+
+      if (admin?.personId) {
+        await prisma.platformStaff.deleteMany({
+          where: {
+            personId: admin.personId,
+          },
+        });
+      }
+
+      await cleanupPhones(prisma, createdPhones);
+    } finally {
+      await app?.close();
+    }
   });
 
   it('rejects an unauthenticated caller (401)', async () => {
@@ -452,7 +440,7 @@ describe('ADR-102 — Scheduler Permission Migration (PermissionsGuard/@Requires
 
   it('granting SCHEDULER_TRIGGER takes effect immediately — the route opens', async () => {
     await prisma.rolePermission.create({
-      data: { roleId: testRoleId, permissionId: triggerPermissionId },
+      data: { roleId: testRoleId!, permissionId: triggerPermissionId },
     });
 
     const res = await request(app.getHttpServer())

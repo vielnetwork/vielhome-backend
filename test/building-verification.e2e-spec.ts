@@ -356,110 +356,33 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
 }
 
-const PLATFORM_ADMIN_PHONE = '+989120000000';
-const PLATFORM_REVIEWER_PHONE = '+989120000001';
-
 /**
- * Authenticates as an EXISTING seeded `PlatformStaff` phone via the real
- * OTP request/verify flow — deliberately distinct from `registerPerson`.
- * Copied verbatim from `ADR-078`/`ADR-079`/`ADR-080`'s own pattern — see
- * this file's top-of-document comment.
+ * Creates suite-local PlatformStaff without consuming the HTTP OTP
+ * throttle budget. Authentication still uses the real AuthService OTP
+ * creation and HTTP OTP verification flow.
  */
-/**
- * Round-1 finding (surfaced first by `ADR-083`'s own real toolchain run,
- * once this became the 5th e2e file sharing these same two FIXED seeded
- * phone numbers): under Jest's default parallel-worker execution, two
- * DIFFERENT e2e files running concurrently in separate worker processes
- * can both call `POST /auth/otp/request` for the SAME seeded phone close
- * together — whichever request's `OtpRequest` row lands last in the real,
- * shared Postgres database is the only one whose code still verifies,
- * so the other file's captured code 422s as stale/invalid. This is a
- * real, disclosed test-infrastructure race (never a production concern —
- * real users don't share a phone number), the exact same category this
- * whole Testing-phase series has repeatedly named ("growing the e2e suite
- * count is itself a category of risk"), now concretely hitting the
- * seeded-staff-login pattern for the first time. Fixed with the same
- * disclosed retry-on-transient-failure spirit as every prior `waitFor`
- * fix in this series — restarts the WHOLE request+verify sequence (a
- * fresh code request naturally wins whatever race just invalidated the
- * previous one) rather than retrying `verify` alone with a stale code.
- */
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCodeDirect(app, phone);
-    const deviceToken = `e2e-${phone}-${code}`;
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return {
-        phone,
-        personId: res.body.data.personId,
-        accessToken: res.body.data.accessToken,
-        deviceToken,
-      };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
-/**
- * Cleanup for the seeded-staff describe is deliberately narrower than
- * `cleanupPhones` — deletes only this run's own `RefreshToken`/`Device`/
- * `OtpRequest` rows for the two seeded phones, never the `Person`/
- * `PlatformStaff` rows themselves (persistent shared dev fixtures).
- * Originally copied verbatim from `ADR-078`; as of `ADR-085` round 1, wrapped
- * in the same retry-on-P2003 pattern every sibling cleanup helper below
- * already uses. At 15 concurrent e2e suites sharing these two fixed seeded
- * phones, this file's own `RefreshToken`/`Device` deletes can lose a race
- * against another suite's concurrent `loginAsSeededStaff` call inserting a
- * fresh `RefreshToken` (referencing a `Device`) for the same phone in the gap
- * between the two deletes, causing a `refresh_tokens_deviceId_fkey`
- * violation on the `Device` deleteMany. Same risk category as the
- * `loginAsSeededStaff` OTP-race `ADR-083` round 1 already fixed — a
- * different mechanism (cleanup-time, not login-time), first exposed once
- * suite count grew to 15.
- */
-async function deleteStaffLoginArtifactsOnceBatch(
+async function registerLocalStaff(
+  app: INestApplication,
   prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
-  });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
-}
+  role: 'PLATFORM_ADMIN' | 'REVIEWER',
+): Promise<RegisteredPerson> {
+  const phone = nextPhone();
+  const code = await requestOtpAndCaptureCodeDirect(app, phone);
+  const deviceToken = `e2e-local-${role.toLowerCase()}-${phone}-${code}`;
+  const res = await verifyOtp(app, { phone, code }).expect(200);
 
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
-      return;
-    } catch (error) {
-      const isForeignKeyError =
-        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
-      if (!isForeignKeyError || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-    }
-  }
+  const person: RegisteredPerson = {
+    phone,
+    personId: res.body.data.personId,
+    accessToken: res.body.data.accessToken,
+    deviceToken,
+  };
+
+  await prisma.platformStaff.create({
+    data: { personId: person.personId, role },
+  });
+
+  return person;
 }
 
 function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -565,9 +488,9 @@ async function waitForInitialCaseAtBuildingStatus(
 /**
  * 21_ADRs > ADR-102 — `BuildingVerificationController`'s routes now also
  * require a real RBAC permission grant (`PermissionsGuard`), stacked on
- * top of the pre-existing `PlatformRolesGuard` floor. The seeded staff
- * fixtures this file logs in as hold no `StaffRole` by design (ADR-099
- * seeded zero, and this ADR deliberately does not add a permanent grant
+ * top of the pre-existing `PlatformRolesGuard` floor. The local staff
+ * fixtures this file creates hold no `StaffRole` by design (ADR-099
+ * fixture zero, and this ADR deliberately does not add a permanent grant
  * to `prisma/seed.ts` either — same standing decision as ADR-100/101).
  * TEST-FIXTURE-ONLY, mirrors `marketplace.e2e-spec.ts`'s own
  * `grantMarketplaceAdminToReviewer` helper exactly.
@@ -577,7 +500,7 @@ async function grantBuildingVerificationAdminToReviewer(
   reviewerPersonId: string,
 ): Promise<string> {
   const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewerPersonId } });
-  if (!staff) throw new Error('Seeded staff has no PlatformStaff row.');
+  if (!staff) throw new Error('Local staff has no PlatformStaff row.');
 
   const role =
     (await prisma.role.findUnique({ where: { name: 'Building Verification Admin (e2e)' } })) ??
@@ -606,10 +529,6 @@ async function grantBuildingVerificationAdminToReviewer(
 
   const created = await prisma.staffRole.create({ data: { staffId: staff.id, roleId: role.id } });
   return created.id;
-}
-
-async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
-  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
 }
 
 describe('Building Verification (e2e) — Auto-Evaluation & Risk-Based Routing (07.01)', () => {
@@ -699,9 +618,9 @@ describe('Building Verification (e2e) — Auto-Evaluation & Risk-Based Routing (
 
 describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)', () => {
   // Budget: 3 calls to POST /auth/otp/request on `app` (founder1 + founder2
-  // + founder3 registration) — PLATFORM_ADMIN/REVIEWER login no longer
-  // count against this budget at all (ADR-085 round 7): `loginAsSeededStaff`
-  // now requests its OTP codes via a direct `AuthService.requestOtp` DI
+  // + founder3 registration) — local PLATFORM_ADMIN/REVIEWER creation does not
+  // count against this budget at all (ADR-085 round 7): `registerLocalStaff`
+  // requests its OTP codes via a direct `AuthService.requestOtp` DI
   // call (`requestOtpAndCaptureCodeDirect`), bypassing `ThrottlerGuard`
   // entirely rather than competing with founder registration for the same
   // budget. This replaces ADR-085 round-2/round-6's own `authApp` (a
@@ -710,8 +629,6 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
   // of when it's closed.
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
   const createdBuildingIds: string[] = [];
 
@@ -740,12 +657,10 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    admin = await registerLocalStaff(app, prisma, 'PLATFORM_ADMIN');
+    createdPhones.push(admin.phone);
+    reviewer = await registerLocalStaff(app, prisma, 'REVIEWER');
+    createdPhones.push(reviewer.phone);
     reviewerGrantId = await grantBuildingVerificationAdminToReviewer(prisma, reviewer.personId);
     adminGrantId = await grantBuildingVerificationAdminToReviewer(prisma, admin.personId);
 
@@ -800,18 +715,21 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
     // `INestApplication` is unsafe here regardless of when it's closed.
     // Round 7's real fix needs no second app at all: see
     // `requestOtpAndCaptureCodeDirect`'s own comment above —
-    // `loginAsSeededStaff` now requests OTP codes via a direct
+    // `registerLocalStaff` requests OTP codes via a direct
     // `AuthService.requestOtp` DI call, which never passes through
     // `ThrottlerGuard`, so it can't compete with founder registration's
     // budget on the one single `app` this describe now uses throughout.
   }, 20000);
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, reviewerGrantId);
-    await revokeStaffRoleGrant(prisma, adminGrantId);
+    await prisma.staffRole.deleteMany({
+      where: { id: { in: [reviewerGrantId, adminGrantId] } },
+    });
     await cleanupBuildings(prisma, createdBuildingIds);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: { in: [reviewer.personId, admin.personId] } },
+    });
     await cleanupPhones(prisma, createdPhones);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await app.close();
   });
 
@@ -1030,12 +948,10 @@ describe('Building Verification (e2e) — Staff Review, Assign, Appeal (07.01)',
 
 describe('ADR-102 — Building Verification Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
   // Budget: 2 calls to POST /auth/otp/request (founder, plainPerson) — the
-  // seeded-staff login below uses requestOtpAndCaptureCodeDirect, which
+  // local staff creation below uses requestOtpAndCaptureCodeDirect, which
   // never touches this budget.
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
   const createdBuildingIds: string[] = [];
 
@@ -1075,9 +991,8 @@ describe('ADR-102 — Building Verification Permission Migration (PermissionsGua
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerLocalStaff(app, prisma, 'REVIEWER');
+    createdPhones.push(reviewer.phone);
 
     // First building at this address — no similar-address building
     // exists yet, so it auto-approves. Not used for the decide proof
@@ -1131,7 +1046,9 @@ describe('ADR-102 — Building Verification Permission Migration (PermissionsGua
     await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
     await prisma.role.delete({ where: { id: testRoleId } });
     await cleanupBuildings(prisma, createdBuildingIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });

@@ -255,7 +255,7 @@ async function cleanupBuildings(prisma: PrismaService, buildingIds: string[]): P
  * points at). `personIds` must contain ONLY this run's own registered
  * Persons (plus any ad-hoc elevated one) — never the seeded
  * PLATFORM_ADMIN/REVIEWER `personId`s, whose `PlatformStaff` rows are
- * permanent shared dev fixtures (same discipline `cleanupStaffLoginArtifacts`
+ * permanent shared dev fixtures (same discipline local staff cleanup
  * already established for their `RefreshToken`/`Device`/`OtpRequest` rows).
  * No `AuditLog` cleanup — `AuditLog.actorId`/`buildingId` are real FKs to
  * `Person`/`Building` but every prior e2e file has created `AuditLog` rows
@@ -365,9 +365,6 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
 }
 
-const PLATFORM_ADMIN_PHONE = '+989120000000';
-const PLATFORM_REVIEWER_PHONE = '+989120000001';
-
 /**
  * Authenticates as an EXISTING seeded `PlatformStaff` phone via the real
  * OTP request/verify flow. Retry-safe version — `ADR-083`'s own round-1
@@ -375,30 +372,6 @@ const PLATFORM_REVIEWER_PHONE = '+989120000001';
  * execution) applies equally here as the 7th file sharing this exact
  * pattern. Copied verbatim (post-fix) from `fraud-case.e2e-spec.ts`.
  */
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCode(app, phone);
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return {
-        phone,
-        personId: res.body.data.personId,
-        accessToken: res.body.data.accessToken,
-        deviceToken: `e2e-${phone}-${code}`,
-      };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
 /**
  * Cleanup for the seeded-staff describe is deliberately narrower than
  * `cleanupPhones` — deletes only this run's own `RefreshToken`/`Device`/
@@ -408,50 +381,14 @@ async function loginAsSeededStaff(app: INestApplication, phone: string): Promise
  * in the same retry-on-P2003 pattern every sibling cleanup helper below
  * already uses. At 15 concurrent e2e suites sharing these two fixed seeded
  * phones, this file's own `RefreshToken`/`Device` deletes can lose a race
- * against another suite's concurrent `loginAsSeededStaff` call inserting a
+ * against another suite's concurrent `registerLocalStaff` call inserting a
  * fresh `RefreshToken` (referencing a `Device`) for the same phone in the gap
  * between the two deletes, causing a `refresh_tokens_deviceId_fkey`
  * violation on the `Device` deleteMany. Same risk category as the
- * `loginAsSeededStaff` OTP-race `ADR-083` round 1 already fixed — a
+ * `registerLocalStaff` OTP-race `ADR-083` round 1 already fixed — a
  * different mechanism (cleanup-time, not login-time), first exposed once
  * suite count grew to 15.
  */
-async function deleteStaffLoginArtifactsOnceBatch(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
-  });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
-}
-
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
-      return;
-    } catch (error) {
-      const isForeignKeyError =
-        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
-      if (!isForeignKeyError || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-    }
-  }
-}
-
 function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     role: 'OWNER',
@@ -486,6 +423,33 @@ async function createBuilding(
     .expect(201);
 
   return res.body.data.building.id as string;
+}
+
+async function registerLocalStaff(
+  app: INestApplication,
+  prisma: PrismaService,
+  role: 'PLATFORM_ADMIN' | 'REVIEWER',
+): Promise<RegisteredPerson> {
+  const phone = nextPhone();
+  const code = await requestOtpAndCaptureCode(app, phone);
+  const res = await verifyOtp(app, { phone, code }).expect(200);
+
+  const person: RegisteredPerson = {
+    phone,
+    personId: res.body.data.personId,
+    accessToken: res.body.data.accessToken,
+    deviceToken: `e2e-local-${role.toLowerCase()}-${phone}-${code}`,
+  };
+
+  await prisma.platformStaff.create({
+    data: {
+      personId: person.personId,
+      role,
+      isActive: true,
+    },
+  });
+
+  return person;
 }
 
 async function grantComplianceAdminToStaff(
@@ -560,9 +524,6 @@ async function grantAuditLegalHoldAdminToStaff(
   return created.id;
 }
 
-async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
-  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
-}
 async function grantFraudAdminToStaff(prisma: PrismaService, personId: string): Promise<string> {
   const staff = await prisma.platformStaff.findUnique({ where: { personId } });
   if (!staff) throw new Error('Seeded staff has no PlatformStaff row.');
@@ -607,8 +568,6 @@ describe('Audit & Compliance Center (e2e) — Compliance Cases: Manual Lifecycle
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPersonIds: string[] = [];
 
   let subjectPerson: RegisteredPerson;
@@ -625,14 +584,12 @@ describe('Audit & Compliance Center (e2e) — Compliance Cases: Manual Lifecycle
     createdPhones.push(subjectPerson.phone);
     createdPersonIds.push(subjectPerson.personId);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerLocalStaff(app, prisma, 'REVIEWER');
+    createdPhones.push(reviewer.phone);
     reviewerGrantId = await grantComplianceAdminToStaff(prisma, reviewer.personId);
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
+    admin = await registerLocalStaff(app, prisma, 'PLATFORM_ADMIN');
+    createdPhones.push(admin.phone);
     adminGrantId = await grantComplianceAdminToStaff(prisma, admin.personId);
   });
 
@@ -641,12 +598,16 @@ describe('Audit & Compliance Center (e2e) — Compliance Cases: Manual Lifecycle
     // failure): if `beforeAll` above threw partway through — e.g. an
     // intermittent OTP-request 400 — a grant-id variable below may still
     // be its unassigned `undefined` at runtime despite its non-optional
-    // `string` type, and calling `revokeStaffRoleGrant` with `undefined`
+    // `string` type, and hard-deleting an unassigned StaffRole id
     // would throw a secondary teardown error that masks the real cause.
-    if (reviewerGrantId) await revokeStaffRoleGrant(prisma, reviewerGrantId);
-    if (adminGrantId) await revokeStaffRoleGrant(prisma, adminGrantId);
+    if (reviewerGrantId) await prisma.staffRole.delete({ where: { id: reviewerGrantId } });
+    if (adminGrantId) await prisma.staffRole.delete({ where: { id: adminGrantId } });
     await cleanupAuditComplianceArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+
+    await prisma.platformStaff.deleteMany({
+      where: { personId: { in: [reviewer.personId, admin.personId] } },
+    });
+
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -893,8 +854,6 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPersonIds: string[] = [];
   const createdBuildingIds: string[] = [];
 
@@ -921,14 +880,12 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
     createdPhones.push(founder.phone);
     createdPersonIds.push(founder.personId);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerLocalStaff(app, prisma, 'REVIEWER');
+    createdPhones.push(reviewer.phone);
     reviewerFraudGrantId = await grantFraudAdminToStaff(prisma, reviewer.personId);
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
+    admin = await registerLocalStaff(app, prisma, 'PLATFORM_ADMIN');
+    createdPhones.push(admin.phone);
     adminFraudGrantId = await grantFraudAdminToStaff(prisma, admin.personId);
     adminComplianceGrantId = await grantComplianceAdminToStaff(prisma, admin.personId);
   });
@@ -937,20 +894,26 @@ describe('Audit & Compliance Center (e2e) — detectAnomalies: 3 Heuristics (07.
     // Teardown hardening only (not a fix for the underlying setup
     // failure): if `beforeAll` above threw partway through — e.g. an
     // intermittent OTP-request 400 during `registerPerson`/
-    // `loginAsSeededStaff` — one or more grant-id variables below may
+    // `registerLocalStaff` — one or more grant-id variables below may
     // still be their unassigned `undefined` at runtime despite their
     // non-optional `string` type, and calling `revokeStaffRoleGrant` with
     // `undefined` would throw a secondary teardown error that masks the
     // real cause.
-    if (reviewerFraudGrantId) await revokeStaffRoleGrant(prisma, reviewerFraudGrantId);
-    if (adminFraudGrantId) await revokeStaffRoleGrant(prisma, adminFraudGrantId);
-    if (adminComplianceGrantId) await revokeStaffRoleGrant(prisma, adminComplianceGrantId);
+    if (reviewerFraudGrantId)
+      await prisma.staffRole.delete({ where: { id: reviewerFraudGrantId } });
+    if (adminFraudGrantId) await prisma.staffRole.delete({ where: { id: adminFraudGrantId } });
+    if (adminComplianceGrantId)
+      await prisma.staffRole.delete({ where: { id: adminComplianceGrantId } });
     await cleanupAuditComplianceArtifacts(prisma, {
       personIds: createdPersonIds,
       buildingIds: createdBuildingIds,
     });
     await cleanupBuildings(prisma, createdBuildingIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+
+    await prisma.platformStaff.deleteMany({
+      where: { personId: { in: [reviewer.personId, admin.personId] } },
+    });
+
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -1133,8 +1096,6 @@ describe('Audit & Compliance Center (e2e) — Legal Hold & Raw Audit Log (07.06)
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPersonIds: string[] = [];
 
   let seniorReviewer: RegisteredPerson;
@@ -1157,13 +1118,13 @@ describe('Audit & Compliance Center (e2e) — Legal Hold & Raw Audit Log (07.06)
     });
     seniorReviewerGrantId = await grantAuditLegalHoldAdminToStaff(prisma, seniorReviewer.personId);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerLocalStaff(app, prisma, 'REVIEWER');
+    createdPhones.push(reviewer.phone);
+    createdPersonIds.push(reviewer.personId);
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
+    admin = await registerLocalStaff(app, prisma, 'PLATFORM_ADMIN');
+    createdPhones.push(admin.phone);
+    createdPersonIds.push(admin.personId);
     adminGrantId = await grantAuditLegalHoldAdminToStaff(prisma, admin.personId);
   });
 
@@ -1184,9 +1145,13 @@ describe('Audit & Compliance Center (e2e) — Legal Hold & Raw Audit Log (07.06)
     // non-optional `string` type, and calling `revokeStaffRoleGrant` with
     // `undefined` would throw a secondary teardown error that masks the
     // real cause.
-    if (adminGrantId) await revokeStaffRoleGrant(prisma, adminGrantId);
+    if (adminGrantId) await prisma.staffRole.delete({ where: { id: adminGrantId } });
     await cleanupAuditComplianceArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+
+    await prisma.platformStaff.deleteMany({
+      where: { personId: { in: [reviewer.personId, admin.personId] } },
+    });
+
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -1354,8 +1319,6 @@ describe('ADR-102 — Compliance Case Permission Migration (PermissionsGuard/@Re
   // loginAsSeededStaff, which never touches this budget.
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
   const createdPersonIds: string[] = [];
 
@@ -1377,9 +1340,8 @@ describe('ADR-102 — Compliance Case Permission Migration (PermissionsGuard/@Re
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
+    admin = await registerLocalStaff(app, prisma, 'PLATFORM_ADMIN');
+    createdPhones.push(admin.phone);
 
     const permissionKeys = ['COMPLIANCE_VIEW', 'COMPLIANCE_MANAGE'] as const;
     const permissionIds: Record<(typeof permissionKeys)[number], string> = {} as never;
@@ -1419,7 +1381,11 @@ describe('ADR-102 — Compliance Case Permission Migration (PermissionsGuard/@Re
     await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
     await prisma.role.delete({ where: { id: testRoleId } });
     await cleanupAuditComplianceArtifacts(prisma, { personIds: createdPersonIds, buildingIds: [] });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+
+    await prisma.platformStaff.deleteMany({
+      where: { personId: admin.personId },
+    });
+
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -1513,8 +1479,6 @@ describe('ADR-102 — Legal Hold & Audit Log Permission Migration (PermissionsGu
   // loginAsSeededStaff, which never touches this budget.
   let app: INestApplication;
   let prisma: PrismaService;
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPhones: string[] = [];
 
   let plainPerson: RegisteredPerson;
@@ -1534,9 +1498,8 @@ describe('ADR-102 — Legal Hold & Audit Log Permission Migration (PermissionsGu
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    staffPhones.push(PLATFORM_ADMIN_PHONE);
-    staffDeviceTokens.push(admin.deviceToken!);
+    admin = await registerLocalStaff(app, prisma, 'PLATFORM_ADMIN');
+    createdPhones.push(admin.phone);
 
     const legalHoldPermission =
       (await prisma.permission.findUnique({ where: { key: 'LEGAL_HOLD_MANAGE' } })) ??
@@ -1590,7 +1553,11 @@ describe('ADR-102 — Legal Hold & Audit Log Permission Migration (PermissionsGu
     await prisma.auditLegalHold.deleteMany({
       where: { entityType: heldEntityType, entityId: heldEntityId },
     });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+
+    await prisma.platformStaff.deleteMany({
+      where: { personId: admin.personId },
+    });
+
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });

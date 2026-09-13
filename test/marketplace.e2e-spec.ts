@@ -31,10 +31,10 @@ import { createIsolatedTestingModule } from './helpers/create-isolated-testing-m
 // (`list`/`getCase`/`decide`/`deactivate`) are gated at the SAME lowest
 // rank, `@PlatformRoles('REVIEWER')` — a first for this whole
 // Testing-phase series (every prior BackOffice domain gated at least one
-// route at SENIOR_REVIEWER+). This means only the seeded REVIEWER account
+// route at SENIOR_REVIEWER+). This means only the local REVIEWER fixture
 // is needed anywhere in this file — no PLATFORM_ADMIN login, no ad-hoc
 // `platformStaff.create` elevation, and (per `ADR-085` round 7's own
-// banked lesson, in force from the start here) `loginAsSeededStaff` uses
+// banked lesson, in force from the start here) `registerLocalReviewer` uses
 // `requestOtpAndCaptureCodeDirect` (`app.get(AuthService).requestOtp(...)`)
 // rather than a second `bootstrapTestApp()` instance for throttle
 // isolation — this file never opens a second `INestApplication` at all.
@@ -204,7 +204,7 @@ async function requestOtpAndCaptureCode(
  * logic depends on) without ever competing with the shared
  * `@Throttle({limit:5, ttl:60_000})` budget on `POST /auth/otp/request`.
  * Used from the start in this file (the first file written after that
- * lesson was banked) for the one seeded-staff login this domain needs.
+ * lesson was banked) for the one local REVIEWER registration this domain needs.
  */
 async function requestOtpAndCaptureCodeDirect(
   app: INestApplication,
@@ -251,92 +251,34 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
 }
 
-const PLATFORM_REVIEWER_PHONE = '+989120000001';
-
 /**
- * Authenticates as the EXISTING seeded REVIEWER phone via the real OTP
- * request/verify flow, using `requestOtpAndCaptureCodeDirect` (see above)
- * rather than a second app. Retry-safe against the same cross-file
- * concurrent-OTP race `ADR-083` round 1 first disclosed (two different
- * e2e suites requesting an OTP for the same fixed seeded phone close
- * together can invalidate each other's captured code) — a fresh
- * request+verify restarts the whole sequence rather than retrying
- * `verify` alone with a stale code.
+ * Creates a suite-local REVIEWER without consuming the HTTP OTP throttle
+ * budget. The Person uses a unique e2e phone and the PlatformStaff row is
+ * owned by the current describe block.
  */
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCodeDirect(app, phone);
-    const deviceToken = `e2e-${phone}-${code}`;
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return {
-        phone,
-        personId: res.body.data.personId,
-        accessToken: res.body.data.accessToken,
-        deviceToken,
-      };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
-/**
- * Cleanup for the seeded-staff login is deliberately narrower than
- * `cleanupPhones` — deletes only this run's own `RefreshToken`/`Device`/
- * `OtpRequest` rows for the seeded phone, never the `Person`/
- * `PlatformStaff` rows themselves (persistent shared dev fixture). Wrapped
- * in the same retry-on-P2003 pattern every sibling cleanup helper in this
- * series already uses (`ADR-085` round 1's own cleanup-time race finding).
- */
-async function deleteStaffLoginArtifactsOnceBatch(
+async function registerLocalReviewer(
+  app: INestApplication,
   prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
+): Promise<RegisteredPerson> {
+  const phone = nextPhone();
+  const code = await requestOtpAndCaptureCodeDirect(app, phone);
+  const deviceToken = `e2e-local-reviewer-${phone}-${code}`;
+  const res = await verifyOtp(app, { phone, code }).expect(200);
+
+  const reviewer: RegisteredPerson = {
+    phone,
+    personId: res.body.data.personId,
+    accessToken: res.body.data.accessToken,
+    deviceToken,
+  };
+
+  await prisma.platformStaff.create({
+    data: { personId: reviewer.personId, role: 'REVIEWER' },
   });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
+
+  return reviewer;
 }
 
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
-      return;
-    } catch (error) {
-      const isForeignKeyError =
-        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
-      if (!isForeignKeyError || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-    }
-  }
-}
-
-/**
- * Same un-awaited-event-chain pattern every prior e2e file's own `waitFor`
- * uses. Load-bearing exactly once in this file — see the top-of-document
- * comment on `ServiceProviderDecided`'s real `Notification` side effect.
- */
 async function waitFor<T>(
   fn: () => Promise<T | null | undefined>,
   attempts = 10,
@@ -357,8 +299,8 @@ async function waitFor<T>(
  * require a real RBAC permission grant (`PermissionsGuard`), stacked on
  * top of the pre-existing `PlatformRolesGuard` floor (both guards must
  * pass — ADR-098's Bridge Migration keeps the legacy guard active, it
- * does not replace it). The seeded REVIEWER dev fixture this file logs
- * in as (`PLATFORM_REVIEWER_PHONE`) holds no `StaffRole` by design —
+ * does not replace it). The local REVIEWER fixture this file creates
+ * holds no `StaffRole` by design —
  * ADR-100 deliberately does NOT add a permanent grant to `prisma/
  * seed.ts` (see that ADR's own Decision). This helper grants the
  * `Marketplace Admin` role directly via Prisma, TEST-FIXTURE-ONLY —
@@ -372,7 +314,7 @@ async function grantMarketplaceAdminToReviewer(
   reviewerPersonId: string,
 ): Promise<string> {
   const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewerPersonId } });
-  if (!staff) throw new Error('Seeded REVIEWER has no PlatformStaff row.');
+  if (!staff) throw new Error('Local REVIEWER has no PlatformStaff row.');
 
   const role =
     (await prisma.role.findUnique({ where: { name: 'Marketplace Admin' } })) ??
@@ -406,17 +348,9 @@ async function grantMarketplaceAdminToReviewer(
   return created.id;
 }
 
-/** Closes (not deletes — history preservation) a `StaffRole` grant this
- * file's own fixtures created. Safe to call with an id that's already
- * closed (idempotent no-op via `revokedAt: null` guard is the caller's
- * responsibility — every call site here only calls this once per grant). */
-async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
-  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
-}
-
 describe('Marketplace Foundation (e2e) — Submission & Own-Scoped Visibility (ADR-030)', () => {
   // Budget: 2 calls to POST /auth/otp/request (submitter, otherPerson) —
-  // the seeded-staff login below uses requestOtpAndCaptureCodeDirect, which
+  // the local REVIEWER registration below uses requestOtpAndCaptureCodeDirect, which
   // never touches this budget.
   let app: INestApplication;
   let prisma: PrismaService;
@@ -552,16 +486,14 @@ describe('Marketplace Foundation (e2e) — Submission & Own-Scoped Visibility (A
 
 describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (ADR-030)', () => {
   // Budget: 2 calls to POST /auth/otp/request (submitterA, submitterB) —
-  // the seeded REVIEWER login uses requestOtpAndCaptureCodeDirect, which
+  // the local REVIEWER registration uses requestOtpAndCaptureCodeDirect, which
   // never touches this budget.
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   // Includes `reviewer.personId` (its own listings never exist in this
   // file, but `cleanupMarketplaceArtifacts` also matches on `reviewedById`,
-  // which the seeded REVIEWER's own personId ends up in) — safe to include
+  // which the local REVIEWER's own personId ends up in) — safe to include
   // here because `cleanupMarketplaceArtifacts` only ever deletes
   // `ServiceProvider` rows, never `Person`/`PlatformStaff` rows.
   const createdPersonIds: string[] = [];
@@ -595,13 +527,12 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
       data: { isBackofficeApproved: true },
     });
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    reviewer = await registerLocalReviewer(app, prisma);
+    createdPhones.push(reviewer.phone);
     // 21_ADRs > ADR-100 — PermissionsGuard now also gates these routes;
     // grant the fixture-only Marketplace Admin role (see that helper's own
     // doc comment for why this is a test fixture, not a seed change).
     marketplaceAdminGrantId = await grantMarketplaceAdminToReviewer(prisma, reviewer.personId);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
     createdPersonIds.push(reviewer.personId);
 
     const resA = await request(app.getHttpServer())
@@ -624,9 +555,13 @@ describe('Marketplace Foundation (e2e) — Staff Moderation & Public Directory (
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, marketplaceAdminGrantId); // 21_ADRs > ADR-100
+    await prisma.staffRole.deleteMany({
+      where: { id: marketplaceAdminGrantId },
+    });
     await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -807,8 +742,6 @@ describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — 
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const createdPersonIds: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
 
   let owner: RegisteredPerson;
   let unapprovedOther: RegisteredPerson;
@@ -844,13 +777,13 @@ describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — 
       data: { isBackofficeApproved: true },
     });
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    reviewer = await registerLocalReviewer(app, prisma);
+    createdPhones.push(reviewer.phone);
     // 21_ADRs > ADR-100 — PermissionsGuard now also gates these routes;
     // grant the fixture-only Marketplace Admin role (see that helper's own
     // doc comment for why this is a test fixture, not a seed change).
     marketplaceAdminGrantId = await grantMarketplaceAdminToReviewer(prisma, reviewer.personId);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    createdPersonIds.push(reviewer.personId);
 
     const submitRes = await request(app.getHttpServer())
       .post('/api/v1/marketplace/providers')
@@ -880,9 +813,13 @@ describe('Marketplace Access-Gate (BACKOFFICE_APPROVED) & Contact Redaction — 
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, marketplaceAdminGrantId); // 21_ADRs > ADR-100
+    await prisma.staffRole.deleteMany({
+      where: { id: marketplaceAdminGrantId },
+    });
     await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -1005,8 +942,6 @@ describe('ADR-097 — Marketplace Review Workflow (Phase 2): Edit/Resubmit/Appro
   let prisma: PrismaService;
   const createdPhones: string[] = [];
   const createdPersonIds: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
 
   let owner: RegisteredPerson;
   let reviewer: RegisteredPerson;
@@ -1027,20 +962,23 @@ describe('ADR-097 — Marketplace Review Workflow (Phase 2): Edit/Resubmit/Appro
       data: { isBackofficeApproved: true },
     });
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    reviewer = await registerLocalReviewer(app, prisma);
+    createdPhones.push(reviewer.phone);
     // 21_ADRs > ADR-100 — PermissionsGuard now also gates these routes;
     // grant the fixture-only Marketplace Admin role (see that helper's own
     // doc comment for why this is a test fixture, not a seed change).
     marketplaceAdminGrantId = await grantMarketplaceAdminToReviewer(prisma, reviewer.personId);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
     createdPersonIds.push(reviewer.personId);
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, marketplaceAdminGrantId); // 21_ADRs > ADR-100
+    await prisma.staffRole.deleteMany({
+      where: { id: marketplaceAdminGrantId },
+    });
     await cleanupMarketplaceArtifacts(prisma, createdPersonIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
@@ -1302,8 +1240,6 @@ describe('ADR-100 — Marketplace Permission Migration (PermissionsGuard/@Requir
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdPersonIds: string[] = [];
 
   let submitter: RegisteredPerson;
@@ -1329,9 +1265,8 @@ describe('ADR-100 — Marketplace Permission Migration (PermissionsGuard/@Requir
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerLocalReviewer(app, prisma);
+    createdPhones.push(reviewer.phone);
     createdPersonIds.push(reviewer.personId);
 
     const submitRes = await request(app.getHttpServer())
@@ -1389,7 +1324,9 @@ describe('ADR-100 — Marketplace Permission Migration (PermissionsGuard/@Requir
     await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
     await prisma.role.delete({ where: { id: testRoleId } });
     await prisma.serviceProvider.deleteMany({ where: { submittedById: { in: createdPersonIds } } });
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });

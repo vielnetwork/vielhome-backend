@@ -51,6 +51,14 @@ async function deleteOncePerPhoneBatch(prisma: PrismaService, phones: string[]):
   await prisma.notificationPreference.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.personAchievement.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.xpTransaction.deleteMany({ where: { person: { phone: { in: phones } } } });
+
+  // admin/reviewer are suite-local PlatformStaff fixtures. Their StaffRole
+  // rows are deleted explicitly in afterAll before cleanupPhones runs, so
+  // the PlatformStaff rows must be removed here before deleting Person.
+  await prisma.platformStaff.deleteMany({
+    where: { person: { phone: { in: phones } } },
+  });
+
   await prisma.refreshToken.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.device.deleteMany({ where: { person: { phone: { in: phones } } } });
   await prisma.otpRequest.deleteMany({ where: { phone: { in: phones } } });
@@ -164,41 +172,6 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   };
 }
 
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
-    const code = await requestOtpAndCaptureCode(app, phone, true);
-    const response = await verifyOtp(app, phone, code);
-    if (response.status === 200)
-      return {
-        phone,
-        personId: response.body.data.personId,
-        accessToken: response.body.data.accessToken,
-        deviceToken: `e2e-${phone}-${code}`,
-      };
-    if (attempt === 4)
-      throw new Error(`Staff login failed: ${response.status} ${JSON.stringify(response.body)}`);
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
-  });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
-}
-
 async function createBuilding(app: INestApplication, token: string): Promise<string> {
   const payload = {
     role: 'OWNER',
@@ -244,8 +217,6 @@ describe('Advertising Administration (e2e)', () => {
   const campaignIds: string[] = [];
   const buildingIds: string[] = [];
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   let admin: RegisteredPerson;
   let reviewer: RegisteredPerson;
   let member: RegisteredPerson;
@@ -262,13 +233,18 @@ describe('Advertising Administration (e2e)', () => {
 
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
-    admin = await loginAsSeededStaff(app, '+989120000000');
-    reviewer = await loginAsSeededStaff(app, '+989120000001');
-    staffPhones.push(admin.phone, reviewer.phone);
-    staffDeviceTokens.push(admin.deviceToken!, reviewer.deviceToken!);
+    admin = await registerPerson(app);
+    reviewer = await registerPerson(app);
     member = await registerPerson(app);
     secondFounder = await registerPerson(app);
-    createdPhones.push(member.phone, secondFounder.phone);
+    createdPhones.push(admin.phone, reviewer.phone, member.phone, secondFounder.phone);
+
+    await prisma.platformStaff.create({
+      data: { personId: admin.personId, role: 'PLATFORM_ADMIN', isActive: true },
+    });
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER', isActive: true },
+    });
     buildingId = await createBuilding(app, member.accessToken);
     secondBuildingId = await createBuilding(app, secondFounder.accessToken);
     buildingIds.push(buildingId, secondBuildingId);
@@ -334,7 +310,6 @@ describe('Advertising Administration (e2e)', () => {
         await prisma.rolePermission.deleteMany({ where: { roleId: manageRoleId } });
         await prisma.role.delete({ where: { id: manageRoleId } });
       }
-      await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
       await cleanupBuildings(prisma, buildingIds);
       await cleanupPhones(prisma, createdPhones);
     } finally {

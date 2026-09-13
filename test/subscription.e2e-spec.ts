@@ -314,114 +314,6 @@ async function registerPerson(app: INestApplication): Promise<RegisteredPerson> 
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
 }
 
-const PLATFORM_ADMIN_PHONE = '+989120000000';
-const PLATFORM_REVIEWER_PHONE = '+989120000001';
-
-/**
- * Authenticates as an EXISTING seeded `PlatformStaff` phone via the real
- * OTP request/verify flow — deliberately distinct from `registerPerson`.
- * Copied verbatim from `ADR-078`/`ADR-079`/`ADR-080`/`ADR-081`'s own
- * pattern — see this file's top-of-document comment. This file only ever
- * needs the seeded REVIEWER — every `SubscriptionController` route is
- * gated at `@PlatformRoles('REVIEWER')` (the lowest tier), unlike Building
- * Verification's `assign`, which needed SENIOR_REVIEWER+/PLATFORM_ADMIN.
- */
-/**
- * Round-1 finding (surfaced first by `ADR-083`'s own real toolchain run,
- * once this became the 5th e2e file sharing these same two FIXED seeded
- * phone numbers): under Jest's default parallel-worker execution, two
- * DIFFERENT e2e files running concurrently in separate worker processes
- * can both call `POST /auth/otp/request` for the SAME seeded phone close
- * together — whichever request's `OtpRequest` row lands last in the real,
- * shared Postgres database is the only one whose code still verifies,
- * so the other file's captured code 422s as stale/invalid. This is a
- * real, disclosed test-infrastructure race (never a production concern —
- * real users don't share a phone number), the exact same category this
- * whole Testing-phase series has repeatedly named ("growing the e2e suite
- * count is itself a category of risk"), now concretely hitting the
- * seeded-staff-login pattern for the first time. Fixed with the same
- * disclosed retry-on-transient-failure spirit as every prior `waitFor`
- * fix in this series — restarts the WHOLE request+verify sequence (a
- * fresh code request naturally wins whatever race just invalidated the
- * previous one) rather than retrying `verify` alone with a stale code.
- */
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCode(app, phone);
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return {
-        phone,
-        personId: res.body.data.personId,
-        accessToken: res.body.data.accessToken,
-        deviceToken: `e2e-${phone}-${code}`,
-      };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
-}
-
-/**
- * Cleanup for the seeded-staff describe is deliberately narrower than
- * `cleanupPhones` — deletes only this run's own `RefreshToken`/`Device`/
- * `OtpRequest` rows for the two seeded phones, never the `Person`/
- * `PlatformStaff` rows themselves (persistent shared dev fixtures).
- * Originally copied verbatim from `ADR-078`; as of `ADR-085` round 1, wrapped
- * in the same retry-on-P2003 pattern every sibling cleanup helper below
- * already uses. At 15 concurrent e2e suites sharing these two fixed seeded
- * phones, this file's own `RefreshToken`/`Device` deletes can lose a race
- * against another suite's concurrent `loginAsSeededStaff` call inserting a
- * fresh `RefreshToken` (referencing a `Device`) for the same phone in the gap
- * between the two deletes, causing a `refresh_tokens_deviceId_fkey`
- * violation on the `Device` deleteMany. Same risk category as the
- * `loginAsSeededStaff` OTP-race `ADR-083` round 1 already fixed — a
- * different mechanism (cleanup-time, not login-time), first exposed once
- * suite count grew to 15.
- */
-async function deleteStaffLoginArtifactsOnceBatch(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  await prisma.refreshToken.deleteMany({
-    where: { device: { deviceToken: { in: deviceTokens } } },
-  });
-  await prisma.device.deleteMany({ where: { deviceToken: { in: deviceTokens } } });
-  await prisma.otpRequest.deleteMany({
-    where: {
-      phone: { in: phones },
-      OR: [{ consumedAt: { not: null } }, { expiresAt: { lt: new Date() } }],
-    },
-  });
-}
-
-async function cleanupStaffLoginArtifacts(
-  prisma: PrismaService,
-  phones: string[],
-  deviceTokens: string[],
-): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      await deleteStaffLoginArtifactsOnceBatch(prisma, phones, deviceTokens);
-      return;
-    } catch (error) {
-      const isForeignKeyError =
-        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
-      if (!isForeignKeyError || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
-    }
-  }
-}
-
 function reviewPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     role: 'OWNER',
@@ -503,8 +395,7 @@ function findFeature(entries: EffectiveFeatureEntry[], featureKey: string): Effe
  * a real RBAC permission grant (`PermissionsGuard`), stacked on top of
  * the pre-existing `PlatformRolesGuard` floor (both guards must pass —
  * ADR-098's Bridge Migration keeps the legacy guard active, it does not
- * replace it). The seeded REVIEWER dev fixture this file logs in as
- * (`PLATFORM_REVIEWER_PHONE`) holds no `StaffRole` by design — ADR-099
+ * replace it). The local REVIEWER fixture holds no `StaffRole` before this helper runs — ADR-099
  * seeded zero, and ADR-101 deliberately does not add a permanent grant to
  * `prisma/seed.ts` either (same standing decision as ADR-100). This
  * helper grants the `Subscription Admin` role directly via Prisma,
@@ -518,7 +409,7 @@ async function grantSubscriptionAdminToReviewer(
   reviewerPersonId: string,
 ): Promise<string> {
   const staff = await prisma.platformStaff.findUnique({ where: { personId: reviewerPersonId } });
-  if (!staff) throw new Error('Seeded REVIEWER has no PlatformStaff row.');
+  if (!staff) throw new Error('Local REVIEWER has no PlatformStaff row.');
 
   const role =
     (await prisma.role.findUnique({ where: { name: 'Subscription Admin' } })) ??
@@ -552,20 +443,11 @@ async function grantSubscriptionAdminToReviewer(
   return created.id;
 }
 
-/** Closes (not deletes — history preservation) a `StaffRole` grant this
- * file's own fixtures created. Mirrors `marketplace.e2e-spec.ts`'s own
- * `revokeStaffRoleGrant` helper exactly. */
-async function revokeStaffRoleGrant(prisma: PrismaService, staffRoleId: string): Promise<void> {
-  await prisma.staffRole.update({ where: { id: staffRoleId }, data: { revokedAt: new Date() } });
-}
-
 describe('Subscription Management (e2e) — Auto-Init, Reads & Features (07.04/04.04)', () => {
-  // Budget: 3 calls to POST /auth/otp/request (founder, outsider, REVIEWER).
+  // Budget: 3 calls to POST /auth/otp/request (founder, outsider, local REVIEWER).
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdBuildingIds: string[] = [];
 
   let founder: RegisteredPerson;
@@ -581,9 +463,11 @@ describe('Subscription Management (e2e) — Auto-Init, Reads & Features (07.04/0
     createdPhones.push(founder.phone);
     outsider = await registerPerson(app);
     createdPhones.push(outsider.phone);
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER' },
+    });
     subscriptionAdminGrantId = await grantSubscriptionAdminToReviewer(prisma, reviewer.personId);
 
     // Building Setup Refinement Phase 2 correction round: `city` is now a
@@ -600,10 +484,14 @@ describe('Subscription Management (e2e) — Auto-Init, Reads & Features (07.04/0
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, subscriptionAdminGrantId);
+    await prisma.staffRole.deleteMany({
+      where: { id: subscriptionAdminGrantId },
+    });
     await cleanupBuildings(prisma, createdBuildingIds);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await app.close();
   });
 
@@ -666,12 +554,10 @@ describe('Subscription Management (e2e) — Auto-Init, Reads & Features (07.04/0
 });
 
 describe('Subscription Management (e2e) — Plan & Status Changes, History (07.04)', () => {
-  // Budget: 2 calls to POST /auth/otp/request (founder, REVIEWER login).
+  // Budget: 2 calls to POST /auth/otp/request (founder, local REVIEWER).
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdBuildingIds: string[] = [];
 
   let founder: RegisteredPerson;
@@ -684,9 +570,11 @@ describe('Subscription Management (e2e) — Plan & Status Changes, History (07.0
 
     founder = await registerPerson(app);
     createdPhones.push(founder.phone);
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER' },
+    });
     subscriptionAdminGrantId = await grantSubscriptionAdminToReviewer(prisma, reviewer.personId);
 
     // See the correction-round note above `SubAutoCity` earlier in this
@@ -698,10 +586,14 @@ describe('Subscription Management (e2e) — Plan & Status Changes, History (07.0
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, subscriptionAdminGrantId);
+    await prisma.staffRole.deleteMany({
+      where: { id: subscriptionAdminGrantId },
+    });
     await cleanupBuildings(prisma, createdBuildingIds);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await app.close();
   });
 
@@ -794,12 +686,10 @@ describe('Subscription Management (e2e) — Plan & Status Changes, History (07.0
 });
 
 describe('Subscription Management (e2e) — Feature Grants (07.04 Rule 008/009/017/018)', () => {
-  // Budget: 2 calls to POST /auth/otp/request (founder, REVIEWER login).
+  // Budget: 2 calls to POST /auth/otp/request (founder, local REVIEWER).
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdBuildingIds: string[] = [];
 
   let founder: RegisteredPerson;
@@ -813,9 +703,11 @@ describe('Subscription Management (e2e) — Feature Grants (07.04 Rule 008/009/0
 
     founder = await registerPerson(app);
     createdPhones.push(founder.phone);
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER' },
+    });
     subscriptionAdminGrantId = await grantSubscriptionAdminToReviewer(prisma, reviewer.personId);
 
     // See the correction-round note above `SubAutoCity` earlier in this
@@ -827,10 +719,14 @@ describe('Subscription Management (e2e) — Feature Grants (07.04 Rule 008/009/0
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, subscriptionAdminGrantId);
+    await prisma.staffRole.deleteMany({
+      where: { id: subscriptionAdminGrantId },
+    });
     await cleanupBuildings(prisma, createdBuildingIds);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await app.close();
   });
 
@@ -923,7 +819,7 @@ describe('Subscription Management (e2e) — Feature Grants (07.04 Rule 008/009/0
 });
 
 describe('Subscription Management (e2e) — Time-Based Lifecycle (07.04 Rule 007/012)', () => {
-  // Budget: 2 calls to POST /auth/otp/request (founder, REVIEWER login).
+  // Budget: 2 calls to POST /auth/otp/request (founder, local REVIEWER).
   //
   // All three Exception Cases below need a date in the past — nothing in
   // this suite waits 14 real days, so each `it` writes the relevant date
@@ -935,8 +831,6 @@ describe('Subscription Management (e2e) — Time-Based Lifecycle (07.04 Rule 007
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdBuildingIds: string[] = [];
 
   let founder: RegisteredPerson;
@@ -950,9 +844,11 @@ describe('Subscription Management (e2e) — Time-Based Lifecycle (07.04 Rule 007
 
     founder = await registerPerson(app);
     createdPhones.push(founder.phone);
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER' },
+    });
     subscriptionAdminGrantId = await grantSubscriptionAdminToReviewer(prisma, reviewer.personId);
 
     // See the correction-round note above `SubAutoCity` earlier in this
@@ -969,10 +865,14 @@ describe('Subscription Management (e2e) — Time-Based Lifecycle (07.04 Rule 007
   });
 
   afterAll(async () => {
-    await revokeStaffRoleGrant(prisma, subscriptionAdminGrantId);
+    await prisma.staffRole.deleteMany({
+      where: { id: subscriptionAdminGrantId },
+    });
     await cleanupBuildings(prisma, createdBuildingIds);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
     await app.close();
   });
 
@@ -1089,14 +989,11 @@ describe('Subscription Management (e2e) — Time-Based Lifecycle (07.04 Rule 007
 });
 
 describe('ADR-101 — Subscription Management Permission Migration (PermissionsGuard/@RequiresPermission)', () => {
-  // Budget: 2 calls to POST /auth/otp/request (founder, plainPerson) — the
-  // seeded-staff login below uses requestOtpAndCaptureCodeDirect, which
-  // never touches this budget.
+  // Budget: 3 calls to POST /auth/otp/request
+  // (founder, plainPerson, local REVIEWER).
   let app: INestApplication;
   let prisma: PrismaService;
   const createdPhones: string[] = [];
-  const staffPhones: string[] = [];
-  const staffDeviceTokens: string[] = [];
   const createdBuildingIds: string[] = [];
 
   let founder: RegisteredPerson;
@@ -1116,9 +1013,11 @@ describe('ADR-101 — Subscription Management Permission Migration (PermissionsG
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
 
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
-    staffPhones.push(PLATFORM_REVIEWER_PHONE);
-    staffDeviceTokens.push(reviewer.deviceToken!);
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
+    await prisma.platformStaff.create({
+      data: { personId: reviewer.personId, role: 'REVIEWER' },
+    });
 
     buildingId = await createBuilding(app, founder.accessToken, {});
     createdBuildingIds.push(buildingId);
@@ -1171,7 +1070,9 @@ describe('ADR-101 — Subscription Management Permission Migration (PermissionsG
     await prisma.rolePermission.deleteMany({ where: { roleId: testRoleId } });
     await prisma.role.delete({ where: { id: testRoleId } });
     await cleanupBuildings(prisma, createdBuildingIds);
-    await cleanupStaffLoginArtifacts(prisma, staffPhones, staffDeviceTokens);
+    await prisma.platformStaff.deleteMany({
+      where: { personId: reviewer.personId },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });

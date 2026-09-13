@@ -15,7 +15,6 @@ import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
  * 21_ADRs > ADR-099 (architecture: ADR-098) — Backoffice RBAC Foundation.
  *
  * Follows this test-phase series' own established per-file convention
- * (bootstrapTestApp/registerPerson/loginAsSeededStaff duplicated locally,
  * not imported — see `test/marketplace.e2e-spec.ts`'s own header comment
  * for why).
  *
@@ -176,31 +175,10 @@ interface RegisteredPerson {
 
 async function registerPerson(app: INestApplication): Promise<RegisteredPerson> {
   const phone = nextPhone();
-  const code = await requestOtpAndCaptureCode(app, phone);
+  // Fixture setup must not consume the public HTTP OTP throttle budget.
+  const code = await requestOtpAndCaptureCodeDirect(app, phone);
   const res = await verifyOtp(app, { phone, code }).expect(200);
   return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
-}
-
-const PLATFORM_ADMIN_PHONE = '+989120000000'; // prisma/seed.ts's own Dev Tester, seeded PLATFORM_ADMIN
-const PLATFORM_REVIEWER_PHONE = '+989120000001'; // prisma/seed.ts's own BackOffice Reviewer, seeded REVIEWER
-
-async function loginAsSeededStaff(app: INestApplication, phone: string): Promise<RegisteredPerson> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const code = await requestOtpAndCaptureCodeDirect(app, phone);
-    const res = await verifyOtp(app, { phone, code });
-    if (res.status === 200) {
-      return { phone, personId: res.body.data.personId, accessToken: res.body.data.accessToken };
-    }
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `loginAsSeededStaff(${phone}) failed after ${maxAttempts} attempts: ` +
-          `${res.status} ${JSON.stringify(res.body)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-  }
-  throw new Error('unreachable');
 }
 
 describe('Backoffice RBAC Foundation (ADR-099)', () => {
@@ -220,16 +198,31 @@ describe('Backoffice RBAC Foundation (ADR-099)', () => {
   beforeAll(async () => {
     ({ app, prisma } = await bootstrapTestApp());
 
-    admin = await loginAsSeededStaff(app, PLATFORM_ADMIN_PHONE);
-    reviewer = await loginAsSeededStaff(app, PLATFORM_REVIEWER_PHONE);
+    admin = await registerPerson(app);
+    createdPhones.push(admin.phone);
+
+    reviewer = await registerPerson(app);
+    createdPhones.push(reviewer.phone);
 
     plainPerson = await registerPerson(app);
     createdPhones.push(plainPerson.phone);
 
-    const adminStaff = await prisma.platformStaff.findUnique({
-      where: { personId: admin.personId },
+    const adminStaff = await prisma.platformStaff.create({
+      data: {
+        personId: admin.personId,
+        role: 'PLATFORM_ADMIN',
+        isActive: true,
+      },
     });
-    adminStaffId = adminStaff!.id;
+    adminStaffId = adminStaff.id;
+
+    await prisma.platformStaff.create({
+      data: {
+        personId: reviewer.personId,
+        role: 'REVIEWER',
+        isActive: true,
+      },
+    });
 
     // Idempotent, find-or-create — does not assume `npm run db:seed:rbac`
     // has run in this environment.
@@ -256,6 +249,13 @@ describe('Backoffice RBAC Foundation (ADR-099)', () => {
 
   afterAll(async () => {
     await cleanupRbacFixtures(prisma, createdStaffIds, createdRoleIds);
+    await prisma.platformStaff.deleteMany({
+      where: {
+        personId: {
+          in: [admin.personId, reviewer.personId],
+        },
+      },
+    });
     await cleanupPhones(prisma, createdPhones);
     await app.close();
   });
