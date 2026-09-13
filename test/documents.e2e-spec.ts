@@ -1,4 +1,4 @@
-import { Test, TestingModule } from '@nestjs/testing';
+import { TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
@@ -9,6 +9,7 @@ import { ResponseInterceptor } from '../src/common/interceptors/response.interce
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import type { AppConfig } from '../src/config/configuration';
 import { createE2eRunId, E2E_SUITE_ID } from './helpers/e2e-identity';
+import { createIsolatedTestingModule } from './helpers/create-isolated-testing-module';
 import {
   createDocument,
   uploadDocumentVersion,
@@ -121,7 +122,7 @@ function nextPostalCode(): string {
 }
 
 async function bootstrapTestApp(): Promise<{ app: INestApplication; prisma: PrismaService }> {
-  const moduleFixture: TestingModule = await Test.createTestingModule({
+  const moduleFixture: TestingModule = await createIsolatedTestingModule({
     imports: [AppModule],
   }).compile();
 
