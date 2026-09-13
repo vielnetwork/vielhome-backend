@@ -1244,13 +1244,21 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
       title: 'Staff-only attachment',
       visibility: 'MANAGEMENT_ONLY',
     });
+    const { documentId: memberVisibleDocId } = await createDocument(
+      app,
+      buildingId,
+      manager.accessToken,
+      {
+        title: 'Member-visible attachment',
+      },
+    );
     await request(app.getHttpServer())
       .post(`/api/v1/documents/${staffDocId}/references`)
       .set('Authorization', `Bearer ${manager.accessToken}`)
       .send({ entityType: 'CASE', entityId: caseId })
       .expect(201);
     await request(app.getHttpServer())
-      .post(`/api/v1/documents/${documentId}/references`)
+      .post(`/api/v1/documents/${memberVisibleDocId}/references`)
       .set('Authorization', `Bearer ${member.accessToken}`)
       .send({ entityType: 'CASE', entityId: caseId })
       .expect(201);
@@ -1263,7 +1271,7 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
     const memberDocIds = memberView.body.data.map(
       (r: { documentVersion: { document: { id: string } } }) => r.documentVersion.document.id,
     );
-    expect(memberDocIds).toContain(documentId);
+    expect(memberDocIds).toContain(memberVisibleDocId);
     expect(memberDocIds).not.toContain(staffDocId);
 
     const managerView = await request(app.getHttpServer())
@@ -1274,7 +1282,7 @@ describe('Documents (e2e) — References & Download (08.09 Rule 002/017/021)', (
     const managerDocIds = managerView.body.data.map(
       (r: { documentVersion: { document: { id: string } } }) => r.documentVersion.document.id,
     );
-    expect(managerDocIds).toContain(documentId);
+    expect(managerDocIds).toContain(memberVisibleDocId);
     expect(managerDocIds).toContain(staffDocId);
   });
 });
