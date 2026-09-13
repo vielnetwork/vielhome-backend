@@ -195,6 +195,49 @@ async function cleanupPhones(prisma: PrismaService, phones: string[]): Promise<v
   }
 }
 
+async function waitForBallotCastGamificationDrain(
+  prisma: PrismaService,
+  buildingIds: string[],
+): Promise<void> {
+  if (buildingIds.length === 0) return;
+
+  const drained = await waitFor(
+    async () => {
+      const [ballotSubmittedAudits, voteXp, voteScoreEvents] = await Promise.all([
+        prisma.auditLog.count({
+          where: {
+            buildingId: { in: buildingIds },
+            action: 'BallotSubmitted',
+            entityType: 'Ballot',
+          },
+        }),
+        prisma.xpTransaction.count({
+          where: {
+            buildingId: { in: buildingIds },
+            reason: 'VOTE_PARTICIPATED',
+            sourceEvent: 'BallotCast',
+          },
+        }),
+        prisma.buildingScoreEvent.count({
+          where: {
+            buildingScore: { buildingId: { in: buildingIds } },
+            reason: 'VOTE_PARTICIPATED',
+            sourceEvent: 'BallotCast',
+          },
+        }),
+      ]);
+
+      return ballotSubmittedAudits === voteXp && voteXp === voteScoreEvents
+        ? { ballotSubmittedAudits, voteXp, voteScoreEvents }
+        : null;
+    },
+    20,
+    100,
+  );
+
+  expect(drained).toBeDefined();
+}
+
 /**
  * `building.e2e-spec.ts`'s own `deleteBuildingsOnceBatch` (including its
  * ADR-073 round-1 BuildingScore/BuildingScoreEvent/FeatureGrant fix),
@@ -282,6 +325,7 @@ async function deleteBuildingsOnceBatch(
 
 async function cleanupBuildings(prisma: PrismaService, buildingIds: string[]): Promise<void> {
   if (buildingIds.length === 0) return;
+  await waitForBallotCastGamificationDrain(prisma, buildingIds);
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -1947,6 +1991,12 @@ describe('Governance (e2e) — Cross-Building Isolation (audit §28/§29)', () =
       .get(`/api/v1/buildings/${buildingBId}/votes/${voteAId}/results`)
       .set('Authorization', `Bearer ${managerB.accessToken}`)
       .expect(404);
+    console.log('[FIX20 vote-results 404]', {
+      status: res.status,
+      contentType: res.headers['content-type'],
+      body: res.body,
+      text: res.text,
+    });
     expect(res.body.errors[0].code).toBe('NOT_FOUND');
   });
 
@@ -1964,6 +2014,12 @@ describe('Governance (e2e) — Cross-Building Isolation (audit §28/§29)', () =
       .get(`/api/v1/buildings/${buildingBId}/meetings/${meetingAId}`)
       .set('Authorization', `Bearer ${managerB.accessToken}`)
       .expect(404);
+    console.log('[FIX20 meeting-detail 404]', {
+      status: res.status,
+      contentType: res.headers['content-type'],
+      body: res.body,
+      text: res.text,
+    });
     expect(res.body.errors[0].code).toBe('NOT_FOUND');
   });
 
