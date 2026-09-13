@@ -223,8 +223,53 @@ async function deleteBuildingsOnceBatch(
   await prisma.building.deleteMany({ where: { id: { in: buildingIds } } });
 }
 
+async function waitForApprovedPaymentGamificationDrain(
+  prisma: PrismaService,
+  buildingIds: string[],
+): Promise<void> {
+  if (buildingIds.length === 0) return;
+
+  const drained = await waitFor(async () => {
+    const [paymentApprovedAudits, chargePaidXp, chargePaidScoreEvents] = await Promise.all([
+      prisma.auditLog.count({
+        where: {
+          buildingId: { in: buildingIds },
+          action: 'PaymentApproved',
+          entityType: 'Payment',
+        },
+      }),
+      prisma.xpTransaction.count({
+        where: {
+          buildingId: { in: buildingIds },
+          reason: 'CHARGE_PAID',
+          sourceEvent: 'PaymentApproved',
+        },
+      }),
+      prisma.buildingScoreEvent.count({
+        where: {
+          buildingScore: { buildingId: { in: buildingIds } },
+          reason: 'CHARGE_PAID',
+          sourceEvent: 'PaymentApproved',
+        },
+      }),
+    ]);
+
+    return paymentApprovedAudits === chargePaidXp && chargePaidXp === chargePaidScoreEvents
+      ? { paymentApprovedAudits, chargePaidXp, chargePaidScoreEvents }
+      : null;
+  }, 20, 100);
+
+  expect(drained).toBeDefined();
+}
+
 async function cleanupBuildings(prisma: PrismaService, buildingIds: string[]): Promise<void> {
   if (buildingIds.length === 0) return;
+
+  // PaymentApproved is emitted with EventEmitter2.emit(), so its async
+  // Gamification listener may still be writing XP/BuildingScore state after
+  // the HTTP response has completed. Drain that durable chain before deleting
+  // the fixture's BuildingScore/Building rows.
+  await waitForApprovedPaymentGamificationDrain(prisma, buildingIds);
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -3687,6 +3732,7 @@ describe('Finance (e2e) — reversal guard for payments that generated unit cred
       }),
     );
     expect(xp?.amount).toBe(20);
+
   }
 
   async function expectCreditReversalRejection(params: {
