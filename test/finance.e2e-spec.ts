@@ -229,35 +229,39 @@ async function waitForApprovedPaymentGamificationDrain(
 ): Promise<void> {
   if (buildingIds.length === 0) return;
 
-  const drained = await waitFor(async () => {
-    const [paymentApprovedAudits, chargePaidXp, chargePaidScoreEvents] = await Promise.all([
-      prisma.auditLog.count({
-        where: {
-          buildingId: { in: buildingIds },
-          action: 'PaymentApproved',
-          entityType: 'Payment',
-        },
-      }),
-      prisma.xpTransaction.count({
-        where: {
-          buildingId: { in: buildingIds },
-          reason: 'CHARGE_PAID',
-          sourceEvent: 'PaymentApproved',
-        },
-      }),
-      prisma.buildingScoreEvent.count({
-        where: {
-          buildingScore: { buildingId: { in: buildingIds } },
-          reason: 'CHARGE_PAID',
-          sourceEvent: 'PaymentApproved',
-        },
-      }),
-    ]);
+  const drained = await waitFor(
+    async () => {
+      const [paymentApprovedAudits, chargePaidXp, chargePaidScoreEvents] = await Promise.all([
+        prisma.auditLog.count({
+          where: {
+            buildingId: { in: buildingIds },
+            action: 'PaymentApproved',
+            entityType: 'Payment',
+          },
+        }),
+        prisma.xpTransaction.count({
+          where: {
+            buildingId: { in: buildingIds },
+            reason: 'CHARGE_PAID',
+            sourceEvent: 'PaymentApproved',
+          },
+        }),
+        prisma.buildingScoreEvent.count({
+          where: {
+            buildingScore: { buildingId: { in: buildingIds } },
+            reason: 'CHARGE_PAID',
+            sourceEvent: 'PaymentApproved',
+          },
+        }),
+      ]);
 
-    return paymentApprovedAudits === chargePaidXp && chargePaidXp === chargePaidScoreEvents
-      ? { paymentApprovedAudits, chargePaidXp, chargePaidScoreEvents }
-      : null;
-  }, 20, 100);
+      return paymentApprovedAudits === chargePaidXp && chargePaidXp === chargePaidScoreEvents
+        ? { paymentApprovedAudits, chargePaidXp, chargePaidScoreEvents }
+        : null;
+    },
+    20,
+    100,
+  );
 
   expect(drained).toBeDefined();
 }
@@ -3732,7 +3736,6 @@ describe('Finance (e2e) — reversal guard for payments that generated unit cred
       }),
     );
     expect(xp?.amount).toBe(20);
-
   }
 
   async function expectCreditReversalRejection(params: {
