@@ -20,7 +20,10 @@ import { BusinessRuleViolationError, ConflictError } from '../../../../common/er
 describe('VotingRepository', () => {
   describe('publishVote', () => {
     let tx: {
-      vote: { update: jest.Mock };
+      vote: {
+        updateMany: jest.Mock;
+        findUniqueOrThrow: jest.Mock;
+      };
       unit: { findMany: jest.Mock };
       voteEligibilitySnapshot: { createMany: jest.Mock };
     };
@@ -30,7 +33,8 @@ describe('VotingRepository', () => {
     function setup(voteOverrides: Record<string, unknown> = {}) {
       tx = {
         vote: {
-          update: jest.fn().mockResolvedValue({
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          findUniqueOrThrow: jest.fn().mockResolvedValue({
             id: 'vote-1',
             scopeType: 'ENTIRE_BUILDING',
             scopeBlockId: null,
@@ -48,6 +52,27 @@ describe('VotingRepository', () => {
         new VotePolicy(),
       );
     }
+
+    it('atomically claims DRAFT -> ACTIVE and rejects a concurrent publisher before snapshot work', async () => {
+      setup();
+
+      tx.vote.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(repository.publishVote('vote-1', 'b1', false)).rejects.toBeInstanceOf(
+        ConflictError,
+      );
+
+      expect(tx.vote.updateMany).toHaveBeenCalledWith({
+        where: { id: 'vote-1', status: 'DRAFT' },
+        data: {
+          status: 'ACTIVE',
+          publishedAt: expect.any(Date),
+        },
+      });
+      expect(tx.vote.findUniqueOrThrow).not.toHaveBeenCalled();
+      expect(tx.unit.findMany).not.toHaveBeenCalled();
+      expect(tx.voteEligibilitySnapshot.createMany).not.toHaveBeenCalled();
+    });
 
     it('ENTIRE_BUILDING (the default) applies no unit-scope filter beyond buildingId', async () => {
       setup();

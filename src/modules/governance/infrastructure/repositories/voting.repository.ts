@@ -132,9 +132,19 @@ export class VotingRepository {
    */
   publishVote(voteId: string, buildingId: string, allowTenantVoting: boolean) {
     return this.prisma.$transaction(async (tx) => {
-      const vote = await tx.vote.update({
-        where: { id: voteId },
+      const claimed = await tx.vote.updateMany({
+        where: { id: voteId, status: 'DRAFT' },
         data: { status: 'ACTIVE', publishedAt: new Date() },
+      });
+
+      if (claimed.count !== 1) {
+        throw new ConflictError(
+          'This vote is no longer DRAFT (it may have just been published or cancelled). Reload and retry.',
+        );
+      }
+
+      const vote = await tx.vote.findUniqueOrThrow({
+        where: { id: voteId },
       });
 
       const scopeFilter: Record<string, unknown> = {};
