@@ -58,7 +58,13 @@ export interface AppConfig {
    */
   notificationProviders: {
     email: { apiKey: string; fromAddress: string; fromName: string };
-    sms: { accountSid: string; authToken: string; fromNumber: string };
+    sms: {
+      accountSid: string;
+      authToken: string;
+      fromNumber: string;
+      kavenegarApiKey: string;
+      kavenegarVerifyTemplate: string;
+    };
     push: { projectId: string; clientEmail: string; privateKey: string };
   };
 }
@@ -166,6 +172,8 @@ export default (): AppConfig => {
         accountSid: process.env.SMS_PROVIDER_ACCOUNT_SID ?? '',
         authToken: process.env.SMS_PROVIDER_AUTH_TOKEN ?? '',
         fromNumber: process.env.SMS_PROVIDER_FROM_NUMBER ?? '',
+        kavenegarApiKey: process.env.KAVENEGAR_API_KEY ?? '',
+        kavenegarVerifyTemplate: process.env.KAVENEGAR_VERIFY_TEMPLATE ?? '',
       },
       push: {
         projectId: process.env.PUSH_FIREBASE_PROJECT_ID ?? '',

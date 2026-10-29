@@ -8,7 +8,13 @@ function makeConfigService(
 ): ConfigService<AppConfig, true> {
   const full: AppConfig['notificationProviders'] = {
     email: { apiKey: '', fromAddress: '', fromName: '', ...email },
-    sms: { accountSid: '', authToken: '', fromNumber: '' },
+    sms: {
+      accountSid: '',
+      authToken: '',
+      fromNumber: '',
+      kavenegarApiKey: '',
+      kavenegarVerifyTemplate: '',
+    },
     push: { projectId: '', clientEmail: '', privateKey: '' },
   };
   return { get: () => full } as unknown as ConfigService<AppConfig, true>;

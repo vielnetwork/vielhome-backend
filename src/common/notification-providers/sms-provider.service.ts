@@ -1,11 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AppConfig } from '../../config/configuration';
-import { postForm } from './http-json.util';
+import { postForm, ProviderHttpError } from './http-json.util';
 
 export interface SmsMessage {
   to: string;
   body: string;
+}
+
+export interface SmsOtpMessage {
+  to: string;
+  code: string;
 }
 
 /**
@@ -46,6 +51,18 @@ export class SmsProviderService {
     return Boolean(c.accountSid && c.authToken && c.fromNumber);
   }
 
+  isOtpConfigured(): boolean {
+    const c = this.cfg;
+    const hasKavenegar = Boolean(c.kavenegarApiKey || c.kavenegarVerifyTemplate);
+    const kavenegarComplete = Boolean(c.kavenegarApiKey && c.kavenegarVerifyTemplate);
+    return hasKavenegar ? kavenegarComplete : this.isConfigured();
+  }
+
+  hasPartialOtpConfiguration(): boolean {
+    const c = this.cfg;
+    return Boolean(c.kavenegarApiKey) !== Boolean(c.kavenegarVerifyTemplate);
+  }
+
   /** Throws `ProviderHttpError` on any non-2xx response or network failure — callers decide retry/fallback policy. */
   async send(message: SmsMessage): Promise<void> {
     const c = this.cfg;
@@ -58,5 +75,45 @@ export class SmsProviderService {
       form: { To: message.to, From: c.fromNumber, Body: message.body },
     });
     this.logger.debug('SMS request accepted by Twilio.');
+  }
+
+  /** Sends OTPs through Kavenegar VerifyLookup when configured, otherwise preserves Twilio fallback. */
+  async sendOtp(message: SmsOtpMessage): Promise<void> {
+    const c = this.cfg;
+    if (this.hasPartialOtpConfiguration()) {
+      throw new ProviderHttpError('Kavenegar OTP provider configuration is incomplete.');
+    }
+    if (!c.kavenegarApiKey || !c.kavenegarVerifyTemplate) {
+      await this.send({
+        to: message.to,
+        body: `Your VielHome verification code is ${message.code}.`,
+      });
+      return;
+    }
+
+    const url = `https://api.kavenegar.com/v1/${encodeURIComponent(c.kavenegarApiKey)}/verify/lookup.json`;
+    const response = await postForm({
+      url,
+      headers: {},
+      providerName: 'Kavenegar',
+      form: {
+        receptor: message.to,
+        token: message.code,
+        template: c.kavenegarVerifyTemplate,
+      },
+    });
+    const result = response as
+      | {
+          return?: { status?: number };
+        }
+      | undefined;
+    if (result?.return?.status !== 200) {
+      throw new ProviderHttpError(
+        'Kavenegar OTP provider rejected the request.',
+        undefined,
+        undefined,
+      );
+    }
+    this.logger.debug('OTP request accepted by Kavenegar.');
   }
 }

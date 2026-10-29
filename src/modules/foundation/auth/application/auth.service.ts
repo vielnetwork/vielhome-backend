@@ -258,21 +258,18 @@ export class AuthService {
     ttlSeconds: number,
   ): Promise<void> {
     const isProduction = this.config.get('env', { infer: true }) === 'production';
-    if (this.smsProvider.isConfigured()) {
+    if (this.smsProvider.isOtpConfigured() || this.smsProvider.hasPartialOtpConfiguration()) {
       try {
-        await this.smsProvider.send({
-          to: phone,
-          body: `Your VielHome verification code is ${code}. It expires in ${Math.round(ttlSeconds / 60)} minute(s).`,
-        });
+        await this.smsProvider.sendOtp({ to: phone, code });
         return;
       } catch {
-        if (isProduction) {
+        if (isProduction || this.smsProvider.hasPartialOtpConfiguration()) {
           this.logger.warn('SMS OTP delivery failed.');
           throw new ServiceUnavailableError(
             'Verification code delivery is temporarily unavailable. Please try again.',
           );
         }
-        this.logger.warn(`Real SMS OTP delivery failed for ${phone} (${purpose}).`);
+        this.logger.warn('Real SMS OTP delivery failed; using the configured fallback path.');
       }
     }
 

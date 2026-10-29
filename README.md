@@ -436,8 +436,8 @@ ADR-071`), run `npm run docs:export-openapi` — writes
 ## Trying the auth flow
 
 ```bash
-# 1. Request an OTP (in dev, the code is printed to the server console —
-#    no SMS gateway is wired up yet)
+# 1. Request an OTP (in dev, the code is printed to the server console unless
+#    a provider is configured)
 curl -X POST http://localhost:3000/api/v1/auth/otp/request \
   -H "Content-Type: application/json" \
   -d '{"phone": "+989120000000"}'
@@ -448,6 +448,14 @@ curl -X POST http://localhost:3000/api/v1/auth/otp/verify \
   -d '{"phone": "+989120000000", "code": "12345", "deviceToken": "dev-device-1", "platform": "web"}'
 
 # -> returns { data: { accessToken, refreshToken, personId, isNewPerson, hasBuildings } }
+
+For real OTP delivery, configure `KAVENEGAR_API_KEY` and the approved
+`KAVENEGAR_VERIFY_TEMPLATE`. Kavenegar VerifyLookup receives the OTP as its
+`token` parameter and uses the configured template; general notification SMS
+continues to use the existing Twilio variables
+(`SMS_PROVIDER_ACCOUNT_SID`, `SMS_PROVIDER_AUTH_TOKEN`, and
+`SMS_PROVIDER_FROM_NUMBER`). Provider credentials and OTP codes are never
+written to application logs.
 
 # 3. Start the Building Setup Wizard (use accessToken from step 2)
 curl -X POST http://localhost:3000/api/v1/buildings/setup/draft \

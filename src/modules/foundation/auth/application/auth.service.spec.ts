@@ -11,6 +11,7 @@ describe('AuthService production OTP delivery', () => {
     applicationEnvironment?: 'production' | 'staging' | 'development';
     configured: boolean;
     sendFails?: boolean;
+    partialKavenegar?: boolean;
     stagingLogEnabled?: boolean;
     stagingLogAllowedPhones?: string[];
   }) {
@@ -39,7 +40,12 @@ describe('AuthService production OTP delivery', () => {
     };
     const smsProvider = {
       isConfigured: jest.fn().mockReturnValue(params.configured),
+      isOtpConfigured: jest.fn().mockReturnValue(params.configured),
+      hasPartialOtpConfiguration: jest.fn().mockReturnValue(params.partialKavenegar ?? false),
       send: params.sendFails
+        ? jest.fn().mockRejectedValue(new Error(`provider secret detail ${code} ${phone}`))
+        : jest.fn().mockResolvedValue(undefined),
+      sendOtp: params.sendFails
         ? jest.fn().mockRejectedValue(new Error(`provider secret detail ${code} ${phone}`))
         : jest.fn().mockResolvedValue(undefined),
     };
@@ -147,7 +153,7 @@ describe('AuthService production OTP delivery', () => {
     await expect(service.requestOtp({ phone, purpose: 'LOGIN' }, 'req-provider')).resolves.toEqual({
       expiresInSeconds: 120,
     });
-    expect(smsProvider.send).toHaveBeenCalledTimes(1);
+    expect(smsProvider.sendOtp).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls.flat().join(' ')).not.toContain('STAGING TEST OTP');
   });
 
@@ -166,6 +172,25 @@ describe('AuthService production OTP delivery', () => {
     expect(warnings).not.toContain(code);
     expect(warnings).not.toContain(phone);
     expect(warnings).not.toContain('provider secret detail');
+  });
+
+  it('fails closed for partial Kavenegar configuration without staging OTP fallback', async () => {
+    const { service, smsProvider } = makeService({
+      env: 'production',
+      applicationEnvironment: 'staging',
+      configured: false,
+      partialKavenegar: true,
+      sendFails: true,
+      stagingLogEnabled: true,
+      stagingLogAllowedPhones: [phone],
+    });
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    await expect(
+      service.requestOtp({ phone, purpose: 'LOGIN' }, 'req-partial'),
+    ).rejects.toBeInstanceOf(ServiceUnavailableError);
+    expect(smsProvider.sendOtp).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls.flat().join(' ')).not.toContain(code);
+    expect(warnSpy.mock.calls.flat().join(' ')).not.toContain(phone);
   });
 
   it('preserves the intentional console fallback outside production', async () => {
