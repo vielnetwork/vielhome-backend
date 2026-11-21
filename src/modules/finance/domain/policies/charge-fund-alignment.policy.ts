@@ -7,8 +7,11 @@ import {
 
 export const NEW_CHARGE_KIND_ORDER = [
   ChargeKind.MONTHLY,
+  ChargeKind.AD_HOC,
   ChargeKind.RESERVE,
   ChargeKind.REPAIR,
+  ChargeKind.COST_RECOVERY,
+  ChargeKind.SERVICE_RENTAL,
   ChargeKind.EMERGENCY,
   ChargeKind.INSURANCE,
   ChargeKind.OTHER,
@@ -17,8 +20,11 @@ export const NEW_CHARGE_KIND_ORDER = [
 const FUND_TYPE_BY_CHARGE_KIND: Readonly<Record<(typeof NEW_CHARGE_KIND_ORDER)[number], FundType>> =
   {
     [ChargeKind.MONTHLY]: FundType.CURRENT,
+    [ChargeKind.AD_HOC]: FundType.CURRENT,
     [ChargeKind.RESERVE]: FundType.RESERVE,
     [ChargeKind.REPAIR]: FundType.RENOVATION,
+    [ChargeKind.COST_RECOVERY]: FundType.CURRENT,
+    [ChargeKind.SERVICE_RENTAL]: FundType.CURRENT,
     [ChargeKind.EMERGENCY]: FundType.EMERGENCY,
     [ChargeKind.INSURANCE]: FundType.INSURANCE,
     [ChargeKind.OTHER]: FundType.CUSTOM,

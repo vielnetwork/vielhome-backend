@@ -33,6 +33,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { BackofficeBootstrapModule } from './modules/backoffice-bootstrap/backoffice-bootstrap.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
 import { AdvertisingModule } from './modules/advertising/advertising.module';
+import { ServiceContractsModule } from './modules/service-contracts/service-contracts.module';
 
 @Module({
   imports: [
@@ -153,6 +154,7 @@ import { AdvertisingModule } from './modules/advertising/advertising.module';
     // its own `AdCampaign` table. Registered here, before the
     // startup-order-sensitive SchedulerModule below.
     AdvertisingModule,
+    ServiceContractsModule,
     // Registered last — the first module in this codebase whose own
     // startup logic (`SchedulerBootstrapService.onApplicationBootstrap`)
     // actively calls into other domains' services, so every domain it

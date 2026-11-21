@@ -25,8 +25,11 @@ const PAYER_TYPES = ['OWNER', 'RESIDENT', 'TENANT'] as const;
 const LATE_FEE_TYPES = ['FIXED', 'PERCENTAGE'] as const;
 const CHARGE_KINDS = [
   'MONTHLY',
+  'AD_HOC',
   'RESERVE',
   'REPAIR',
+  'COST_RECOVERY',
+  'SERVICE_RENTAL',
   'EMERGENCY',
   'INSURANCE',
   'SPECIAL',

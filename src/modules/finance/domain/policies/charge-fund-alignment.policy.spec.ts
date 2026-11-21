@@ -9,8 +9,11 @@ describe('ChargeFundAlignmentPolicy', () => {
   const policy = new ChargeFundAlignmentPolicy();
   const mappings: Array<[ChargeKind, FundType]> = [
     [ChargeKind.MONTHLY, FundType.CURRENT],
+    [ChargeKind.AD_HOC, FundType.CURRENT],
     [ChargeKind.RESERVE, FundType.RESERVE],
     [ChargeKind.REPAIR, FundType.RENOVATION],
+    [ChargeKind.COST_RECOVERY, FundType.CURRENT],
+    [ChargeKind.SERVICE_RENTAL, FundType.CURRENT],
     [ChargeKind.EMERGENCY, FundType.EMERGENCY],
     [ChargeKind.INSURANCE, FundType.INSURANCE],
     [ChargeKind.OTHER, FundType.CUSTOM],

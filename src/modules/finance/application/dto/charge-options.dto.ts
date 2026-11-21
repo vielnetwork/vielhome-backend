@@ -16,8 +16,11 @@ export class ChargeKindOptionDto {
   @ApiProperty({
     enum: [
       ChargeKind.MONTHLY,
+      ChargeKind.AD_HOC,
       ChargeKind.RESERVE,
       ChargeKind.REPAIR,
+      ChargeKind.COST_RECOVERY,
+      ChargeKind.SERVICE_RENTAL,
       ChargeKind.EMERGENCY,
       ChargeKind.INSURANCE,
       ChargeKind.OTHER,

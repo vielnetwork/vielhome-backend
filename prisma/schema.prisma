@@ -83,6 +83,10 @@ model Person {
   // ADR-126)
   expensesCreated      Expense[]         @relation("ExpenseCreatedBy")
   expensesVoided       Expense[]         @relation("ExpenseVoidedBy")
+  serviceContracts     ServiceContract[] @relation("ServiceContractCustomer")
+  serviceContractsManaged ServiceContract[] @relation("ServiceContractManager")
+  serviceContractPayments ServiceContractPayment[] @relation("ServiceContractPaymentPayer")
+  approvedServiceContractPayments ServiceContractPayment[] @relation("ServiceContractPaymentApprovedBy")
 
   createdVotes       Vote[]                    @relation("VoteCreatedBy")
   voteEligibilities  VoteEligibilitySnapshot[] @relation("VoteEligiblePerson")
@@ -335,6 +339,9 @@ model Building {
   adjustments    Adjustment[]
   refunds        Refund[]
   expenses       Expense[]
+  serviceContracts ServiceContract[]
+  serviceContractInvoices ServiceContractInvoice[]
+  serviceContractPayments ServiceContractPayment[]
 
   votes       Vote[]
   meetings    Meeting[]
@@ -686,6 +693,104 @@ model MembershipRequest {
   @@map("membership_requests")
 }
 
+enum ServiceContractStatus {
+  ACTIVE
+  ENDED
+}
+
+// A non-member's limited, auditable relationship with a building. Managers
+// create/end these; the customer never receives a Membership row.
+model ServiceContract {
+  id               String                @id @default(cuid())
+  buildingId       String
+  building         Building              @relation(fields: [buildingId], references: [id])
+  customerPersonId String
+  customer         Person                @relation("ServiceContractCustomer", fields: [customerPersonId], references: [id])
+  managedById      String
+  managedBy        Person                @relation("ServiceContractManager", fields: [managedById], references: [id])
+  title            String
+  amount           Int
+  startsAt         DateTime              @default(now())
+  endsAt           DateTime?
+  status           ServiceContractStatus @default(ACTIVE)
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  invoices         ServiceContractInvoice[]
+
+  @@index([buildingId, status])
+  @@index([customerPersonId, status])
+  @@map("service_contracts")
+}
+
+// The customer-facing receivable for a service/common-area contract. It is
+// intentionally separate from ChargeItem: ChargeItem is unit-only, whereas
+// this obligation belongs to a non-member customer and must never appear in
+// a resident's debt list.
+enum ServiceContractInvoiceStatus {
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+}
+
+model ServiceContractInvoice {
+  id         String                       @id @default(cuid())
+  contractId String
+  contract   ServiceContract              @relation(fields: [contractId], references: [id])
+  buildingId String
+  building   Building                     @relation(fields: [buildingId], references: [id])
+  title      String
+  amount     Int
+  paidAmount Int                          @default(0)
+  dueDate    DateTime?
+  status     ServiceContractInvoiceStatus @default(ISSUED)
+  createdAt  DateTime                     @default(now())
+  updatedAt  DateTime                     @updatedAt
+
+  payments ServiceContractPayment[]
+
+  @@index([buildingId, status])
+  @@index([contractId])
+  @@map("service_contract_invoices")
+}
+
+enum ServiceContractPaymentStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+// A non-member customer's reported cash/bank payment. Approval is the only
+// transition that writes a LedgerEntry and increases a building Fund.
+model ServiceContractPayment {
+  id             String                       @id @default(cuid())
+  invoiceId      String
+  invoice        ServiceContractInvoice       @relation(fields: [invoiceId], references: [id])
+  buildingId     String
+  building       Building                     @relation(fields: [buildingId], references: [id])
+  fundId         String
+  fund           Fund                         @relation(fields: [fundId], references: [id])
+  payerId        String
+  payer          Person                       @relation("ServiceContractPaymentPayer", fields: [payerId], references: [id])
+  amount         Int
+  method         PaymentMethod
+  status         ServiceContractPaymentStatus @default(PENDING_APPROVAL)
+  idempotencyKey String?
+  reference      String?
+  note           String?
+  approvedById   String?
+  approvedBy     Person?                      @relation("ServiceContractPaymentApprovedBy", fields: [approvedById], references: [id])
+  approvedAt     DateTime?
+  rejectedReason String?
+  createdAt      DateTime                     @default(now())
+  updatedAt      DateTime                     @updatedAt
+
+  @@unique([payerId, invoiceId, idempotencyKey])
+  @@index([buildingId, status])
+  @@index([invoiceId])
+  @@map("service_contract_payments")
+}
+
 // ---------------------------------------------------------------------------
 // Finance domain (12_Finance_Architecture — Frozen)
 //
@@ -787,6 +892,7 @@ model Fund {
   ledgerEntries LedgerEntry[]
   adjustments   Adjustment[]
   expenses      Expense[]
+  serviceContractPayments ServiceContractPayment[]
 
   @@unique([buildingId, name])
   @@index([buildingId])
@@ -798,8 +904,11 @@ model Fund {
 // reconstructed safely from free-text titles or descriptions.
 enum ChargeKind {
   MONTHLY
+  AD_HOC
   RESERVE
   REPAIR
+  COST_RECOVERY
+  SERVICE_RENTAL
   EMERGENCY
   INSURANCE
   // Legacy classification retained for historical rows. New creation is
