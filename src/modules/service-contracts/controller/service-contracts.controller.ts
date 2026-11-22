@@ -37,6 +37,30 @@ export class BuildingServiceContractsController {
     return this.contracts.listForBuilding(buildingId);
   }
 
+  @Post(':id/service-contracts/:contractId/deposit/refund')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
+  refundDeposit(
+    @Param('id') buildingId: string,
+    @Param('contractId') contractId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.contracts.recordDeposit(buildingId, contractId, user.sub, requestId, true);
+  }
+
+  @Post(':id/service-contracts/:contractId/deposit/receive')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
+  receiveDeposit(
+    @Param('id') buildingId: string,
+    @Param('contractId') contractId: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+  ) {
+    return this.contracts.recordDeposit(buildingId, contractId, user.sub, requestId, false);
+  }
+
   @Post(':id/service-contracts/:contractId/end')
   @UseGuards(RolesGuard)
   @Roles('MANAGER')

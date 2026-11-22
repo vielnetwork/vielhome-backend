@@ -1,5 +1,15 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsDateString, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, MinLength } from 'class-validator';
+import {
+  IsDateString,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsPositive,
+  IsString,
+  Max,
+  Min,
+  MinLength,
+} from 'class-validator';
 import { IsIranianMobilePhone } from '../../../../common/decorators/is-iranian-mobile-phone.decorator';
 
 /**
@@ -30,7 +40,30 @@ export class CreateServiceContractDto {
   @ApiProperty({ description: 'Whole Iranian Rial. Must be positive.' })
   @IsInt()
   @IsPositive()
-  amount!: number;
+  @IsOptional()
+  amount?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(1200)
+  durationMonths?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  paymentIntervalMonths?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  monthlyAmount?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(2147483647)
+  depositAmount?: number;
 
   @ApiProperty({ required: false, description: 'Defaults to the time of creation.' })
   @IsOptional()
@@ -41,4 +74,8 @@ export class CreateServiceContractDto {
   @IsOptional()
   @IsDateString()
   endsAt?: string;
+
+  @IsOptional()
+  @IsDateString()
+  dueDate?: string;
 }

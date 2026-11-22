@@ -9,7 +9,16 @@ import { PrismaService } from '../../../common/prisma/prisma.service';
 import { ServiceContractsService } from './service-contracts.service';
 
 describe('ServiceContractsService', () => {
-  let prisma: Record<string, { findUnique?: jest.Mock; create?: jest.Mock; findMany?: jest.Mock; findFirst?: jest.Mock; update?: jest.Mock }>;
+  let prisma: Record<
+    string,
+    {
+      findUnique?: jest.Mock;
+      create?: jest.Mock;
+      findMany?: jest.Mock;
+      findFirst?: jest.Mock;
+      update?: jest.Mock;
+    }
+  >;
   let audit: { record: jest.Mock };
   let service: ServiceContractsService;
 
@@ -24,7 +33,12 @@ describe('ServiceContractsService', () => {
   beforeEach(() => {
     prisma = {
       person: { findUnique: jest.fn(), create: jest.fn() },
-      serviceContract: { create: jest.fn(), findMany: jest.fn(), findFirst: jest.fn(), update: jest.fn() },
+      serviceContract: {
+        create: jest.fn(),
+        findMany: jest.fn(),
+        findFirst: jest.fn(),
+        update: jest.fn(),
+      },
     };
     audit = { record: jest.fn() };
     service = new ServiceContractsService(
@@ -58,7 +72,9 @@ describe('ServiceContractsService', () => {
         }),
       }),
     );
-    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'ServiceContractCreated' }));
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'ServiceContractCreated' }),
+    );
   });
 
   it('rejects an end date before the start date before writing anything', async () => {
@@ -80,7 +96,10 @@ describe('ServiceContractsService', () => {
       status: ServiceContractStatus.ACTIVE,
       endsAt: null,
     });
-    prisma.serviceContract.update!.mockResolvedValue({ id: 'contract-1', status: ServiceContractStatus.ENDED });
+    prisma.serviceContract.update!.mockResolvedValue({
+      id: 'contract-1',
+      status: ServiceContractStatus.ENDED,
+    });
 
     await service.end('building-1', 'contract-1', 'manager-1', 'req-1');
 
@@ -95,10 +114,41 @@ describe('ServiceContractsService', () => {
       id: 'contract-1',
       status: ServiceContractStatus.ENDED,
     });
-    await expect(service.end('building-1', 'contract-1', 'manager-1', 'req-2')).rejects.toBeInstanceOf(
+    await expect(
+      service.end('building-1', 'contract-1', 'manager-1', 'req-2'),
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(prisma.serviceContract.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a deposit once and returns it to the same fund without recording rental income', async () => {
+    const tx = {
+      serviceContract: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'c', depositAmount: 500, depositFundId: 'fund' }),
+        updateMany: jest
+          .fn()
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 0 })
+          .mockResolvedValueOnce({ count: 1 }),
+      },
+      fund: { findFirst: jest.fn().mockResolvedValue({ id: 'fund' }), update: jest.fn() },
+      ledgerEntry: { create: jest.fn() },
+    };
+    Object.assign(prisma, { $transaction: (fn: (client: typeof tx) => unknown) => fn(tx) });
+    await service.recordDeposit('b', 'c', 'm', '1', false);
+    await expect(service.recordDeposit('b', 'c', 'm', '2', false)).rejects.toBeInstanceOf(
       ConflictError,
     );
-    expect(prisma.serviceContract.update).toHaveBeenCalledTimes(1);
+    await service.recordDeposit('b', 'c', 'm', '3', true);
+    expect(tx.ledgerEntry.create.mock.calls.map(([args]) => args.data.entryType)).toEqual([
+      'DEPOSIT_RECEIPT',
+      'DEPOSIT_RETURN',
+    ]);
+    expect(tx.fund.update.mock.calls.map(([args]) => args.data.balance.increment)).toEqual([
+      500, -500,
+    ]);
+    expect(tx.fund.findFirst).toHaveBeenLastCalledWith({ where: { id: 'fund', buildingId: 'b' } });
   });
 
   it('scopes the customer view to the authenticated customer id', async () => {

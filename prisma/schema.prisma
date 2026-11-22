@@ -716,6 +716,14 @@ model ServiceContract {
   createdAt        DateTime              @default(now())
   updatedAt        DateTime              @updatedAt
 
+  durationMonths        Int?
+  paymentIntervalMonths Int?
+  monthlyAmount         Int?
+  depositAmount         Int       @default(0)
+  depositReceivedAt     DateTime?
+  depositRefundedAt     DateTime?
+  depositFundId         String?
+  depositFund           Fund? @relation(fields: [depositFundId], references: [id], onDelete: Restrict)
   invoices         ServiceContractInvoice[]
 
   @@index([buildingId, status])
@@ -728,6 +736,7 @@ model ServiceContract {
 // this obligation belongs to a non-member customer and must never appear in
 // a resident's debt list.
 enum ServiceContractInvoiceStatus {
+  CANCELLED
   ISSUED
   PARTIALLY_PAID
   PAID
@@ -864,6 +873,7 @@ enum FundAccountLinkType {
 // fund auto-created — see FinanceService — so charging never has to wait on
 // manual fund setup).
 model Fund {
+  depositContracts ServiceContract[]
   id               String               @id @default(cuid())
   buildingId       String
   building         Building             @relation(fields: [buildingId], references: [id])
@@ -1266,6 +1276,8 @@ model CreditBalance {
 }
 
 enum LedgerEntryType {
+  DEPOSIT_RECEIPT
+  DEPOSIT_RETURN
   CHARGE
   PAYMENT
   ADJUSTMENT

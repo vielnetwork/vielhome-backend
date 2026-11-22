@@ -1,3 +1,4 @@
+import { contractSchedule } from './contract-schedule';
 import { Injectable } from '@nestjs/common';
 import {
   LedgerDirection,
@@ -52,10 +53,7 @@ export class ServiceContractsService {
     requestId: string,
   ) {
     const startsAt = dto.startsAt ? new Date(dto.startsAt) : new Date();
-    const endsAt = dto.endsAt ? new Date(dto.endsAt) : null;
-    if (endsAt && endsAt <= startsAt) {
-      throw new ValidationError('The contract end date must be after its start date.');
-    }
+    const { endsAt, amount, periods } = contractSchedule(dto, startsAt);
 
     // Do not overwrite an existing account holder's name. A manager may only
     // supply missing identity fields when inviting a new service customer.
@@ -76,19 +74,22 @@ export class ServiceContractsService {
         customerPersonId: customer.id,
         managedById: managerPersonId,
         title: dto.title.trim(),
-        amount: dto.amount,
+        amount,
+        durationMonths: dto.durationMonths,
+        paymentIntervalMonths: dto.paymentIntervalMonths,
+        monthlyAmount: dto.monthlyAmount,
+        depositAmount: dto.depositAmount ?? 0,
         startsAt,
         endsAt,
         // The agreed amount immediately becomes a customer-specific
         // receivable. It is deliberately not a ChargeItem: no unit or
         // resident can ever see or settle this third-party obligation.
         invoices: {
-          create: {
+          create: periods.map((period) => ({
             buildingId,
             title: dto.title.trim(),
-            amount: dto.amount,
-            dueDate: endsAt,
-          },
+            ...period,
+          })),
         },
       },
       include: {
@@ -105,7 +106,7 @@ export class ServiceContractsService {
       entityType: 'ServiceContract',
       entityId: contract.id,
       requestId,
-      metadata: { customerPersonId: customer.id, amount: dto.amount },
+      metadata: { customerPersonId: customer.id, amount },
     });
 
     return contract;
@@ -128,11 +129,38 @@ export class ServiceContractsService {
       throw new ConflictError('This service contract has already ended.');
     }
 
-    const ended = await this.prisma.serviceContract.update({
+    const now = new Date();
+    const endData = {
       where: { id: contractId },
-      data: { status: ServiceContractStatus.ENDED, endsAt: contract.endsAt ?? new Date() },
+      data: {
+        status: ServiceContractStatus.ENDED,
+        endsAt: contract.endsAt && contract.endsAt < now ? contract.endsAt : now,
+      },
       include: { customer: { select: customerSelect }, managedBy: { select: managerSelect } },
-    });
+    };
+    const ended = contract.durationMonths
+      ? await this.prisma.$transaction(
+          async (tx) => {
+            const future = { contractId, dueDate: { gt: now } };
+            const paid = await tx.serviceContractInvoice.count({
+              where: {
+                ...future,
+                OR: [
+                  { paidAmount: { gt: 0 } },
+                  { payments: { some: { status: ServiceContractPaymentStatus.PENDING_APPROVAL } } },
+                ],
+              },
+            });
+            if (paid) throw new ConflictError('Future installments have recorded payments.');
+            await tx.serviceContractInvoice.updateMany({
+              where: future,
+              data: { status: ServiceContractInvoiceStatus.CANCELLED },
+            });
+            return tx.serviceContract.update(endData);
+          },
+          { isolationLevel: 'Serializable' },
+        )
+      : await this.prisma.serviceContract.update(endData);
 
     await this.audit.record({
       actorId: managerPersonId,
@@ -144,6 +172,63 @@ export class ServiceContractsService {
     });
 
     return ended;
+  }
+
+  async recordDeposit(
+    buildingId: string,
+    contractId: string,
+    actorId: string,
+    requestId: string,
+    refund: boolean,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const contract = await tx.serviceContract.findFirst({
+        where: { id: contractId, buildingId },
+      });
+      if (!contract || !contract.depositAmount)
+        throw new ValidationError('No deposit on this contract.');
+      const fund = refund
+        ? await tx.fund.findFirst({ where: { id: contract.depositFundId ?? '', buildingId } })
+        : await tx.fund.findFirst({ where: { buildingId, isDefault: true, isActive: true } });
+      if (!fund) throw new ValidationError('Deposit fund is unavailable.');
+      const now = new Date();
+      const change = await tx.serviceContract.updateMany({
+        where: {
+          id: contractId,
+          buildingId,
+          depositRefundedAt: null,
+          ...(refund
+            ? { depositReceivedAt: { not: null } }
+            : { depositReceivedAt: null, status: ServiceContractStatus.ACTIVE }),
+        },
+        data: refund
+          ? { depositRefundedAt: now }
+          : { depositReceivedAt: now, depositFundId: fund.id },
+      });
+      if (change.count !== 1)
+        throw new ConflictError('This deposit action is no longer available.');
+      await tx.ledgerEntry.create({
+        data: {
+          buildingId,
+          fundId: fund.id,
+          actorId,
+          requestId,
+          entryType: refund ? LedgerEntryType.DEPOSIT_RETURN : LedgerEntryType.DEPOSIT_RECEIPT,
+          direction: refund ? LedgerDirection.DEBIT : LedgerDirection.CREDIT,
+          amount: contract.depositAmount,
+          referenceType: 'ServiceContractDeposit',
+          referenceId: contractId,
+          description: refund ? 'Service deposit returned' : 'Service deposit received',
+        },
+      });
+      await tx.fund.update({
+        where: { id: fund.id },
+        data: {
+          balance: { increment: refund ? -contract.depositAmount : contract.depositAmount },
+        },
+      });
+      return { id: contractId };
+    });
   }
 
   /** A non-member service customer can only see contracts they are a party to. */
@@ -188,54 +273,69 @@ export class ServiceContractsService {
     payerPersonId: string,
     requestId: string,
   ) {
-    const invoice = await this.prisma.serviceContractInvoice.findUnique({
-      where: { id: invoiceId },
-      include: { contract: { select: { customerPersonId: true } } },
-    });
-    if (!invoice) throw new NotFoundAppError('Service contract invoice not found.');
-    if (invoice.contract.customerPersonId !== payerPersonId) {
-      throw new AuthorizationError('You may only report payment for your own service contract.');
-    }
-    if (invoice.status === ServiceContractInvoiceStatus.PAID) {
-      throw new BusinessRuleViolationError('This service contract invoice has already been paid.');
-    }
+    const payment = await this.prisma.$transaction(
+      async (tx) => {
+        const invoice = await tx.serviceContractInvoice.findUnique({
+          where: { id: invoiceId },
+          include: { contract: { select: { customerPersonId: true } } },
+        });
+        if (!invoice) throw new NotFoundAppError('Service contract invoice not found.');
+        if (invoice.contract.customerPersonId !== payerPersonId) {
+          throw new AuthorizationError(
+            'You may only report payment for your own service contract.',
+          );
+        }
+        if (invoice.status === ServiceContractInvoiceStatus.CANCELLED)
+          throw new ConflictError('This installment was cancelled.');
+        if (invoice.status === ServiceContractInvoiceStatus.PAID) {
+          throw new BusinessRuleViolationError(
+            'This service contract invoice has already been paid.',
+          );
+        }
 
-    if (dto.idempotencyKey) {
-      const existing = await this.prisma.serviceContractPayment.findFirst({
-        where: { invoiceId, payerId: payerPersonId, idempotencyKey: dto.idempotencyKey },
-      });
-      if (existing) return existing;
-    }
+        if (dto.idempotencyKey) {
+          const existing = await tx.serviceContractPayment.findFirst({
+            where: { invoiceId, payerId: payerPersonId, idempotencyKey: dto.idempotencyKey },
+          });
+          if (existing) return existing;
+        }
 
-    const [pending, fund] = await Promise.all([
-      this.prisma.serviceContractPayment.aggregate({
-        where: { invoiceId, status: ServiceContractPaymentStatus.PENDING_APPROVAL },
-        _sum: { amount: true },
-      }),
-      this.prisma.fund.findFirst({ where: { buildingId: invoice.buildingId, isDefault: true, isActive: true } }),
-    ]);
-    const reservable = invoice.amount - invoice.paidAmount - (pending._sum.amount ?? 0);
-    if (dto.amount > reservable) {
-      throw new BusinessRuleViolationError('The reported amount exceeds the remaining invoice amount.');
-    }
-    if (!fund) throw new NotFoundAppError('No active default fund exists for this building.');
+        const [pending, fund] = await Promise.all([
+          tx.serviceContractPayment.aggregate({
+            where: { invoiceId, status: ServiceContractPaymentStatus.PENDING_APPROVAL },
+            _sum: { amount: true },
+          }),
+          tx.fund.findFirst({
+            where: { buildingId: invoice.buildingId, isDefault: true, isActive: true },
+          }),
+        ]);
+        const reservable = invoice.amount - invoice.paidAmount - (pending._sum.amount ?? 0);
+        if (dto.amount > reservable) {
+          throw new BusinessRuleViolationError(
+            'The reported amount exceeds the remaining invoice amount.',
+          );
+        }
+        if (!fund) throw new NotFoundAppError('No active default fund exists for this building.');
 
-    const payment = await this.prisma.serviceContractPayment.create({
-      data: {
-        invoiceId,
-        buildingId: invoice.buildingId,
-        fundId: fund.id,
-        payerId: payerPersonId,
-        amount: dto.amount,
-        method: dto.method,
-        reference: dto.reference,
-        note: dto.note,
-        idempotencyKey: dto.idempotencyKey,
+        return tx.serviceContractPayment.create({
+          data: {
+            invoiceId,
+            buildingId: invoice.buildingId,
+            fundId: fund.id,
+            payerId: payerPersonId,
+            amount: dto.amount,
+            method: dto.method,
+            reference: dto.reference,
+            note: dto.note,
+            idempotencyKey: dto.idempotencyKey,
+          },
+        });
       },
-    });
+      { isolationLevel: 'Serializable' },
+    );
     await this.audit.record({
       actorId: payerPersonId,
-      buildingId: invoice.buildingId,
+      buildingId: payment.buildingId,
       action: 'ServiceContractPaymentReported',
       entityType: 'ServiceContractPayment',
       entityId: payment.id,
@@ -251,63 +351,70 @@ export class ServiceContractsService {
     approverPersonId: string,
     requestId: string,
   ) {
-    const approved = await this.prisma.$transaction(async (tx) => {
-      const payment = await tx.serviceContractPayment.findUnique({
-        where: { id: paymentId },
-        include: { invoice: true, fund: true },
-      });
-      if (!payment || payment.buildingId !== buildingId) {
-        throw new NotFoundAppError('Service contract payment not found for this building.');
-      }
-      if (payment.status !== ServiceContractPaymentStatus.PENDING_APPROVAL) {
-        throw new BusinessRuleViolationError('Only a pending service contract payment can be approved.');
-      }
-      if (!payment.fund.isActive) {
-        throw new BusinessRuleViolationError('The selected fund is no longer active.');
-      }
-      if (payment.invoice.paidAmount + payment.amount > payment.invoice.amount) {
-        throw new ConflictError('This invoice changed before the payment could be approved.');
-      }
+    const approved = await this.prisma.$transaction(
+      async (tx) => {
+        const payment = await tx.serviceContractPayment.findUnique({
+          where: { id: paymentId },
+          include: { invoice: true, fund: true },
+        });
+        if (!payment || payment.buildingId !== buildingId) {
+          throw new NotFoundAppError('Service contract payment not found for this building.');
+        }
+        if (payment.status !== ServiceContractPaymentStatus.PENDING_APPROVAL) {
+          throw new BusinessRuleViolationError(
+            'Only a pending service contract payment can be approved.',
+          );
+        }
+        if (payment.invoice.status === ServiceContractInvoiceStatus.CANCELLED)
+          throw new ConflictError('This installment was cancelled.');
+        if (!payment.fund.isActive) {
+          throw new BusinessRuleViolationError('The selected fund is no longer active.');
+        }
+        if (payment.invoice.paidAmount + payment.amount > payment.invoice.amount) {
+          throw new ConflictError('This invoice changed before the payment could be approved.');
+        }
 
-      const paidAmount = payment.invoice.paidAmount + payment.amount;
-      await tx.serviceContractInvoice.update({
-        where: { id: payment.invoiceId },
-        data: {
-          paidAmount,
-          status:
-            paidAmount === payment.invoice.amount
-              ? ServiceContractInvoiceStatus.PAID
-              : ServiceContractInvoiceStatus.PARTIALLY_PAID,
-        },
-      });
-      const updatedPayment = await tx.serviceContractPayment.update({
-        where: { id: paymentId },
-        data: {
-          status: ServiceContractPaymentStatus.APPROVED,
-          approvedById: approverPersonId,
-          approvedAt: new Date(),
-        },
-      });
-      await tx.ledgerEntry.create({
-        data: {
-          buildingId,
-          fundId: payment.fundId,
-          entryType: LedgerEntryType.PAYMENT,
-          direction: LedgerDirection.CREDIT,
-          amount: payment.amount,
-          referenceType: 'ServiceContractPayment',
-          referenceId: paymentId,
-          description: `Service contract income: ${payment.invoice.title}`,
-          actorId: approverPersonId,
-          requestId,
-        },
-      });
-      await tx.fund.update({
-        where: { id: payment.fundId },
-        data: { balance: { increment: payment.amount } },
-      });
-      return updatedPayment;
-    });
+        const paidAmount = payment.invoice.paidAmount + payment.amount;
+        await tx.serviceContractInvoice.update({
+          where: { id: payment.invoiceId },
+          data: {
+            paidAmount,
+            status:
+              paidAmount === payment.invoice.amount
+                ? ServiceContractInvoiceStatus.PAID
+                : ServiceContractInvoiceStatus.PARTIALLY_PAID,
+          },
+        });
+        const updatedPayment = await tx.serviceContractPayment.update({
+          where: { id: paymentId },
+          data: {
+            status: ServiceContractPaymentStatus.APPROVED,
+            approvedById: approverPersonId,
+            approvedAt: new Date(),
+          },
+        });
+        await tx.ledgerEntry.create({
+          data: {
+            buildingId,
+            fundId: payment.fundId,
+            entryType: LedgerEntryType.PAYMENT,
+            direction: LedgerDirection.CREDIT,
+            amount: payment.amount,
+            referenceType: 'ServiceContractPayment',
+            referenceId: paymentId,
+            description: `Service contract income: ${payment.invoice.title}`,
+            actorId: approverPersonId,
+            requestId,
+          },
+        });
+        await tx.fund.update({
+          where: { id: payment.fundId },
+          data: { balance: { increment: payment.amount } },
+        });
+        return updatedPayment;
+      },
+      { isolationLevel: 'Serializable' },
+    );
 
     await this.audit.record({
       actorId: approverPersonId,
@@ -327,12 +434,16 @@ export class ServiceContractsService {
     approverPersonId: string,
     requestId: string,
   ) {
-    const payment = await this.prisma.serviceContractPayment.findUnique({ where: { id: paymentId } });
+    const payment = await this.prisma.serviceContractPayment.findUnique({
+      where: { id: paymentId },
+    });
     if (!payment || payment.buildingId !== buildingId) {
       throw new NotFoundAppError('Service contract payment not found for this building.');
     }
     if (payment.status !== ServiceContractPaymentStatus.PENDING_APPROVAL) {
-      throw new BusinessRuleViolationError('Only a pending service contract payment can be rejected.');
+      throw new BusinessRuleViolationError(
+        'Only a pending service contract payment can be rejected.',
+      );
     }
     const rejected = await this.prisma.serviceContractPayment.update({
       where: { id: paymentId },
