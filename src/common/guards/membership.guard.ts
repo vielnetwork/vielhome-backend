@@ -39,3 +39,19 @@ export class MembershipGuard implements CanActivate {
     return true;
   }
 }
+
+
+// Preserves membership-based access on endpoints already dedicated to finance.
+// The payment or unit-level policy in each handler still applies.
+@Injectable()
+export class FinanceMembershipGuard implements CanActivate {
+  constructor(private readonly buildings: BuildingRepository) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const { user, params } = context.switchToHttp().getRequest();
+    if (!await this.buildings.hasMembership(user.sub, params.id, 'finance')) {
+      throw new AuthorizationError('You do not have access to this building.');
+    }
+    return true;
+  }
+}

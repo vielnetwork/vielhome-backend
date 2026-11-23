@@ -1,10 +1,15 @@
-import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable, SetMetadata } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { MembershipRole } from '@prisma/client';
 import { BuildingRepository } from '../../modules/building/infrastructure/repositories/building.repository';
 import { AuthorizationError } from '../errors/app-error';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import type { JwtPayload } from '../../modules/foundation/auth/infrastructure/strategies/jwt.strategy';
+
+export type FinanceDelegation = 'canIssueCharges' | 'canManageFunds';
+const FINANCE_DELEGATION = 'financeDelegation';
+export const AllowAccountantDelegation = (permission: FinanceDelegation) =>
+  SetMetadata(FINANCE_DELEGATION, permission);
 
 /**
  * Authorization Layer (21_ADRs > ADR-022, reconciled from
@@ -44,7 +49,10 @@ export class RolesGuard implements CanActivate {
     const buildingId = req.params.id as string;
 
     const myRoles = await this.buildings.getRoles(user.sub, buildingId);
-    const allowed = myRoles.some((role) => requiredRoles.includes(role));
+    const delegated = this.reflector.get<FinanceDelegation>(FINANCE_DELEGATION, context.getHandler());
+    const allowed = myRoles.some((role) => requiredRoles.includes(role)) ||
+      (delegated && myRoles.includes('ACCOUNTANT') &&
+        await this.buildings.hasFinanceDelegation(user.sub, buildingId, delegated));
 
     if (!allowed) {
       throw new AuthorizationError(

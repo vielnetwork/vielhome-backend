@@ -8,7 +8,7 @@ import { PaymentReceiptService } from './application/payment-receipt.service';
 import { DocumentRepository } from './infrastructure/repositories/document.repository';
 import { DocumentPolicy } from './domain/policies/document.policy';
 import { PaymentReceiptPolicy } from './domain/policies/payment-receipt.policy';
-import { MembershipGuard } from '../../common/guards/membership.guard';
+import { FinanceMembershipGuard, MembershipGuard } from '../../common/guards/membership.guard';
 import { BuildingModule } from '../building/building.module';
 import { CasesModule } from '../cases/cases.module';
 import { FinanceModule } from '../finance/finance.module';
@@ -43,6 +43,7 @@ import { FinanceModule } from '../finance/finance.module';
     DocumentPolicy,
     PaymentReceiptPolicy,
     MembershipGuard,
+    FinanceMembershipGuard,
   ],
   exports: [DocumentsService, DocumentRepository],
 })

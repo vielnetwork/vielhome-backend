@@ -16,8 +16,8 @@ import { CreateExpenseDto } from '../application/dto/create-expense.dto';
 import { VoidExpenseDto } from '../application/dto/void-expense.dto';
 import { ChargeOptionsDto } from '../application/dto/charge-options.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
-import { MembershipGuard } from '../../../common/guards/membership.guard';
-import { RolesGuard } from '../../../common/guards/roles.guard';
+import { FinanceMembershipGuard } from '../../../common/guards/membership.guard';
+import { AllowAccountantDelegation, RolesGuard } from '../../../common/guards/roles.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
@@ -45,7 +45,7 @@ const VALID_EXPENSE_STATUSES: string[] = Object.values(ExpenseStatus);
  * `financial-summary` or `ledger`).
  *
  * Authorization mapping (10.08.01_Finance_Architecture > Authorization
- * Rules, applied via RolesGuard/MembershipGuard exactly like
+ * Rules, applied via RolesGuard/FinanceMembershipGuard exactly like
  * BuildingController's Manager Assignment routes):
  *   - MANAGER creates Funds and Charge Batches, issues/cancels them.
  *   - ACCOUNTANT and MANAGER approve/reject Payments, create Adjustments,
@@ -83,6 +83,7 @@ export class FinanceController {
 
   @Post(':id/funds')
   @UseGuards(RolesGuard)
+  @AllowAccountantDelegation('canManageFunds')
   @Roles('MANAGER')
   createFund(
     @Param('id') id: string,
@@ -95,7 +96,7 @@ export class FinanceController {
 
   /** Finance Hardening Pass (post-audit) — `page`/`limit` (ADR-072 convention), same pattern `FinanceAdministrationController.list`/`MarketplaceController.listApproved` already established. */
   @Get(':id/funds')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   async listFunds(
     @Param('id') id: string,
     @Query('page') page?: string,
@@ -106,14 +107,14 @@ export class FinanceController {
   }
 
   @Get(':id/funds/:fundId')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   getFund(@Param('id') id: string, @Param('fundId') fundId: string) {
     return this.finance.getFund(id, fundId);
   }
 
   /**
    * FIN-SUM-01A — one Fund's paginated, cash-moving statement. Same
-   * `MembershipGuard` read tier as `financial-summary`/`ledger` (any
+   * `FinanceMembershipGuard` read tier as `financial-summary`/`ledger` (any
    * current member may read it — see the class doc comment above).
    * Mounted as a sibling of `GET :id/funds/:fundId` (not under a
    * `/finance/` prefix) to match the dominant route shape this
@@ -124,7 +125,7 @@ export class FinanceController {
    * `getFund` above uses) 404s if `fundId` doesn't belong to `id`.
    */
   @Get(':id/funds/:fundId/statement')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   async getFundStatement(
     @Param('id') id: string,
     @Param('fundId') fundId: string,
@@ -141,6 +142,7 @@ export class FinanceController {
 
   @Patch(':id/funds/:fundId')
   @UseGuards(RolesGuard)
+  @AllowAccountantDelegation('canManageFunds')
   @Roles('MANAGER')
   updateFund(
     @Param('id') id: string,
@@ -155,6 +157,7 @@ export class FinanceController {
   /** ADR-094 (Sprint 29) — deactivation, not deletion; see Fund model's own schema comment for why a Fund is never hard-deleted. */
   @Patch(':id/funds/:fundId/deactivate')
   @UseGuards(RolesGuard)
+  @AllowAccountantDelegation('canManageFunds')
   @Roles('MANAGER')
   deactivateFund(
     @Param('id') id: string,
@@ -167,6 +170,7 @@ export class FinanceController {
 
   @Patch(':id/funds/:fundId/reactivate')
   @UseGuards(RolesGuard)
+  @AllowAccountantDelegation('canManageFunds')
   @Roles('MANAGER')
   reactivateFund(
     @Param('id') id: string,
@@ -180,20 +184,21 @@ export class FinanceController {
   // --- Charge Batches ----------------------------------------------------------
 
   @Get(':id/charge-options')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   @ApiOkResponse({ type: ChargeOptionsDto })
   getChargeOptions(@Param('id') id: string) {
     return this.finance.getChargeOptions(id);
   }
 
   @Get(':id/charge-series')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   listChargeSeries(@Param('id') id: string) {
     return this.finance.listChargeSeries(id);
   }
 
   @Post(':id/charge-series')
   @UseGuards(RolesGuard)
+  @AllowAccountantDelegation('canIssueCharges')
   @Roles('MANAGER')
   createChargeSeries(@Param('id') id: string, @Body() dto: CreateChargeSeriesDto) {
     return this.finance.createChargeSeries(id, dto);
@@ -201,6 +206,7 @@ export class FinanceController {
 
   @Post(':id/charges')
   @UseGuards(RolesGuard)
+  @AllowAccountantDelegation('canIssueCharges')
   @Roles('MANAGER')
   createChargeBatch(
     @Param('id') id: string,
@@ -221,6 +227,7 @@ export class FinanceController {
    */
   @Post(':id/charges/preview')
   @UseGuards(RolesGuard)
+  @AllowAccountantDelegation('canIssueCharges')
   @Roles('MANAGER')
   previewChargeBatch(@Param('id') id: string, @Body() dto: CreateChargeBatchDto) {
     return this.finance.previewChargeBatch(id, dto);
@@ -248,6 +255,7 @@ export class FinanceController {
 
   @Patch(':id/charges/:chargeBatchId/issue')
   @UseGuards(RolesGuard)
+  @AllowAccountantDelegation('canIssueCharges')
   @Roles('MANAGER')
   issueChargeBatch(
     @Param('id') id: string,
@@ -339,7 +347,7 @@ export class FinanceController {
   }
 
   @Post(':id/units/:unitId/payments/explicit')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   createExplicitPayment(
     @Param('id') id: string,
     @Param('unitId') unitId: string,
@@ -564,7 +572,7 @@ export class FinanceController {
   }
 
   @Get(':id/expenses')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   async listExpenses(
     @Param('id') id: string,
     @Query('page') page?: string,
@@ -596,7 +604,7 @@ export class FinanceController {
   }
 
   @Get(':id/expenses/:expenseId')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   getExpense(@Param('id') id: string, @Param('expenseId') expenseId: string) {
     return this.finance.getExpense(id, expenseId);
   }
@@ -617,7 +625,7 @@ export class FinanceController {
   // --- Reporting -----------------------------------------------------------------
 
   @Get(':id/financial-summary')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   getFinancialSummary(@Param('id') id: string) {
     return this.finance.getFinancialSummary(id);
   }
@@ -636,9 +644,9 @@ export class FinanceController {
     return withEnvelope(items, { metadata: { pagination: meta } });
   }
 
-  /** 21_ADRs > ADR-055 — Collection Rate, same `MembershipGuard` tier as `financial-summary`/`ledger` (any current member may read it). */
+  /** 21_ADRs > ADR-055 — Collection Rate, same `FinanceMembershipGuard` tier as `financial-summary`/`ledger` (any current member may read it). */
   @Get(':id/collection-rate')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   getCollectionRate(
     @Param('id') id: string,
     @Query('fromDate') fromDate?: string,
@@ -651,9 +659,9 @@ export class FinanceController {
     );
   }
 
-  /** 21_ADRs > ADR-057 — Payment Registration Rate, Collection Rate's sibling MVP metric, same `MembershipGuard` tier. */
+  /** 21_ADRs > ADR-057 — Payment Registration Rate, Collection Rate's sibling MVP metric, same `FinanceMembershipGuard` tier. */
   @Get(':id/payment-registration-rate')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   getPaymentRegistrationRate(
     @Param('id') id: string,
     @Query('fromDate') fromDate?: string,

@@ -9,7 +9,7 @@ export class AddMessageDto {
   @ApiProperty({
     required: false,
     default: false,
-    description: 'Only a privileged role (MANAGER/BOARD_MEMBER/ACCOUNTANT) may set this.',
+    description: 'Only a privileged role (MANAGER/BOARD_MEMBER) may set this.',
   })
   @IsOptional()
   @IsBoolean()

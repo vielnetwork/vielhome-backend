@@ -29,10 +29,21 @@ export class BuildingRepository {
     });
   }
 
+  async hasFinanceDelegation(personId: string, buildingId: string, permission: 'canIssueCharges' | 'canManageFunds') {
+    return (await this.prisma.membership.count({
+      where: { personId, buildingId, role: 'ACCOUNTANT', isCurrent: true, [permission]: true },
+    })) > 0;
+  }
+
   /** Used by MembershipGuard — the actual "is this person allowed here" check. */
-  async hasMembership(personId: string, buildingId: string): Promise<boolean> {
+  async hasMembership(personId: string, buildingId: string, scope: 'general' | 'finance' = 'general'): Promise<boolean> {
     const count = await this.prisma.membership.count({
-      where: { personId, buildingId, isCurrent: true },
+      where: {
+        personId,
+        buildingId,
+        isCurrent: true,
+        ...(scope === 'general' && { role: { not: 'ACCOUNTANT' } }),
+      },
     });
     return count > 0;
   }

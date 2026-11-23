@@ -42,7 +42,7 @@ import { withEnvelope } from '../../../common/interceptors/response.interceptor'
  * are enforced inside `CasesService`/`CasePolicy`, not the guard —
  * `getCase`/`updateCase`/`addMessage` all check PUBLIC-vs-PRIVATE and
  * creator/assignee/privileged access explicitly). `RolesGuard` +
- * `@Roles('MANAGER', 'BOARD_MEMBER', 'ACCOUNTANT')` (08.08 Rule 008's
+ * `@Roles('MANAGER', 'BOARD_MEMBER')` (08.08 Rule 008's
  * assignable-to set) for assign/resolve/close/merge (21_ADRs > ADR-045).
  */
 @ApiTags('cases')
@@ -108,7 +108,7 @@ export class CasesController {
 
   @Post(':id/cases/:caseId/assign')
   @UseGuards(RolesGuard)
-  @Roles('MANAGER', 'BOARD_MEMBER', 'ACCOUNTANT')
+  @Roles('MANAGER', 'BOARD_MEMBER')
   assignCase(
     @Param('id') id: string,
     @Param('caseId') caseId: string,
@@ -169,7 +169,7 @@ export class CasesController {
 
   @Post(':id/cases/:caseId/resolve')
   @UseGuards(RolesGuard)
-  @Roles('MANAGER', 'BOARD_MEMBER', 'ACCOUNTANT')
+  @Roles('MANAGER', 'BOARD_MEMBER')
   resolveCase(
     @Param('id') id: string,
     @Param('caseId') caseId: string,
@@ -182,7 +182,7 @@ export class CasesController {
 
   @Post(':id/cases/:caseId/close')
   @UseGuards(RolesGuard)
-  @Roles('MANAGER', 'BOARD_MEMBER', 'ACCOUNTANT')
+  @Roles('MANAGER', 'BOARD_MEMBER')
   closeCase(
     @Param('id') id: string,
     @Param('caseId') caseId: string,
@@ -206,7 +206,7 @@ export class CasesController {
 
   @Post(':id/cases/:caseId/merge')
   @UseGuards(RolesGuard)
-  @Roles('MANAGER', 'BOARD_MEMBER', 'ACCOUNTANT')
+  @Roles('MANAGER', 'BOARD_MEMBER')
   mergeCase(
     @Param('id') id: string,
     @Param('caseId') caseId: string,

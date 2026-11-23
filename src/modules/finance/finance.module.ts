@@ -7,7 +7,7 @@ import { PaymentPolicy } from './domain/policies/payment.policy';
 import { FundPolicy } from './domain/policies/fund.policy';
 import { ExpensePolicy } from './domain/policies/expense.policy';
 import { ChargeFundAlignmentPolicy } from './domain/policies/charge-fund-alignment.policy';
-import { MembershipGuard } from '../../common/guards/membership.guard';
+import { FinanceMembershipGuard, MembershipGuard } from '../../common/guards/membership.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { BuildingModule } from '../building/building.module';
 import { FinanceUnitReadGuard } from './application/finance-unit-read.guard';
@@ -27,6 +27,7 @@ import { FinanceUnitReadGuard } from './application/finance-unit-read.guard';
     ExpensePolicy,
     ChargeFundAlignmentPolicy,
     MembershipGuard,
+    FinanceMembershipGuard,
     RolesGuard,
     FinanceUnitReadGuard,
   ],

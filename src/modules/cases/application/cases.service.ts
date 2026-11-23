@@ -26,7 +26,7 @@ import {
 } from '../../../common/pagination/pagination.util';
 
 /** 08.08 Rule 008: cases are assignable to Manager/Board Member/Accountant — the same set gets privileged read/edit/internal-note access throughout this service. */
-const PRIVILEGED_ROLES: MembershipRole[] = ['MANAGER', 'BOARD_MEMBER', 'ACCOUNTANT'];
+const PRIVILEGED_ROLES: MembershipRole[] = ['MANAGER', 'BOARD_MEMBER'];
 
 type MessageRow = {
   senderId: string;
@@ -413,7 +413,7 @@ export class CasesService {
   /**
    * 08.08 Rule 016 — merges this case into another (the "same issue" case),
    * closing this one. Gated at the controller to the same
-   * MANAGER/BOARD_MEMBER/ACCOUNTANT set as assign/resolve/close (08.08 Rule
+   * MANAGER/BOARD_MEMBER set as assign/resolve/close (08.08 Rule
    * 008) — the source names no distinct merge actor. `getCaseOrThrow` on
    * both ids doubles as the same-building restriction (a case can only be
    * merged into another case of the same building) — no source guidance

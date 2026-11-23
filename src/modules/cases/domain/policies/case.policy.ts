@@ -16,7 +16,7 @@ const ACTIVE_STATUSES = ['OPEN', 'IN_PROGRESS', 'WAITING_USER'];
  * Business rules for Cases/Requests (06.07_Request_And_Complaint_Flow,
  * 08.08_Request_And_Complaint_API — see 21_ADRs > ADR-025). Never touches
  * persistence (11_Backend_Architecture > Domain Layer) — only asserts.
- * "Privileged" throughout means MANAGER/BOARD_MEMBER/ACCOUNTANT — the
+ * "Privileged" throughout means MANAGER/BOARD_MEMBER — the
  * roles 08.08 Rule 008 allows a case to be assigned to.
  */
 @Injectable()

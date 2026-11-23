@@ -34,6 +34,7 @@ datasource db {
 
 model Person {
   backofficeRoleInvitations BackofficeRoleInvite[]
+  accountantInvitations AccountantInvitation[]
   id        String   @id @default(cuid())
   phone     String   @unique
   email     String?  @unique
@@ -284,6 +285,7 @@ enum BuildingType {
 }
 
 model Building {
+  accountantInvitations AccountantInvitation[]
   id                    String         @id @default(cuid())
   name                  String
   buildingType          BuildingType   @default(RESIDENTIAL)
@@ -635,6 +637,8 @@ enum ManagerAssignmentType {
 // created, so `memberships` rows where role = MANAGER, ordered by
 // startedAt, ARE the manager assignment history — no separate table needed.
 model Membership {
+  canIssueCharges Boolean @default(false)
+  canManageFunds Boolean @default(false)
   id                    String                 @id @default(cuid())
   personId              String
   person                Person                 @relation("PersonMemberships", fields: [personId], references: [id])
@@ -4271,6 +4275,19 @@ model ObjectBackupGeneration {
   @@map("object_backup_generations")
 }
 
+model AccountantInvitation {
+  id          String @id @default(cuid())
+  buildingId  String
+  building    Building @relation(fields: [buildingId], references: [id])
+  phone       String
+  invitedById String
+  invitedBy   Person @relation(fields: [invitedById], references: [id])
+  createdAt   DateTime @default(now())
+  acceptedAt  DateTime?
+  cancelledAt DateTime?
+  @@index([phone, acceptedAt, cancelledAt])
+  @@map("accountant_invitations")
+}
 
 model BackofficeOwnerPasskey {
   ownerKey       String   @id

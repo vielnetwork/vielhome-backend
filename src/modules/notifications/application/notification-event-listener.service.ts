@@ -49,7 +49,7 @@ import type {
 import type { ServiceProviderDecidedEvent } from '../../marketplace/events/marketplace.events';
 
 /** 08.08 Rule 008 / ADR-025's assignable-to set — reused here for "who should triage a new/changed Case." */
-const PRIVILEGED_ROLES: MembershipRole[] = ['MANAGER', 'BOARD_MEMBER', 'ACCOUNTANT'];
+const PRIVILEGED_ROLES: MembershipRole[] = ['MANAGER', 'BOARD_MEMBER'];
 
 /** ADR-026's DocumentPolicy privileged-category set — reused so a Document-upload broadcast reaches the same audience that can actually read/manage that category. */
 const PRIVILEGED_DOCUMENT_CATEGORIES = ['GOVERNANCE', 'FINANCIAL', 'LEGAL'];
@@ -124,7 +124,7 @@ export class NotificationEventListener {
 
   @OnEvent('ManagerChanged')
   async onManagerChanged(event: ManagerChangedEvent) {
-    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    const memberIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(memberIds, {
       buildingId: event.buildingId,
       category: 'MEMBERSHIP',
@@ -147,7 +147,7 @@ export class NotificationEventListener {
    */
   @OnEvent('OwnershipTransferInitiated')
   async onOwnershipTransferInitiated(event: OwnershipTransferInitiatedEvent) {
-    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    const memberIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(memberIds, {
       buildingId: event.buildingId,
       category: 'MEMBERSHIP',
@@ -161,7 +161,7 @@ export class NotificationEventListener {
 
   @OnEvent('TenancyCreated')
   async onTenancyCreated(event: TenancyCreatedEvent) {
-    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    const memberIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(memberIds, {
       buildingId: event.buildingId,
       category: 'MEMBERSHIP',
@@ -175,7 +175,7 @@ export class NotificationEventListener {
 
   @OnEvent('TenancyEnded')
   async onTenancyEnded(event: TenancyEndedEvent) {
-    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    const memberIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(memberIds, {
       buildingId: event.buildingId,
       category: 'MEMBERSHIP',
@@ -443,7 +443,7 @@ export class NotificationEventListener {
 
   @OnEvent('VotePublished')
   async onVotePublished(event: VotePublishedEvent) {
-    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    const memberIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(memberIds, {
       buildingId: event.buildingId,
       category: 'GOVERNANCE',
@@ -457,7 +457,7 @@ export class NotificationEventListener {
 
   @OnEvent('VoteClosed')
   async onVoteClosed(event: VoteClosedEvent) {
-    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    const memberIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(memberIds, {
       buildingId: event.buildingId,
       category: 'GOVERNANCE',
@@ -471,7 +471,7 @@ export class NotificationEventListener {
 
   @OnEvent('VoteCancelled')
   async onVoteCancelled(event: VoteCancelledEvent) {
-    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    const memberIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(memberIds, {
       buildingId: event.buildingId,
       category: 'GOVERNANCE',
@@ -486,7 +486,7 @@ export class NotificationEventListener {
   /** Governance Hardening Phase 3 (audit §25) — the Meeting equivalent of `onVotePublished`'s "actionable moment" broadcast: a meeting is worth knowing about the moment it's scheduled. */
   @OnEvent('MeetingCreated')
   async onMeetingCreated(event: MeetingCreatedEvent) {
-    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    const memberIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(memberIds, {
       buildingId: event.buildingId,
       category: 'GOVERNANCE',
@@ -501,7 +501,7 @@ export class NotificationEventListener {
   /** Governance Hardening Phase 3 (audit §25) — the Meeting equivalent of `onVoteClosed`: minutes become final/read-only the moment a meeting archives. */
   @OnEvent('MeetingArchived')
   async onMeetingArchived(event: MeetingArchivedEvent) {
-    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    const memberIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(memberIds, {
       buildingId: event.buildingId,
       category: 'GOVERNANCE',
@@ -577,7 +577,7 @@ export class NotificationEventListener {
   async onDocumentUploaded(event: DocumentUploadedEvent) {
     const recipientIds = PRIVILEGED_DOCUMENT_CATEGORIES.includes(event.category)
       ? await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, PRIVILEGED_ROLES)
-      : await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+      : await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(recipientIds, {
       buildingId: event.buildingId,
       category: 'DOCUMENT',
@@ -622,7 +622,7 @@ export class NotificationEventListener {
   /** Building-wide broadcast (same recipient-resolution shape as ChargeBatchIssued/VotePublished) — a league promotion/demotion is the whole building's result, not one person's. */
   @OnEvent('LeagueTierChanged')
   async onLeagueTierChanged(event: LeagueTierChangedEvent) {
-    const memberIds = await this.buildings.listCurrentMemberPersonIds(event.buildingId);
+    const memberIds = await this.buildings.listCurrentMemberPersonIdsByRoles(event.buildingId, ['OWNER', 'TENANT', 'MANAGER', 'BOARD_MEMBER']);
     await this.notifications.notifyMany(memberIds, {
       buildingId: event.buildingId,
       category: 'GAMIFICATION',

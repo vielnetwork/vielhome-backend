@@ -4,7 +4,7 @@ import { PaymentReceiptService } from '../application/payment-receipt.service';
 import { RequestPaymentReceiptUploadIntentDto } from '../application/dto/request-payment-receipt-upload-intent.dto';
 import { FinalizePaymentReceiptDto } from '../application/dto/finalize-payment-receipt.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
-import { MembershipGuard } from '../../../common/guards/membership.guard';
+import { FinanceMembershipGuard } from '../../../common/guards/membership.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequestId } from '../../../common/decorators/request-id.decorator';
 import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies/jwt.strategy';
@@ -19,7 +19,7 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
  * `PaymentReceiptService`'s own doc comment for why (avoids a circular
  * module dependency; no `forwardRef` needed).
  *
- * `MembershipGuard` only, never `RolesGuard`: payer-or-finance-reviewer is
+ * `FinanceMembershipGuard` only, never `RolesGuard`: payer-or-finance-reviewer is
  * a narrower, payment-specific rule than any single role (the payer may
  * hold no privileged role at all) — real authorization happens entirely
  * inside `PaymentReceiptService`/`FinanceService.getPaymentForViewer`, the
@@ -35,7 +35,7 @@ export class PaymentReceiptController {
   constructor(private readonly receipts: PaymentReceiptService) {}
 
   @Post(':id/payments/:paymentId/receipt/upload-intent')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   @ApiOperation({
     summary: 'Request a presigned upload URL for a payment receipt.',
     description:
@@ -56,7 +56,7 @@ export class PaymentReceiptController {
   }
 
   @Post(':id/payments/:paymentId/receipt/finalize')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   @ApiOperation({
     summary: 'Finalize an uploaded payment receipt.',
     description:
@@ -77,7 +77,7 @@ export class PaymentReceiptController {
   }
 
   @Get(':id/payments/:paymentId/receipt/download')
-  @UseGuards(MembershipGuard)
+  @UseGuards(FinanceMembershipGuard)
   @ApiOperation({
     summary: "Get a time-limited download URL for a payment's finalized receipt.",
     description: 'Payer of this payment, or a Manager/Accountant of this building, only.',
