@@ -1,3 +1,6 @@
+import { BackofficeRoleInviteController } from './controller/backoffice-role-invite.controller';
+import { OwnerRbacService } from './application/owner-rbac.service';
+import { OwnerRbacController } from './controller/owner-rbac.controller';
 import { Module } from '@nestjs/common';
 import { PlatformStaffModule } from '../platform-staff/platform-staff.module';
 import { BackOfficeRepository } from '../backoffice/infrastructure/repositories/backoffice.repository';
@@ -47,8 +50,9 @@ import { PlatformRolesGuard } from '../../common/guards/platform-roles.guard';
  */
 @Module({
   imports: [PlatformStaffModule],
-  controllers: [RbacManagementController, PermissionResolutionController],
+  controllers: [RbacManagementController, PermissionResolutionController, OwnerRbacController, BackofficeRoleInviteController],
   providers: [
+    OwnerRbacService,
     BackOfficeRepository,
     BackofficeRbacRepository,
     PermissionResolverService,

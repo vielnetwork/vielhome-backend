@@ -33,6 +33,7 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 model Person {
+  backofficeRoleInvitations BackofficeRoleInvite[]
   id        String   @id @default(cuid())
   phone     String   @unique
   email     String?  @unique
@@ -2943,6 +2944,7 @@ model ManagerVerificationApproval {
 }
 
 enum PlatformStaffRole {
+  RBAC_ONLY
   REVIEWER
   SENIOR_REVIEWER
   PLATFORM_ADMIN
@@ -3136,6 +3138,7 @@ enum PermissionKey {
 }
 
 model Role {
+  invitations BackofficeRoleInvite[]
   id          String   @id @default(cuid())
   name        String   @unique
   description String?
@@ -4266,4 +4269,42 @@ model ObjectBackupGeneration {
 
   @@index([requestId, verifiedAt])
   @@map("object_backup_generations")
+}
+
+
+model BackofficeOwnerPasskey {
+  ownerKey       String   @id
+  googleSubject  String   @unique
+  credentialId   String   @unique
+  publicKey      Bytes
+  counter        BigInt   @default(0)
+  transports     String[]
+  createdAt      DateTime @default(now())
+
+  challenge String?
+  challengeExpiresAt DateTime?
+
+  @@map("backoffice_owner_passkeys")
+}
+
+model BackofficeOwnerRoleRequest {
+  id        String   @id
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("backoffice_owner_role_requests")
+}
+
+model BackofficeRoleInvite {
+  id          String @id @default(cuid())
+  phone       String
+  roleId      String
+  role        Role   @relation(fields: [roleId], references: [id])
+  invitedById String
+  invitedBy   Person @relation(fields: [invitedById], references: [id])
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+
+  @@index([phone])
+  @@map("backoffice_role_invites")
 }

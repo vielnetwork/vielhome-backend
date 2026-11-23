@@ -33,6 +33,7 @@ import {
 } from '../../../../common/errors/app-error';
 
 const PLATFORM_STAFF_RANK: Record<PlatformStaffRole, number> = {
+  RBAC_ONLY: 0,
   REVIEWER: 1,
   SENIOR_REVIEWER: 2,
   PLATFORM_ADMIN: 3,

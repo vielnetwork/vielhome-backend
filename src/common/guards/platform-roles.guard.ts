@@ -8,6 +8,7 @@ import type { JwtPayload } from '../../modules/foundation/auth/infrastructure/st
 
 /** REVIEWER < SENIOR_REVIEWER < PLATFORM_ADMIN — unlike `RolesGuard`'s flat OR (building roles are independent, not ranked), platform staff roles ARE hierarchical: a route requiring `@PlatformRoles('REVIEWER')` is satisfied by any of the three, `@PlatformRoles('SENIOR_REVIEWER')` by SENIOR_REVIEWER or PLATFORM_ADMIN only, `@PlatformRoles('PLATFORM_ADMIN')` by PLATFORM_ADMIN alone. */
 const RANK: Record<PlatformStaffRole, number> = {
+  RBAC_ONLY: 0,
   REVIEWER: 1,
   SENIOR_REVIEWER: 2,
   PLATFORM_ADMIN: 3,
