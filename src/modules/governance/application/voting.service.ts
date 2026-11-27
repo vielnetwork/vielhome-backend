@@ -262,6 +262,10 @@ export class VotingService {
     actorPersonId: string,
     requestId: string,
   ) {
+    const roles = await this.buildings.getRoles(actorPersonId, buildingId);
+    if (roles.length > 0 && roles.every((role) => role === 'TENANT')) {
+      throw new BusinessRuleViolationError('Tenants may view votes only.');
+    }
     const vote = await this.getVote(buildingId, voteId);
     this.policy.assertOpenForBallots(vote.status, vote.endAt);
 

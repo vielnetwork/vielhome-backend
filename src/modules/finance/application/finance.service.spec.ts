@@ -232,6 +232,10 @@ describe('FinanceService', () => {
             kind: 'MONTHLY',
             funds: [{ id: 'current-1', name: 'Current', type: 'CURRENT' }],
           },
+          ...['AD_HOC', 'COST_RECOVERY', 'SERVICE_RENTAL'].map((kind) => ({
+            kind,
+            funds: [{ id: 'current-1', name: 'Current', type: 'CURRENT' }],
+          })),
           {
             kind: 'OTHER',
             funds: [
@@ -1796,7 +1800,9 @@ describe('FinanceService', () => {
       expect(serialized).not.toContain('secret-storage-key');
       expect(serialized).not.toContain('storageKey');
       expect(serialized).not.toContain('bucket');
-      expect(Object.keys(result.items[0].receipt as object)).toEqual([
+      const [item] = result.items;
+      expect(item).toHaveProperty('receipt');
+      expect(Object.keys('receipt' in item ? item.receipt as object : {})).toEqual([
         'id',
         'filename',
         'contentType',

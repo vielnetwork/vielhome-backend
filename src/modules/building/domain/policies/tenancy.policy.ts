@@ -35,17 +35,15 @@ export class TenancyPolicy {
 
   /**
    * Giving notice or ending a tenancy is allowed for the same owner/manager
-   * pair as creating one, plus the tenant themselves — a tenant should be
-   * able to end their own tenancy, unlike registering a new one.
+   * pair as creating one.
    */
   assertCanManage(
     isCallerCurrentOwnerOfUnit: boolean,
     callerIsManager: boolean,
-    isCallerTheTenant: boolean,
   ): void {
-    if (!isCallerCurrentOwnerOfUnit && !callerIsManager && !isCallerTheTenant) {
+    if (!isCallerCurrentOwnerOfUnit && !callerIsManager) {
       throw new AuthorizationError(
-        "Only the unit's current owner, the building manager, or the tenant themselves may manage this tenancy.",
+        "Only the unit's current owner or the building manager may manage this tenancy.",
       );
     }
   }

@@ -79,6 +79,7 @@ describe('VotingService', () => {
     buildings = {
       findById: jest.fn().mockResolvedValue({ id: 'b1' }),
       findUnitById: jest.fn().mockResolvedValue(UNIT),
+      getRoles: jest.fn().mockResolvedValue(['OWNER']),
       getBuildingSettings: jest.fn().mockResolvedValue({ allowTenantVoting: false }),
     };
     buildingService = { changeManager: jest.fn() };

@@ -10,6 +10,7 @@ import {
   type LedgerEntry,
 } from '@prisma/client';
 import { FinanceRepository } from '../infrastructure/repositories/finance.repository';
+import { renderFinanceReport, reportTranslations, validateReportFormat } from './finance-report-export';
 import { BuildingRepository } from '../../building/infrastructure/repositories/building.repository';
 import { ChargePolicy } from '../domain/policies/charge.policy';
 import { PaymentPolicy } from '../domain/policies/payment.policy';
@@ -40,6 +41,7 @@ import {
   ConflictError,
   DuplicateError,
   NotFoundAppError,
+  ValidationError,
 } from '../../../common/errors/app-error';
 import {
   buildPaginationMeta,
@@ -1476,24 +1478,48 @@ export class FinanceService {
 
   /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. */
   /** Backend ↔ Mobile Contract Alignment — optional `status` filter, see `FinanceController.listPayments`'s own doc comment for the full rationale. */
-  async listPayments(buildingId: string, pagination: PaginationParams, status?: PaymentStatus) {
+  async listPayments(buildingId: string, pagination: PaginationParams, status?: PaymentStatus, personId?: string) {
+    const roles = personId ? await this.buildings.getRoles(personId, buildingId) : [];
+    const isResident = !roles.includes('MANAGER') && !roles.includes('ACCOUNTANT') &&
+      (roles.includes('OWNER') || roles.includes('TENANT'));
     const { items, total } = await this.finance.listPayments(
       buildingId,
       toSkipTake(pagination),
-      status,
+      isResident ? 'APPROVED' : status,
     );
-    // FIN-REC-01B — hasReceipt/receipt enrichment, see `attachReceiptMetadata`'s own doc comment.
-    const enriched = await this.attachReceiptMetadata(items);
-    return { items: enriched, meta: buildPaginationMeta(pagination, total) };
+    const visibleItems = isResident
+      ? items.map(({ id, amount, method, status, approvedAt, createdAt, unitId, unitNumber }) => ({
+          id, amount, method, status, approvedAt, createdAt,
+          ...(roles.includes('OWNER') ? { unitId, unitNumber } : {}),
+        }))
+      : await this.attachReceiptMetadata(items);
+    return { items: visibleItems, meta: buildPaginationMeta(pagination, total) };
   }
 
   /** Finance Hardening Pass — paginated, see `FinanceRepository.listFunds`'s own doc comment. */
-  async listUnitPayments(buildingId: string, unitId: string, pagination: PaginationParams) {
+  async listUnitPayments(buildingId: string, unitId: string, pagination: PaginationParams, personId?: string) {
     await this.getOwnUnit(buildingId, unitId);
-    const { items, total } = await this.finance.listPaymentsByUnit(unitId, toSkipTake(pagination));
-    // FIN-REC-01B — hasReceipt/receipt enrichment, see `attachReceiptMetadata`'s own doc comment.
-    const enriched = await this.attachReceiptMetadata(items);
-    return { items: enriched, meta: buildPaginationMeta(pagination, total) };
+    const roles = personId ? await this.buildings.getRoles(personId, buildingId) : [];
+    const isStaff = roles.includes('MANAGER') || roles.includes('ACCOUNTANT');
+    const isResident = roles.includes('OWNER') || roles.includes('TENANT');
+    let payerId: string | undefined;
+    if (personId && !isStaff && isResident) {
+      if (roles.includes('OWNER')) {
+        if (!await this.buildings.isCurrentOwnerOfUnit(unitId, personId)) {
+          throw new AuthorizationError('You do not own this unit.');
+        }
+      } else {
+        const tenancy = await this.buildings.findCurrentTenancyForUnit(unitId);
+        if (tenancy?.personId !== personId) {
+          throw new AuthorizationError('You do not rent this unit.');
+        }
+        payerId = personId;
+      }
+    }
+    const { items, total } = await this.finance.listPaymentsByUnit(
+      unitId, toSkipTake(pagination), payerId,
+    );
+    return { items: await this.attachReceiptMetadata(items), meta: buildPaginationMeta(pagination, total) };
   }
 
   /**
@@ -2025,6 +2051,51 @@ export class FinanceService {
     const rows = items.map((entry) => projectStatementRow(entry, expenseById));
 
     return { items: rows, meta: buildPaginationMeta(pagination, total) };
+  }
+
+  async exportUnitDebts(buildingId: string, requestedFormat?: string, locale?: string) {
+    const format = validateReportFormat(requestedFormat);
+    const labels = reportTranslations(locale);
+    const building = await this.getBuilding(buildingId);
+    const { items } = await this.finance.listUnitDebtSummaries(buildingId, undefined, true);
+    return renderFinanceReport(format, 'unit-debts', labels.rtl, {
+      title: labels.debtTitle,
+      subtitle: [building.name, new Date().toISOString().slice(0, 10)],
+      columns: [labels.unitNumber, labels.balance],
+      rows: items.map((item) => [item.unitNumber ?? item.unitId, item.remainingPayable]),
+      total: [labels.total, items.reduce((sum, item) => sum + item.remainingPayable, 0)],
+    });
+  }
+
+  async exportFundMovements(
+    buildingId: string, from: Date, until: Date, fundId: string | undefined,
+    requestedFormat?: string, locale?: string,
+  ) {
+    const format = validateReportFormat(requestedFormat);
+    if (!(from < until)) throw new ValidationError('A valid report date range is required.');
+    const building = await this.getBuilding(buildingId);
+    const fund = fundId ? await this.getFund(buildingId, fundId) : null;
+    const entries = await this.finance.listFundMovements(buildingId, from, until, fundId);
+    const labels = reportTranslations(locale);
+    let received = 0;
+    let paid = 0;
+    const rows = entries.map((entry) => {
+      const incoming = entry.direction === 'CREDIT' ? entry.amount : 0;
+      const outgoing = entry.direction === 'DEBIT' ? entry.amount : 0;
+      received += incoming;
+      paid += outgoing;
+      const type = entry.entryType === 'EXPENSE' && incoming > 0 ? 'VOID_EXPENSE' : entry.entryType;
+      return [entry.createdAt.toISOString().slice(0, 16).replace('T', ' '), entry.fund.name,
+        labels.movementTypes[type] ?? type, incoming, outgoing];
+    });
+    return renderFinanceReport(format, 'fund-movements', labels.rtl, {
+      title: labels.fundsTitle,
+      subtitle: [building.name, fund?.name ?? labels.allFunds,
+        `${from.toISOString()} / ${until.toISOString()}`],
+      columns: [labels.date, labels.fund, labels.type, labels.received, labels.paid],
+      rows,
+      total: [labels.total, '', '', received, paid],
+    });
   }
 
   /** 21_ADRs > ADR-055 — `12_Finance_Architecture_v2.0`'s Collection Rate report, see `FinanceRepository.getCollectionRate` for exactly what's computed and how. */

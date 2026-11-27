@@ -10,6 +10,7 @@ import {
   UnitType,
 } from '@prisma/client';
 import { PrismaService } from '../../../../common/prisma/prisma.service';
+import { ConflictError } from '../../../../common/errors/app-error';
 
 @Injectable()
 export class BuildingRepository {
@@ -86,8 +87,8 @@ export class BuildingRepository {
     return this.prisma.unit.findMany({ where: { buildingId }, orderBy: { unitNumber: 'asc' } });
   }
 
-  async listUnitMetadataPage(buildingId: string, pagination: { skip: number; take: number }) {
-    const where = { buildingId };
+  async listUnitMetadataPage(buildingId: string, pagination: { skip: number; take: number }, unitIds?: string[]) {
+    const where = { buildingId, ...(unitIds ? { id: { in: unitIds } } : {}) };
     const [items, total] = await Promise.all([
       this.prisma.unit.findMany({
         where,
@@ -1108,10 +1109,18 @@ export class BuildingRepository {
    * `Unit.occupancyStatus` — shipped since ADR-021 but never actually
    * maintained by any code until now — starts being kept in sync too.
    */
-  createTenancy(params: { unitId: string; buildingId: string; personId: string }) {
+  createTenancy(params: { unitId: string; buildingId: string; personId: string; startDate?: Date; endDate?: Date }) {
     return this.prisma.$transaction(async (tx) => {
+      // Lock the unit before checking availability so parallel registrations cannot both succeed.
+      await tx.$queryRaw`SELECT id FROM units WHERE id = ${params.unitId} FOR UPDATE`;
+      if (await tx.tenancy.findFirst({ where: { unitId: params.unitId, isCurrent: true } })) {
+        throw new ConflictError('This unit already has a current lease.');
+      }
       const tenancy = await tx.tenancy.create({
-        data: { unitId: params.unitId, personId: params.personId },
+        data: {
+          unitId: params.unitId, personId: params.personId,
+          startDate: params.startDate, endDate: params.endDate,
+        },
       });
       await tx.membership.create({
         data: {
@@ -1126,6 +1135,19 @@ export class BuildingRepository {
         data: { occupancyStatus: 'TENANT_OCCUPIED' },
       });
       return tenancy;
+    });
+  }
+
+  async updateTenancyDates(params: { id: string; updatedAt: Date; startDate: Date; endDate: Date }) {
+    return this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.tenancy.updateMany({
+        where: { id: params.id, isCurrent: true, updatedAt: params.updatedAt },
+        data: { startDate: params.startDate, endDate: params.endDate },
+      });
+      if (count !== 1) {
+        throw new ConflictError('The lease changed. Refresh before trying again.');
+      }
+      return tx.tenancy.findUniqueOrThrow({ where: { id: params.id } });
     });
   }
 
@@ -1148,7 +1170,7 @@ export class BuildingRepository {
     return this.prisma.$transaction(async (tx) => {
       const now = new Date();
       const tenancy = await tx.tenancy.update({
-        where: { id: params.id },
+        where: { id: params.id, isCurrent: true },
         data: {
           isCurrent: false,
           status: 'ENDED',

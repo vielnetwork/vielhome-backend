@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, MinLength } from 'class-validator';
 import { IsIranianMobilePhone } from '../../../../common/decorators/is-iranian-mobile-phone.decorator';
+import { OptionalTenancyDatesDto } from './tenancy-dates.dto';
 
 /**
  * Building Setup Refinement Phase 3 — additive sibling of `CreateTenancyDto`.
@@ -13,7 +14,7 @@ import { IsIranianMobilePhone } from '../../../../common/decorators/is-iranian-m
  * (or creates) the underlying Person from `tenantPhone` before calling the
  * existing `BuildingService.createTenancy` unchanged.
  */
-export class RegisterTenantDto {
+export class RegisterTenantDto extends OptionalTenancyDatesDto {
   @ApiProperty()
   @IsString()
   @MinLength(1)

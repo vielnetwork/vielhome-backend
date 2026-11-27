@@ -34,14 +34,13 @@ describe('TenancyPolicy', () => {
   });
 
   describe('assertCanManage', () => {
-    it('allows the owner, manager, or the tenant themselves', () => {
-      expect(() => policy.assertCanManage(true, false, false)).not.toThrow();
-      expect(() => policy.assertCanManage(false, true, false)).not.toThrow();
-      expect(() => policy.assertCanManage(false, false, true)).not.toThrow();
+    it('allows the owner or manager', () => {
+      expect(() => policy.assertCanManage(true, false)).not.toThrow();
+      expect(() => policy.assertCanManage(false, true)).not.toThrow();
     });
 
     it('refuses an unrelated member', () => {
-      expect(() => policy.assertCanManage(false, false, false)).toThrow(AuthorizationError);
+      expect(() => policy.assertCanManage(false, false)).toThrow(AuthorizationError);
     });
   });
 

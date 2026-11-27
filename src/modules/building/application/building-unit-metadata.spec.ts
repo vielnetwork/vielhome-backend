@@ -61,6 +61,7 @@ describe('BuildingService paginated unit metadata', () => {
 
   it('returns canonical pagination and preserves authoritative relationships', async () => {
     const { service, buildings } = subject();
+    buildings.getRoles.mockResolvedValue(['MANAGER']);
     const result = await service.listUnitMetadataPage('b1', 'p1', {
       page: 2,
       limit: 100,
@@ -69,7 +70,7 @@ describe('BuildingService paginated unit metadata', () => {
     expect(buildings.listUnitMetadataPage).toHaveBeenCalledWith('b1', {
       skip: 100,
       take: 100,
-    });
+    }, undefined);
     expect(result.meta).toEqual({
       page: 2,
       limit: 100,
@@ -90,6 +91,17 @@ describe('BuildingService paginated unit metadata', () => {
       currentOwner: { personId: 'owner-2' },
       currentTenant: { personId: 'p1' },
     });
+  });
+
+  it('limits a resident owner to units they own before pagination', async () => {
+    const { service, buildings } = subject();
+    buildings.listUnitMetadataPage.mockResolvedValue({ items: [units[0]], total: 1 });
+    const result = await service.listUnitMetadataPage('b1', 'p1', { page: 1, limit: 20 });
+    expect(buildings.listUnitMetadataPage).toHaveBeenCalledWith(
+      'b1', { skip: 0, take: 20 }, ['u-101'],
+    );
+    expect(result.items.map((unit) => unit.id)).toEqual(['u-101']);
+    expect(result.meta.total).toBe(1);
   });
 
   it('returns an empty canonical page', async () => {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Header, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { FinanceService } from '../application/finance.service';
 import { CreateFundDto } from '../application/dto/create-fund.dto';
@@ -63,6 +63,33 @@ const VALID_EXPENSE_STATUSES: string[] = Object.values(ExpenseStatus);
 @Controller({ path: 'buildings', version: '1' })
 export class FinanceController {
   constructor(private readonly finance: FinanceService) {}
+
+  @Get(':id/finance/reports/unit-debts')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
+  async exportUnitDebts(
+    @Param('id') id: string,
+    @Query('format') format: string,
+    @Query('locale') locale: string,
+  ) {
+    return this.finance.exportUnitDebts(id, format, locale);
+  }
+
+  @Get(':id/finance/reports/fund-movements')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'ACCOUNTANT')
+  async exportFundMovements(
+    @Param('id') id: string,
+    @Query('from') from: string,
+    @Query('until') until: string,
+    @Query('fundId') fundId?: string,
+    @Query('format') format?: string,
+    @Query('locale') locale?: string,
+  ) {
+    return this.finance.exportFundMovements(id, new Date(from), new Date(until), fundId, format, locale);
+  }
 
   @Get(':id/finance/unit-debts')
   @UseGuards(RolesGuard)
@@ -303,6 +330,7 @@ export class FinanceController {
   async listUnitPayments(
     @Param('id') id: string,
     @Param('unitId') unitId: string,
+    @CurrentUser() user: JwtPayload,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
@@ -310,6 +338,7 @@ export class FinanceController {
       id,
       unitId,
       parsePagination(page, limit),
+      user.sub,
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
   }
@@ -465,6 +494,7 @@ export class FinanceController {
   @Roles('MANAGER', 'ACCOUNTANT')
   async listPayments(
     @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('status') status?: string,
@@ -478,6 +508,7 @@ export class FinanceController {
       id,
       parsePagination(page, limit),
       status as PaymentStatus | undefined,
+      user.sub,
     );
     return withEnvelope(items, { metadata: { pagination: meta } });
   }

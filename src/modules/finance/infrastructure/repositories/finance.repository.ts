@@ -1160,8 +1160,8 @@ export class FinanceRepository {
    * FIN-PAY-REVIEW-01B — same single-query `unit` include +
    * `flattenUnitNumber` as `listPayments` above.
    */
-  async listPaymentsByUnit(unitId: string, pagination: { skip: number; take: number }) {
-    const where = { unitId };
+  async listPaymentsByUnit(unitId: string, pagination: { skip: number; take: number }, payerId?: string) {
+    const where = { unitId, ...(payerId ? { payerId } : {}) };
     const [items, total] = await Promise.all([
       this.prisma.payment.findMany({
         where,
@@ -1733,15 +1733,14 @@ export class FinanceRepository {
   }
 
   /** Fixed query count per bounded page; never calls the single-unit query loop. */
-  async listUnitDebtSummaries(buildingId: string, pagination: { skip: number; take: number }) {
+  async listUnitDebtSummaries(buildingId: string, pagination?: { skip: number; take: number }, includeUnitNumber = false) {
     const where = { buildingId };
     const [units, total] = await Promise.all([
       this.prisma.unit.findMany({
         where,
-        select: { id: true },
+        select: { id: true, ...(includeUnitNumber ? { unitNumber: true } : {}) },
         orderBy: [{ unitNumber: 'asc' }, { id: 'asc' }],
-        skip: pagination.skip,
-        take: pagination.take,
+        ...pagination,
       }),
       this.prisma.unit.count({ where }),
     ]);
@@ -1782,8 +1781,9 @@ export class FinanceRepository {
     const creditByUnit = new Map(credits.map((credit) => [credit.unitId, credit.balance]));
 
     return {
-      items: unitIds.map((unitId) => ({
+      items: units.map(({ id: unitId, unitNumber }) => ({
         unitId,
+        ...(includeUnitNumber ? { unitNumber } : {}),
         remainingPayable: buildDebtSnapshot(
           chargesByUnit.get(unitId) ?? [],
           adjustmentsByUnit.get(unitId) ?? [],
@@ -2375,6 +2375,25 @@ export class FinanceRepository {
       this.prisma.ledgerEntry.count({ where }),
     ]);
     return { items, total };
+  }
+
+  async listFundMovements(
+    buildingId: string, from: Date, until: Date, fundId: string | undefined,
+  ) {
+    const where: Prisma.LedgerEntryWhereInput = {
+      buildingId,
+      ...(fundId ? { fundId } : {}),
+      createdAt: { gte: from, lt: until },
+      entryType: { in: ['PAYMENT', 'EXPENSE', 'REFUND', 'REVERSAL'] },
+    };
+    return this.prisma.ledgerEntry.findMany({
+      where,
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: {
+        createdAt: true, entryType: true, direction: true, amount: true,
+        fund: { select: { name: true } },
+      },
+    });
   }
 
   /**

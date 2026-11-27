@@ -24,6 +24,7 @@ import { ChangeManagerDto } from '../application/dto/change-manager.dto';
 import { TransferOwnershipDto } from '../application/dto/transfer-ownership.dto';
 import { CreateTenancyDto } from '../application/dto/create-tenancy.dto';
 import { EndTenancyDto } from '../application/dto/end-tenancy.dto';
+import { RenewTenancyDto, TenancyDatesDto } from '../application/dto/tenancy-dates.dto';
 import { UpdateBuildingSettingsDto } from '../application/dto/update-building-settings.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { MembershipGuard } from '../../../common/guards/membership.guard';
@@ -257,31 +258,17 @@ export class BuildingController {
     return this.buildings.requestMembership(id, user.sub, dto, requestId);
   }
 
-  // Building Access Refinement Phase 4 (Privacy / Data Visibility) — was
-  // `MembershipGuard` only (any current member, any role, could browse
-  // every pending applicant's fullName+phone). Tightened to the same
-  // `@Roles('OWNER','MANAGER')` set `resolveMembershipRequest` below
-  // already requires to decide these requests — nobody without the
-  // ability to act on a request needs to read who's asking.
+  // Only managers can review membership requests.
   @Get(':id/membership-requests')
   @UseGuards(RolesGuard)
-  @Roles('OWNER', 'MANAGER')
+  @Roles('MANAGER')
   listMembershipRequests(@Param('id') id: string) {
     return this.buildings.listMembershipRequests(id);
   }
 
-  // 21_ADRs > ADR-064 — was `MembershipGuard` (any current member of any
-  // role), a real access-control gap this codebase's own README named
-  // explicitly ("any member, not just OWNER/MANAGER, can currently
-  // approve/reject a join request"). Approving/rejecting who joins the
-  // building is an OWNER/MANAGER-level decision, the same set 10.07.05's
-  // Authorization Layer already uses for comparable building-governance
-  // actions (see `changeManager` below, also `@Roles('MANAGER')`) — OWNER
-  // is added here since 04_Product_Architecture treats OWNER as having
-  // authority over building membership generally, not just MANAGER.
   @Patch(':id/membership-requests/:requestId')
   @UseGuards(RolesGuard)
-  @Roles('OWNER', 'MANAGER')
+  @Roles('MANAGER')
   resolveMembershipRequest(
     @Param('id') id: string,
     @Param('requestId') requestId2: string,
@@ -432,6 +419,30 @@ export class BuildingController {
     @RequestId() requestId: string,
   ) {
     return this.buildings.registerTenant(id, unitId, dto, user.sub, requestId);
+  }
+
+  @Patch(':id/tenancies/:tenancyId/dates')
+  @UseGuards(MembershipGuard)
+  correctTenancyDates(
+    @Param('id') id: string,
+    @Param('tenancyId') tenancyId: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: TenancyDatesDto,
+    @RequestId() requestId: string,
+  ) {
+    return this.buildings.updateTenancyDates(id, tenancyId, dto, user.sub, requestId);
+  }
+
+  @Post(':id/tenancies/:tenancyId/renew')
+  @UseGuards(MembershipGuard)
+  renewTenancy(
+    @Param('id') id: string,
+    @Param('tenancyId') tenancyId: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: RenewTenancyDto,
+    @RequestId() requestId: string,
+  ) {
+    return this.buildings.updateTenancyDates(id, tenancyId, dto, user.sub, requestId);
   }
 
   @Post(':id/tenancies/:tenancyId/notice')

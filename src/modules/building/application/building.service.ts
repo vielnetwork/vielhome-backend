@@ -19,7 +19,7 @@ import { RegisterTenantDto } from './dto/register-tenant.dto';
 import { CreateMembershipRequestDto } from './dto/create-membership-request.dto';
 import { UpdateBuildingSettingsDto } from './dto/update-building-settings.dto';
 import { AuditService } from '../../../common/audit/audit.service';
-import { ConflictError, NotFoundAppError } from '../../../common/errors/app-error';
+import { AuthorizationError, ConflictError, NotFoundAppError, ValidationError } from '../../../common/errors/app-error';
 import { UnitCreatedEvent } from '../events/unit-created.event';
 import { ManagerChangedEvent } from '../events/manager-changed.event';
 import { OwnershipTransferInitiatedEvent } from '../events/ownership-transferred.event';
@@ -92,15 +92,18 @@ export class BuildingService {
       this.buildings.findPersonById(personId),
     ]);
 
-    const unitIds = units.map((u) => u.id);
+    const isManager = roles.includes('MANAGER');
+    const residentUnitIds = this.residentUnitIds(roles, ownedUnitIds, tenantUnitIds);
+    const visibleUnits = residentUnitIds
+      ? units.filter((unit) => residentUnitIds.has(unit.id))
+      : units;
+    const unitIds = visibleUnits.map((u) => u.id);
     const [currentOwners, currentTenants] = await Promise.all([
       this.buildings.findCurrentOwnerSummariesForUnits(unitIds),
       this.buildings.findCurrentTenantSummariesForUnits(unitIds),
     ]);
 
-    const isManager = roles.includes('MANAGER');
-
-    return units.map((unit) => {
+    return visibleUnits.map((unit) => {
       const isCurrentOwnerOfUnit = ownedUnitIds.has(unit.id);
       const isCurrentTenantOfUnit = tenantUnitIds.has(unit.id);
       // Same eligibility rule `canClaimOwnership`/`OwnershipClaimPolicy.
@@ -263,12 +266,24 @@ export class BuildingService {
   }
 
   async listUnitMetadataPage(buildingId: string, personId: string, pagination: PaginationParams) {
-    const [{ items, total }, roles] = await Promise.all([
-      this.buildings.listUnitMetadataPage(buildingId, toSkipTake(pagination)),
+    const [roles, ownedUnitIds, tenantUnitIds] = await Promise.all([
       this.buildings.getRoles(personId, buildingId),
+      this.buildings.findCurrentOwnedUnitIdsForPerson(buildingId, personId),
+      this.buildings.findCurrentTenantUnitIdsForPerson(buildingId, personId),
     ]);
+    const unitIds = this.residentUnitIds(roles, ownedUnitIds, tenantUnitIds);
+    const { items, total } = await this.buildings.listUnitMetadataPage(
+      buildingId, toSkipTake(pagination), unitIds ? [...unitIds] : undefined,
+    );
     const shaped = await this.shapeUnitsForCaller(items, buildingId, personId, roles);
     return { items: shaped, meta: buildPaginationMeta(pagination, total) };
+  }
+
+  private residentUnitIds(roles: string[], ownedUnitIds: Set<string>, tenantUnitIds: Set<string>) {
+    if (roles.includes('MANAGER') || roles.includes('ACCOUNTANT')) return undefined;
+    if (roles.includes('OWNER')) return ownedUnitIds;
+    if (roles.includes('TENANT')) return tenantUnitIds;
+    return undefined;
   }
 
   private async getOwnUnit(buildingId: string, unitId: string) {
@@ -552,6 +567,10 @@ export class BuildingService {
     requestId: string,
   ) {
     await this.getById(buildingId); // 404s if the building doesn't exist
+    const roles = await this.buildings.getRoles(personId, buildingId);
+    if (roles.includes('OWNER') || roles.includes('TENANT')) {
+      throw new AuthorizationError('Current owners and tenants cannot request membership.');
+    }
 
     const request = await this.buildings.createMembershipRequest({
       buildingId,
@@ -833,8 +852,6 @@ export class BuildingService {
     buildingId: string,
     unitId: string,
     actorPersonId: string,
-    requireOwnerOrManagerOnly: boolean,
-    tenantPersonId?: string,
   ) {
     const [isOwner, roles] = await Promise.all([
       this.buildings.isCurrentOwnerOfUnit(unitId, actorPersonId),
@@ -842,11 +859,7 @@ export class BuildingService {
     ]);
     const isManager = roles.includes('MANAGER');
 
-    if (requireOwnerOrManagerOnly) {
-      this.tenancyPolicy.assertCanCreate(isOwner, isManager);
-    } else {
-      this.tenancyPolicy.assertCanManage(isOwner, isManager, tenantPersonId === actorPersonId);
-    }
+    this.tenancyPolicy.assertCanManage(isOwner, isManager);
   }
 
   /** Rule 003 — only one active tenancy per unit; only the unit's owner or the building's manager may register one (04.02 Rule 27/29). */
@@ -856,9 +869,13 @@ export class BuildingService {
     tenantPersonId: string,
     actorPersonId: string,
     requestId: string,
+    dates?: { startDate?: Date; endDate?: Date },
   ) {
     await this.getOwnUnit(buildingId, unitId);
-    await this.assertManagesUnit(buildingId, unitId, actorPersonId, true);
+    this.tenancyPolicy.assertCanCreate(
+      await this.buildings.isCurrentOwnerOfUnit(unitId, actorPersonId),
+      (await this.buildings.getRoles(actorPersonId, buildingId)).includes('MANAGER'),
+    );
 
     // Product Rule 2 (Building Setup Refinement Phase 3) — a tenant-occupied
     // unit must have a registered Owner. Checked here so BOTH tenancy-
@@ -875,6 +892,7 @@ export class BuildingService {
       unitId,
       buildingId,
       personId: tenantPersonId,
+      ...dates,
     });
 
     await this.audit.record({
@@ -913,6 +931,11 @@ export class BuildingService {
     actorPersonId: string,
     requestId: string,
   ) {
+    await this.getOwnUnit(buildingId, unitId);
+    await this.assertManagesUnit(buildingId, unitId, actorPersonId);
+    const startDate = dto.startDate ? new Date(dto.startDate) : undefined;
+    const endDate = dto.endDate ? new Date(dto.endDate) : undefined;
+    if (endDate) this.assertTenancyDateRange(startDate ?? new Date(), endDate);
     let person = await this.buildings.findPersonByPhone(dto.tenantPhone);
     if (!person) {
       person = await this.buildings.createPersonWithName({
@@ -928,7 +951,52 @@ export class BuildingService {
       );
     }
 
-    return this.createTenancy(buildingId, unitId, person.id, actorPersonId, requestId);
+    return this.createTenancy(buildingId, unitId, person.id, actorPersonId, requestId, { startDate, endDate });
+  }
+
+  private assertTenancyDateRange(startDate: Date, endDate: Date) {
+    if (endDate.toISOString().slice(0, 10) <= startDate.toISOString().slice(0, 10)) {
+      throw new ValidationError('The lease end date must be after its start date.');
+    }
+  }
+
+  async updateTenancyDates(
+    buildingId: string,
+    tenancyId: string,
+    dto: { startDate?: string; endDate: string },
+    actorPersonId: string,
+    requestId: string,
+  ) {
+    const tenancy = await this.getOwnTenancy(buildingId, tenancyId);
+    await this.assertManagesUnit(buildingId, tenancy.unitId, actorPersonId);
+    if (!tenancy.isCurrent) throw new ConflictError('This lease has already ended.');
+
+    const startDate = dto.startDate ? new Date(dto.startDate) : tenancy.startDate;
+    const endDate = new Date(dto.endDate);
+    const renewal = dto.startDate === undefined;
+    this.assertTenancyDateRange(startDate, endDate);
+    if (renewal && tenancy.endDate && endDate <= tenancy.endDate) {
+      throw new ValidationError('The renewed end date must be after the current end date.');
+    }
+
+    const updated = await this.buildings.updateTenancyDates({
+      id: tenancyId, updatedAt: tenancy.updatedAt, startDate, endDate,
+    });
+    await this.audit.record({
+      actorId: actorPersonId,
+      buildingId,
+      action: renewal ? 'TenancyRenewed' : 'TenancyDatesCorrected',
+      entityType: 'Tenancy',
+      entityId: tenancyId,
+      requestId,
+      metadata: {
+        previousStartDate: tenancy.startDate.toISOString(),
+        previousEndDate: tenancy.endDate?.toISOString(),
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+      },
+    });
+    return updated;
   }
 
   private async getOwnTenancy(buildingId: string, tenancyId: string) {
@@ -949,8 +1017,6 @@ export class BuildingService {
       buildingId,
       tenancy.unitId,
       actorPersonId,
-      false,
-      tenancy.personId,
     );
     this.tenancyPolicy.assertCanGiveNotice(tenancy.status);
 
@@ -980,8 +1046,6 @@ export class BuildingService {
       buildingId,
       tenancy.unitId,
       actorPersonId,
-      false,
-      tenancy.personId,
     );
     this.tenancyPolicy.assertCanEnd(tenancy.status);
 
@@ -1000,6 +1064,7 @@ export class BuildingService {
       entityId: tenancyId,
       requestId,
       reason: terminationReason,
+      metadata: { scheduledEndDate: tenancy.endDate?.toISOString() },
     });
 
     this.events.emit(

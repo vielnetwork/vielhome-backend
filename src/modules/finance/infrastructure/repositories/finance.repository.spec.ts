@@ -1201,6 +1201,21 @@ describe('FinanceRepository', () => {
     });
   });
 
+  it('scopes fund movements and excludes balance-only and debt entries', async () => {
+    const from = new Date('2026-11-01T00:00:00Z');
+    const until = new Date('2026-11-28T00:00:00Z');
+    prisma.ledgerEntry.findMany.mockResolvedValue([]);
+    await repo.listFundMovements('b1', from, until, 'f1');
+    expect(prisma.ledgerEntry.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        buildingId: 'b1',
+        fundId: 'f1',
+        createdAt: { gte: from, lt: until },
+        entryType: { in: ['PAYMENT', 'EXPENSE', 'REFUND', 'REVERSAL'] },
+      },
+    }));
+  });
+
   describe('listUnitDebtSummaries — bounded set-based parity', () => {
     it('matches the single-unit snapshot for the same finance state', async () => {
       const chargeItems = [{ unitId: 'u1', amount: 1000, paidAmount: 200 }];
