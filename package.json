@@ -76,7 +76,8 @@
     "passport-jwt": "^4.0.1",
     "pdfkit": "^0.17.2",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "yauzl": "^3.3.1"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",
@@ -89,6 +90,7 @@
     "@types/passport-jwt": "^4.0.1",
     "@types/pdfkit": "^0.17.7",
     "@types/supertest": "^7.2.0",
+    "@types/yauzl": "^3.4.0",
     "@typescript-eslint/eslint-plugin": "^8.18.1",
     "@typescript-eslint/parser": "^8.18.1",
     "eslint": "^8.57.1",
