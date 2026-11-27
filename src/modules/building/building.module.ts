@@ -1,3 +1,4 @@
+import { LegalAcceptanceController } from './controller/legal-acceptance.controller';
 import { AccountantInvitationsController } from './controller/accountant-invitations.controller';
 import { AccountantInvitationsService } from './application/accountant-invitations.service';
 import { Module } from '@nestjs/common';
@@ -18,7 +19,7 @@ import { MembershipGuard } from '../../common/guards/membership.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 
 @Module({
-  controllers: [BuildingController, AccountantInvitationsController, BuildingUnitImportController],
+  controllers: [BuildingController, AccountantInvitationsController, BuildingUnitImportController, LegalAcceptanceController],
   providers: [
     BuildingUnitImportService,
     AccountantInvitationsService,

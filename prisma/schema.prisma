@@ -45,6 +45,7 @@ model Person {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  legalAcceptances       LegalAcceptance[]
   memberships            Membership[]         @relation("PersonMemberships")
   managerAssignmentsMade Membership[]         @relation("ManagerAssignedBy")
   membershipRequests     MembershipRequest[]
@@ -4324,4 +4325,20 @@ model BackofficeRoleInvite {
 
   @@index([phone])
   @@map("backoffice_role_invites")
+}
+
+model LegalAcceptance {
+  personId         String
+  person           Person   @relation(fields: [personId], references: [id])
+  scope            String
+  version          String
+  buildingId       String?
+  buildingName     String?
+  managerStartedAt DateTime?
+  title            String
+  text             String
+  acceptedAt       DateTime @default(now())
+
+  @@id([personId, scope, version])
+  @@map("legal_acceptances")
 }
