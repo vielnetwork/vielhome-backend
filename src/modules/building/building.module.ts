@@ -1,3 +1,4 @@
+import { UnitContactInvitationsController } from './controller/unit-contact-invitations.controller';
 import { LegalAcceptanceController } from './controller/legal-acceptance.controller';
 import { AccountantInvitationsController } from './controller/accountant-invitations.controller';
 import { AccountantInvitationsService } from './application/accountant-invitations.service';
@@ -19,7 +20,7 @@ import { MembershipGuard } from '../../common/guards/membership.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 
 @Module({
-  controllers: [BuildingController, AccountantInvitationsController, BuildingUnitImportController, LegalAcceptanceController],
+  controllers: [BuildingController, AccountantInvitationsController, BuildingUnitImportController, LegalAcceptanceController, UnitContactInvitationsController],
   providers: [
     BuildingUnitImportService,
     AccountantInvitationsService,

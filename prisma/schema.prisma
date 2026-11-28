@@ -33,6 +33,7 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 model Person {
+  chargeVerificationBallots ChargeVerificationBallot[]
   backofficeRoleInvitations BackofficeRoleInvite[]
   accountantInvitations AccountantInvitation[]
   id        String   @id @default(cuid())
@@ -489,6 +490,7 @@ model Unit {
   ownerInviteSentAt DateTime?
   createdAt         DateTime            @default(now())
 
+  importContacts UnitImportContact[]
   ownerships  Ownership[]
   memberships Membership[]
   tenancies   Tenancy[]
@@ -638,6 +640,7 @@ enum ManagerAssignmentType {
 // created, so `memberships` rows where role = MANAGER, ordered by
 // startedAt, ARE the manager assignment history — no separate table needed.
 model Membership {
+  chargeVerificationPoll ChargeVerificationPoll?
   canIssueCharges Boolean @default(false)
   canManageFunds Boolean @default(false)
   id                    String                 @id @default(cuid())
@@ -1025,6 +1028,7 @@ enum ChargeBatchStatus {
 // fanned out into one ChargeItem per Unit. See the MVP lifecycle note above
 // for why this collapses several Frozen intermediate stages into ISSUED.
 model ChargeBatch {
+  chargeVerificationPolls ChargeVerificationPoll[]
   id                String                  @id @default(cuid())
   buildingId        String
   building          Building                @relation(fields: [buildingId], references: [id])
@@ -2925,6 +2929,8 @@ model ManagerVerificationCase {
   createdAt               DateTime                     @default(now())
   updatedAt               DateTime                     @updatedAt
 
+  boardMinutesStorageKey String?
+
   approvals ManagerVerificationApproval[]
 
   @@index([buildingId])
@@ -4341,4 +4347,50 @@ model LegalAcceptance {
 
   @@id([personId, scope, version])
   @@map("legal_acceptances")
+}
+
+model UnitImportContact {
+  unitId        String
+  unit          Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  role          MembershipRole
+  phone         String
+  firstName     String
+  lastName      String
+  leaseEndDate  DateTime?
+  invitedAt     DateTime?
+  invitedById   String?
+  acceptedAt    DateTime?
+
+  @@id([unitId, role])
+  @@index([phone])
+  @@map("unit_import_contacts")
+}
+
+model ChargeVerificationPoll {
+  id String @id @default(cuid())
+  membershipId String @unique
+  membership Membership @relation(fields: [membershipId], references: [id])
+  draftId String
+  draft ChargeBatch @relation(fields: [draftId], references: [id])
+  requiredApprovals Int
+  unitIds String[]
+  openedAt DateTime @default(now())
+  approvedAt DateTime?
+  ballots ChargeVerificationBallot[]
+
+  @@index([draftId])
+  @@map("charge_verification_polls")
+}
+
+model ChargeVerificationBallot {
+  pollId String
+  poll ChargeVerificationPoll @relation(fields: [pollId], references: [id])
+  unitId String
+  voterId String
+  voter Person @relation(fields: [voterId], references: [id])
+  approved Boolean
+  createdAt DateTime @default(now())
+
+  @@id([pollId, unitId])
+  @@map("charge_verification_ballots")
 }

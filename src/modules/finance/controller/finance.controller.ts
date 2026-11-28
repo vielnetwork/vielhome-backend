@@ -1,3 +1,5 @@
+import { FirstChargeVerificationService } from '../application/first-charge-verification.service';
+import { FirstChargeVoteDto } from '../application/dto/first-charge-vote.dto';
 import { Body, Controller, Get, Header, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { FinanceService } from '../application/finance.service';
@@ -62,7 +64,30 @@ const VALID_EXPENSE_STATUSES: string[] = Object.values(ExpenseStatus);
 @UseGuards(JwtAuthGuard)
 @Controller({ path: 'buildings', version: '1' })
 export class FinanceController {
-  constructor(private readonly finance: FinanceService) {}
+  constructor(
+    private readonly finance: FinanceService,
+    private readonly firstCharge: FirstChargeVerificationService,
+  ) {}
+
+  @Get(':id/first-charge-verification')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(RolesGuard)
+  @Roles('MANAGER', 'OWNER', 'TENANT')
+  verificationStatus(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.firstCharge.status(id, user.sub);
+  }
+
+  @Post(':id/first-charge-verification/vote')
+  @UseGuards(RolesGuard)
+  @Roles('OWNER', 'TENANT')
+  verificationVote(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Body() vote: FirstChargeVoteDto,
+    @RequestId() requestId: string,
+  ) {
+    return this.firstCharge.vote(id, user.sub, vote.pollId, vote.unitId, vote.approved, requestId);
+  }
 
   @Get(':id/finance/reports/unit-debts')
   @Header('Cache-Control', 'no-store')
@@ -284,13 +309,14 @@ export class FinanceController {
   @UseGuards(RolesGuard)
   @AllowAccountantDelegation('canIssueCharges')
   @Roles('MANAGER')
-  issueChargeBatch(
+  async issueChargeBatch(
     @Param('id') id: string,
     @Param('chargeBatchId') chargeBatchId: string,
     @CurrentUser() user: JwtPayload,
     @RequestId() requestId: string,
   ) {
-    return this.finance.issueChargeBatch(id, chargeBatchId, user.sub, requestId);
+    const membershipId = await this.firstCharge.authorizeIssue(id, chargeBatchId, user.sub, requestId);
+    return this.finance.issueChargeBatch(id, chargeBatchId, user.sub, requestId, membershipId);
   }
 
   @Patch(':id/charges/:chargeBatchId/cancel')

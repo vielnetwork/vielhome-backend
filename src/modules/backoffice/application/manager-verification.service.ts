@@ -4,7 +4,7 @@ import type { ManagerVerificationDecision, VerificationPriority } from '@prisma/
 import { BackOfficeRepository } from '../infrastructure/repositories/backoffice.repository';
 import { ManagerVerificationPolicy } from '../domain/policies/manager-verification.policy';
 import { AuditService } from '../../../common/audit/audit.service';
-import { ConflictError, DuplicateError, NotFoundAppError } from '../../../common/errors/app-error';
+import { BusinessRuleViolationError, ConflictError, DuplicateError, NotFoundAppError } from '../../../common/errors/app-error';
 import {
   buildPaginationMeta,
   toSkipTake,
@@ -85,7 +85,13 @@ export class ManagerVerificationService {
       },
       toSkipTake(pagination),
     );
-    return { items, meta: buildPaginationMeta(pagination, total) };
+    return {
+      items: items.map(({ boardMinutesStorageKey, ...item }) => ({
+        ...item,
+        ...(boardMinutesStorageKey && { hasBoardMinutes: true }),
+      })),
+      meta: buildPaginationMeta(pagination, total),
+    };
   }
 
   /**
@@ -145,6 +151,13 @@ export class ManagerVerificationService {
       throw new ConflictError('Manager verification case is no longer pending.');
     }
 
+    if (kase.boardMinutesStorageKey && decision === 'SUSPEND') {
+      throw new BusinessRuleViolationError('Board minutes can only be approved or rejected.');
+    }
+    if (kase.boardMinutesStorageKey && decision === 'REJECT' && !normalizedReason) {
+      throw new BusinessRuleViolationError('A reason is required when rejecting board minutes.');
+    }
+
     const status =
       decision === 'APPROVE' ? 'VERIFIED' : decision === 'REJECT' ? 'REJECTED' : 'SUSPENDED';
 
@@ -155,6 +168,7 @@ export class ManagerVerificationService {
       candidateId: kase.candidateId,
       status,
       decision,
+      ...(kase.boardMinutesStorageKey && { boardMinutes: true }),
       verificationSource: decision === 'APPROVE' ? 'ADMIN_REVIEW' : undefined,
       reviewedById: reviewerPersonId,
       reason: normalizedReason,
@@ -163,7 +177,9 @@ export class ManagerVerificationService {
 
     this.events.emit(
       'ManagerVerificationDecided',
-      new ManagerVerificationDecidedEvent(kase.buildingId, caseId, status, kase.candidateId),
+      new ManagerVerificationDecidedEvent(
+        kase.buildingId, caseId, status, kase.candidateId, !!kase.boardMinutesStorageKey,
+      ),
     );
 
     return updated;
@@ -223,7 +239,7 @@ export class ManagerVerificationService {
   async appealCase(buildingId: string, callerPersonId: string, requestId: string) {
     const cases = await this.backOffice.listManagerVerificationCases({});
     const latest = cases
-      .filter((c) => c.buildingId === buildingId && c.candidateId === callerPersonId)
+      .filter((c) => c.buildingId === buildingId && c.candidateId === callerPersonId && !c.boardMinutesStorageKey)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
     if (!latest) throw new NotFoundAppError('No verification case found for this candidate.');
 

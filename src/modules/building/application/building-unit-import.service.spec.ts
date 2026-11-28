@@ -18,6 +18,7 @@ describe('Excel unit import', () => {
         update: jest.fn().mockResolvedValue(unit),
       },
       auditLog: { create: jest.fn() },
+      unitImportContact: { upsert: jest.fn() },
       $transaction: jest.fn(),
     };
     db.$transaction.mockImplementation((operation) => operation(db));
@@ -67,6 +68,26 @@ describe('Excel unit import', () => {
     ]);
     await expect(service.apply('building', 'manager', 'request', file, preview.revision))
       .rejects.toBeInstanceOf(ValidationError);
+    expect(db.unit.update).not.toHaveBeenCalled();
+  });
+
+  it('normalizes contact phones and stages invitations without granting access', async () => {
+    const { db, service } = setup();
+    const file = await unitImportTemplate([{ unitNumber: '1', contacts: [
+      { role: 'OWNER', phone: '۰۹۱۲۱۲۳۴۵۶۷', firstName: 'علی', lastName: 'احمدی' },
+      { role: 'TENANT', phone: '09121234568', firstName: 'سارا', lastName: 'رضایی', leaseEndDate: new Date('2028-05-31') },
+    ] }]);
+    const preview = await service.preview('building', file);
+    expect(preview).toMatchObject({ contacts: 2, created: 0, updated: 0, errors: [] });
+    expect(db.unitImportContact.upsert).not.toHaveBeenCalled();
+    await service.apply('building', 'manager', 'request', file, preview.revision);
+    expect(db.unitImportContact.upsert).toHaveBeenCalledTimes(2);
+    expect(db.unitImportContact.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ role: 'OWNER', phone: '+989121234567' }),
+    }));
+    expect(db.unitImportContact.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ role: 'TENANT', leaseEndDate: new Date('2028-05-31') }),
+    }));
     expect(db.unit.update).not.toHaveBeenCalled();
   });
 });

@@ -193,6 +193,67 @@ export class BackOfficeRepository {
     });
   }
 
+  async getBoardMinutesContext(buildingId: string, personId: string) {
+    const membership = await this.prisma.membership.findFirst({
+      where: { buildingId, personId, role: 'MANAGER', isCurrent: true,
+        managerState: { in: ['PROVISIONAL', 'VERIFIED'] } },
+      select: { id: true, chargeVerificationPoll: { select: { requiredApprovals: true } } },
+    });
+    const unitCount = await this.prisma.unit.count({ where: { buildingId } });
+    const latest = membership && await this.prisma.managerVerificationCase.findFirst({
+      where: { membershipId: membership.id, boardMinutesStorageKey: { not: null } },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { status: true, reason: true },
+    });
+    return { membership, unitCount, latest };
+  }
+
+  submitBoardMinutes(params: {
+    buildingId: string;
+    personId: string;
+    membershipId: string;
+    storageKey: string;
+    requestId: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM memberships WHERE id = ${params.membershipId} FOR UPDATE`;
+      const membership = await tx.membership.findFirst({
+        where: { id: params.membershipId, personId: params.personId, buildingId: params.buildingId,
+          role: 'MANAGER', isCurrent: true, managerState: { in: ['PROVISIONAL', 'VERIFIED'] } },
+        include: { chargeVerificationPoll: { select: { requiredApprovals: true } } },
+      });
+      const unitCount = await tx.unit.count({ where: { buildingId: params.buildingId } });
+      if (!membership || (unitCount < 21 && membership.chargeVerificationPoll?.requiredApprovals !== 0)) {
+        throw new ConflictError('Board minutes submission is no longer available.');
+      }
+      const existing = await tx.managerVerificationCase.findFirst({
+        where: { membershipId: membership.id, boardMinutesStorageKey: { not: null },
+          status: { in: ['PENDING', 'VERIFIED'] } },
+      });
+      if (existing) throw new ConflictError('Board minutes have already been submitted.');
+      const created = await tx.managerVerificationCase.create({
+        data: {
+          buildingId: params.buildingId,
+          membershipId: membership.id,
+          candidateId: params.personId,
+          boardMinutesStorageKey: params.storageKey,
+        },
+        select: { id: true, status: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: params.personId,
+          buildingId: params.buildingId,
+          action: 'ManagerBoardMinutesSubmitted',
+          entityType: 'ManagerVerificationCase',
+          entityId: created.id,
+          requestId: params.requestId,
+        },
+      });
+      return created;
+    });
+  }
+
   findManagerVerificationCaseById(id: string) {
     return this.prisma.managerVerificationCase.findUnique({
       where: { id },
@@ -204,16 +265,16 @@ export class BackOfficeRepository {
     });
   }
 
-  /** The single open (PENDING) case for a building, if any — 06.03 Rule 009 ("Only One Verified Manager At A Time") implies at most one open verification case too. */
+  /** Board minutes are reviewed by platform staff and excluded from owner approval. */
   getOpenManagerVerificationCaseForBuilding(buildingId: string) {
     return this.prisma.managerVerificationCase.findFirst({
-      where: { buildingId, status: 'PENDING' },
+      where: { buildingId, status: 'PENDING', boardMinutesStorageKey: null },
     });
   }
 
   findLatestManagerVerificationCaseForBuilding(buildingId: string) {
     return this.prisma.managerVerificationCase.findFirst({
-      where: { buildingId },
+      where: { buildingId, boardMinutesStorageKey: null },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -283,6 +344,7 @@ export class BackOfficeRepository {
     candidateId: string;
     status: ManagerVerificationStatus;
     decision: ManagerVerificationDecision;
+    boardMinutes?: boolean;
     verificationSource?: ManagerVerificationSource;
     reviewedById: string;
     reason?: string;
@@ -307,42 +369,49 @@ export class BackOfficeRepository {
         throw new ConflictError('Manager verification case status changed; reload and retry.');
       }
 
-      if (params.decision !== 'REJECT') {
-        const competingManager = await tx.membership.findFirst({
-          where: {
-            buildingId: params.buildingId,
-            role: 'MANAGER',
-            isCurrent: true,
-            id: { not: params.membershipId },
-          },
-          select: { id: true },
-        });
-        if (competingManager) {
-          throw new ConflictError('Another current manager exists for this building.');
+      if (!params.boardMinutes || params.decision === 'APPROVE') {
+        if (params.decision !== 'REJECT') {
+          const competingManager = await tx.membership.findFirst({
+            where: {
+              buildingId: params.buildingId,
+              role: 'MANAGER',
+              isCurrent: true,
+              id: { not: params.membershipId },
+            },
+            select: { id: true },
+          });
+          if (competingManager) {
+            throw new ConflictError('Another current manager exists for this building.');
+          }
         }
+        const membershipData =
+          params.decision === 'APPROVE'
+            ? { managerState: 'VERIFIED' as const, isCurrent: true, endedAt: null }
+            : params.decision === 'REJECT'
+              ? { managerState: 'FORMER' as const, isCurrent: false, endedAt: new Date() }
+              : { managerState: 'SUSPENDED' as const, isCurrent: true, endedAt: null };
+        const membership = await tx.membership.updateMany({
+          where: {
+            id: params.membershipId,
+            buildingId: params.buildingId,
+            personId: params.candidateId,
+            ...(params.boardMinutes && {
+              role: 'MANAGER' as const,
+              isCurrent: true,
+              managerState: { in: ['PROVISIONAL', 'VERIFIED'] },
+            }),
+          },
+          data: membershipData,
+        });
+        if (membership.count !== 1) {
+          throw new ConflictError('Manager membership changed; reload and retry.');
+        }
+        const building = await tx.building.updateMany({
+          where: { id: params.buildingId },
+          data: { recoveryModeEnteredAt: params.decision === 'APPROVE' ? null : new Date() },
+        });
+        if (building.count !== 1) throw new ConflictError('Building changed; reload and retry.');
       }
-      const membershipData =
-        params.decision === 'APPROVE'
-          ? { managerState: 'VERIFIED' as const, isCurrent: true, endedAt: null }
-          : params.decision === 'REJECT'
-            ? { managerState: 'FORMER' as const, isCurrent: false, endedAt: new Date() }
-            : { managerState: 'SUSPENDED' as const, isCurrent: true, endedAt: null };
-      const membership = await tx.membership.updateMany({
-        where: {
-          id: params.membershipId,
-          buildingId: params.buildingId,
-          personId: params.candidateId,
-        },
-        data: membershipData,
-      });
-      if (membership.count !== 1) {
-        throw new ConflictError('Manager membership changed; reload and retry.');
-      }
-      const building = await tx.building.updateMany({
-        where: { id: params.buildingId },
-        data: { recoveryModeEnteredAt: params.decision === 'APPROVE' ? null : new Date() },
-      });
-      if (building.count !== 1) throw new ConflictError('Building changed; reload and retry.');
 
       await tx.auditLog.create({
         data: {
@@ -459,7 +528,7 @@ export class BackOfficeRepository {
         Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${'manager-verification-case:' + params.caseId}))`,
       );
       const kase = await tx.managerVerificationCase.findUnique({ where: { id: params.caseId } });
-      if (!kase || kase.status !== 'PENDING') {
+      if (!kase || kase.status !== 'PENDING' || kase.boardMinutesStorageKey) {
         throw new ConflictError('Manager verification case status changed; reload and retry.');
       }
       const duplicate = await tx.managerVerificationApproval.findUnique({

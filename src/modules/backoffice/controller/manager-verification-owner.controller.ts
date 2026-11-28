@@ -1,4 +1,18 @@
-import { Controller, Param, Post, UseGuards } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  boardMinutesMaxBytes,
+  ManagerBoardMinutesService,
+} from '../application/manager-board-minutes.service';
+import {
+  Controller,
+  Get,
+  Header,
+  Param,
+  Post,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ManagerVerificationService } from '../application/manager-verification.service';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
@@ -20,7 +34,35 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
 @ApiBearerAuth()
 @Controller({ path: 'buildings/:id/manager-verification', version: '1' })
 export class ManagerVerificationOwnerController {
-  constructor(private readonly service: ManagerVerificationService) {}
+  constructor(
+    private readonly service: ManagerVerificationService,
+    private readonly boardMinutes: ManagerBoardMinutesService,
+  ) {}
+
+  @Get('board-minutes')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('MANAGER')
+  boardMinutesStatus(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.boardMinutes.status(id, user.sub);
+  }
+
+  @Post('board-minutes')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('MANAGER')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: boardMinutesMaxBytes, files: 1, fields: 0 },
+    }),
+  )
+  submitBoardMinutes(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @RequestId() requestId: string,
+    @UploadedFile() file?: { buffer: Buffer },
+  ) {
+    return this.boardMinutes.submit(id, user.sub, requestId, file?.buffer);
+  }
 
   @Post('approve')
   @UseGuards(JwtAuthGuard, RolesGuard)

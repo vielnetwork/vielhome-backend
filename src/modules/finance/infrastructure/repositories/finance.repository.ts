@@ -549,6 +549,7 @@ export class FinanceRepository {
     totalAmount: number;
     actorId: string;
     requestId?: string;
+    managerMembershipId?: string;
     // ADR-095 — pre-resolved payer snapshot (unit ownership/tenancy is
     // cross-module data FinanceRepository has no access to; FinanceService
     // resolves it via BuildingRepository BEFORE calling this method, so
@@ -585,6 +586,17 @@ export class FinanceRepository {
         throw new BusinessRuleViolationError(
           'A charge batch with no charge items cannot be issued.',
         );
+      }
+
+
+      if (params.managerMembershipId) {
+        await tx.$queryRaw`SELECT id FROM memberships WHERE id = ${params.managerMembershipId} FOR UPDATE`;
+        const manager = await tx.membership.findFirst({
+          where: { id: params.managerMembershipId, buildingId: params.buildingId,
+            isCurrent: true, role: 'MANAGER', managerState: { in: ['PROVISIONAL', 'VERIFIED'] } },
+          select: { id: true },
+        });
+        if (!manager) throw new ConflictError('The building manager has changed.');
       }
 
       const issuedAt = new Date();

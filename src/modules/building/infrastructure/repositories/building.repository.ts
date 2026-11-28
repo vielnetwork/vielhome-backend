@@ -246,6 +246,10 @@ export class BuildingRepository {
     pendingOwnerLastName?: string | null;
   }) {
     const membership = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM units WHERE id = ${params.unitId} FOR UPDATE`;
+      if (await tx.ownership.findFirst({ where: { unitId: params.unitId, isCurrent: true } })) {
+        throw new ConflictError('This unit already has a current owner.');
+      }
       await tx.ownership.create({
         data: { unitId: params.unitId, personId: params.personId },
       });

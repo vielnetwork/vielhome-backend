@@ -84,6 +84,47 @@ describe('BackOfficeRepository manager verification mutation hardening', () => {
     },
   );
 
+  it('records a rejected PDF without ending the manager term', async () => {
+    const { repository, tx } = createHarness();
+    await repository.decideManagerVerificationCaseAtomically({
+      id: 'case-1',
+      buildingId: 'building-1',
+      membershipId: 'membership-1',
+      candidateId: 'candidate-1',
+      status: 'REJECTED',
+      decision: 'REJECT',
+      boardMinutes: true,
+      reviewedById: 'reviewer-1',
+      reason: 'Missing signatures',
+      requestId: 'request-1',
+    });
+    expect(tx.managerVerificationCase.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'REJECTED', reason: 'Missing signatures' }),
+    }));
+    expect(tx.membership.updateMany).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks that PDF approval still belongs to the current manager term', async () => {
+    const { repository, tx } = createHarness();
+    tx.membership.updateMany.mockResolvedValue({ count: 0 });
+    await expect(repository.decideManagerVerificationCaseAtomically({
+      id: 'case-1',
+      buildingId: 'building-1',
+      membershipId: 'membership-1',
+      candidateId: 'candidate-1',
+      status: 'VERIFIED',
+      decision: 'APPROVE',
+      boardMinutes: true,
+      reviewedById: 'reviewer-1',
+      requestId: 'request-1',
+    })).rejects.toBeInstanceOf(ConflictError);
+    expect(tx.membership.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: 'membership-1', role: 'MANAGER', isCurrent: true }),
+    }));
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
   it('rejects a losing decision CAS before membership, recovery or audit side effects', async () => {
     const { repository, tx } = createHarness();
     tx.managerVerificationCase.updateMany.mockResolvedValue({ count: 0 });

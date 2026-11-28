@@ -1,3 +1,4 @@
+import { ManagerBoardMinutesService } from './application/manager-board-minutes.service';
 import { Module } from '@nestjs/common';
 import { BuildingVerificationController } from './controller/building-verification.controller';
 import { BuildingVerificationAppealController } from './controller/building-verification-appeal.controller';
@@ -95,6 +96,7 @@ import { FraudAppealAuthGuard } from './infrastructure/guards/fraud-appeal-auth.
   providers: [
     BuildingVerificationService,
     ManagerVerificationService,
+    ManagerBoardMinutesService,
     FraudCaseService,
     SupportCaseService,
     SubscriptionService,

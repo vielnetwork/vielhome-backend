@@ -202,7 +202,14 @@ export class NotificationEventListener {
         body: 'سمت مدیریت شما تا بررسی مجدد به حالت تعلیق درآمد.',
       },
     };
-    const message = copy[event.status];
+    const minutesCopy: typeof copy = {
+      VERIFIED: { title: 'تأیید صورت‌جلسه', body: 'صورت‌جلسهٔ هیئت‌مدیره تأیید شد.' },
+      REJECTED: {
+        title: 'رد صورت‌جلسه',
+        body: 'دلیل رد را در صفحهٔ ساختمان ببینید و صورت‌جلسهٔ اصلاح‌شده را ارسال کنید.',
+      },
+    };
+    const message = (event.boardMinutes ? minutesCopy : copy)[event.status];
     if (!message) return;
 
     await this.notifications.notify({

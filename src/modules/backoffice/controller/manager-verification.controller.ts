@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { ManagerBoardMinutesService } from '../application/manager-board-minutes.service';
+import { Body, Controller, Get, Header, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ManagerVerificationService } from '../application/manager-verification.service';
 import { DecideManagerVerificationDto } from '../application/dto/decide-manager-verification.dto';
@@ -26,7 +27,10 @@ import type { JwtPayload } from '../../foundation/auth/infrastructure/strategies
 @UseGuards(JwtAuthGuard, PlatformRolesGuard, PermissionsGuard)
 @Controller({ path: 'backoffice/manager-verifications', version: '1' })
 export class ManagerVerificationController {
-  constructor(private readonly service: ManagerVerificationService) {}
+  constructor(
+    private readonly service: ManagerVerificationService,
+    private readonly boardMinutes: ManagerBoardMinutesService,
+  ) {}
 
   /** 21_ADRs > ADR-072 — `page`/`limit` (08_API_Architecture > Pagination). */
   @Get()
@@ -46,10 +50,17 @@ export class ManagerVerificationController {
   }
 
   @Get(':caseId')
+  @Header('Cache-Control', 'no-store')
   @PlatformRoles('REVIEWER')
   @RequiresPermission('MANAGER_VERIFICATION_VIEW')
-  getCase(@Param('caseId') caseId: string) {
-    return this.service.getCase(caseId);
+  async getCase(@Param('caseId') caseId: string) {
+    const { boardMinutesStorageKey, ...verification } = await this.service.getCase(caseId);
+    return {
+      ...verification,
+      boardMinutesUrl: boardMinutesStorageKey
+        ? this.boardMinutes.downloadUrl(boardMinutesStorageKey)
+        : null,
+    };
   }
 
   @Post(':caseId/decide')

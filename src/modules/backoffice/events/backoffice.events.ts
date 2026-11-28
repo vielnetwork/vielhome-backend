@@ -23,6 +23,7 @@ export class ManagerVerificationDecidedEvent extends DomainEvent {
     public readonly caseId: string,
     public readonly status: string,
     public readonly candidatePersonId: string,
+    public readonly boardMinutes = false,
   ) {
     super();
   }

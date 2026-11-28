@@ -1,3 +1,4 @@
+import { FirstChargeVerificationService } from './application/first-charge-verification.service';
 import { Module } from '@nestjs/common';
 import { FinanceController } from './controller/finance.controller';
 import { FinanceService } from './application/finance.service';
@@ -20,6 +21,7 @@ import { FinanceUnitReadGuard } from './application/finance-unit-read.guard';
   controllers: [FinanceController],
   providers: [
     FinanceService,
+    FirstChargeVerificationService,
     FinanceRepository,
     ChargePolicy,
     PaymentPolicy,

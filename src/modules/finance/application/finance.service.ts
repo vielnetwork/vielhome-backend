@@ -872,6 +872,7 @@ export class FinanceService {
     chargeBatchId: string,
     actorPersonId: string,
     requestId: string,
+    managerMembershipId?: string,
   ) {
     const batch = await this.getChargeBatch(buildingId, chargeBatchId);
     this.chargePolicy.assertIssuable(batch.status, batch.totalAmount);
@@ -915,6 +916,7 @@ export class FinanceService {
       actorId: actorPersonId,
       requestId,
       payerResolutions,
+      ...(managerMembershipId && { managerMembershipId }),
     });
 
     await this.audit.record({
